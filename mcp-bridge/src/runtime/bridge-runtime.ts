@@ -87,13 +87,18 @@ function getTaskResultFailureMessage(result: Record<string, unknown>): string {
 }
 
 function hasExplicitTaskResultFailure(result: Record<string, unknown>): boolean {
-	if (['error', 'reason', 'errorCode'].some(key => typeof result[key] === 'string' && String(result[key]).trim().length > 0)) {
-		return true;
-	}
-	return (typeof result.failedCount === 'number' && Number.isFinite(result.failedCount) && result.failedCount > 0)
+	return ['error', 'reason', 'errorCode'].some(key => typeof result[key] === 'string' && String(result[key]).trim().length > 0)
+		|| (typeof result.failedCount === 'number' && Number.isFinite(result.failedCount) && result.failedCount > 0)
 		|| result.image === null
 		|| result.archive === null
 		|| result.source === null;
+}
+
+function allowsNegativeTaskResult(path: string): boolean {
+	return path === '/bridge/jlceda/netlist/compare'
+		|| path === '/bridge/jlceda/design/compare'
+		|| path === '/bridge/jlceda/pcb/drc-check'
+		|| path === '/bridge/jlceda/schematic/drc-check';
 }
 
 function writeTaskLog(
@@ -360,7 +365,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 				? result as Record<string, unknown>
 				: undefined;
 			if (resultRecord?.ok === false) {
-				if (hasExplicitTaskResultFailure(resultRecord)) {
+				if (!allowsNegativeTaskResult(task.path) || hasExplicitTaskResultFailure(resultRecord)) {
 					writeTaskLog(
 						'error',
 						'bridge.task.result.failed',
