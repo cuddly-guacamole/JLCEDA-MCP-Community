@@ -52,6 +52,7 @@ interface BridgeTransportCallbacks {
 
 interface BridgeTaskError {
 	message: string;
+	name?: string;
 	stack?: string;
 	code?: string;
 	timeoutMs?: number;

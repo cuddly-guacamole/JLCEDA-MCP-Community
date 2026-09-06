@@ -76,6 +76,26 @@ function getTaskTarget(payload: unknown): { edaApi?: string; detail?: string } {
 	};
 }
 
+function getTaskResultFailureMessage(result: Record<string, unknown>): string {
+	for (const key of ['error', 'reason', 'message', 'detail']) {
+		const value = result[key];
+		if (typeof value === 'string' && value.trim().length > 0) {
+			return value.trim();
+		}
+	}
+	return 'Bridge task returned ok:false.';
+}
+
+function hasExplicitTaskResultFailure(result: Record<string, unknown>): boolean {
+	if (['error', 'reason', 'errorCode'].some(key => typeof result[key] === 'string' && String(result[key]).trim().length > 0)) {
+		return true;
+	}
+	return (typeof result.failedCount === 'number' && Number.isFinite(result.failedCount) && result.failedCount > 0)
+		|| result.image === null
+		|| result.archive === null
+		|| result.source === null;
+}
+
 function writeTaskLog(
 	level: 'info' | 'success' | 'warning' | 'error',
 	event: string,
@@ -83,6 +103,7 @@ function writeTaskLog(
 	task: { requestId: string; path: string; payload: unknown },
 	phase: string,
 	error?: unknown,
+	errorCode?: string,
 ): void {
 	const operation = operationForBridgePath(task.path);
 	const target = getTaskTarget(task.payload);
@@ -99,7 +120,7 @@ function writeTaskLog(
 		requestId: task.requestId,
 		phase,
 		detail: target.detail,
-		errorCode: error instanceof BridgeTaskTimeoutError ? 'BRIDGE_TASK_TIMEOUT' : error ? 'BRIDGE_TASK_FAILED' : undefined,
+		errorCode: errorCode ?? (error instanceof BridgeTaskTimeoutError ? 'BRIDGE_TASK_TIMEOUT' : error ? 'BRIDGE_TASK_FAILED' : undefined),
 		errorName: error instanceof Error ? error.name : error ? typeof error : undefined,
 		errorStack: truncateLogText(error instanceof Error ? error.stack : undefined),
 	}));
@@ -118,6 +139,31 @@ function writeRuntimeWarningLog(event: string, summary: string, message: string,
 		leaseTerm: String(currentLeaseTerm),
 		detail,
 		errorCode,
+	}));
+	console.warn(bridgeLogPipeline.format(logEntry));
+}
+
+function writeTaskRejectionLog(
+	task: { requestId: string; path: string; payload: unknown },
+	summary: string,
+	message: string,
+	phase: string,
+): void {
+	const operation = operationForBridgePath(task.path);
+	const target = getTaskTarget(task.payload);
+	const logEntry = bridgeLogPipeline.append(bridgeLogPipeline.createEntry({
+		level: 'warning',
+		module: 'bridge-runtime',
+		event: 'bridge.task.rejected',
+		summary,
+		message,
+		toolName: operation?.toolName,
+		bridgePath: task.path,
+		edaApi: target.edaApi,
+		requestId: task.requestId,
+		phase,
+		detail: target.detail,
+		errorCode: 'BRIDGE_TASK_REJECTED',
 	}));
 	console.warn(bridgeLogPipeline.format(logEntry));
 }
@@ -222,6 +268,7 @@ function applyRole(message: BridgeServerRoleMessage): void {
 function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
 	if (controlledRecoveryPending) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 			message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
 		});
@@ -229,14 +276,17 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 	}
 	const activeQuarantine = taskQuarantine.getActive();
 	if (activeQuarantine) {
+		const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+		writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-			message: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`,
+			message,
 		});
 		return;
 	}
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
 		if (controlledRecoveryPending) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
 			});
@@ -244,12 +294,15 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		}
 		const activeQuarantine = taskQuarantine.getActive();
 		if (activeQuarantine) {
+			const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+			writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`,
+				message,
 			});
 			return;
 		}
 		if (currentRole !== 'active') {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', BRIDGE_STATUS_TEXT.runtime.taskRejectedStandby, 'standby');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: BRIDGE_STATUS_TEXT.runtime.taskRejectedStandby,
 			});
@@ -257,14 +310,17 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		}
 
 		if (task.leaseTerm !== currentLeaseTerm) {
+			writeTaskRejectionLog(task, 'Bridge 任务租约已过期', BRIDGE_STATUS_TEXT.runtime.taskLeaseExpired, 'lease');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: BRIDGE_STATUS_TEXT.runtime.taskLeaseExpired,
 			});
 			return;
 		}
 		if (operationForBridgePath(task.path)?.owner !== 'bridge') {
+			const message = `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`;
+			writeTaskRejectionLog(task, 'Bridge 任务路由不受支持', message, 'route');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`,
+				message,
 			});
 			return;
 		}
@@ -272,14 +328,16 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		const handler = getBridgeTaskHandler(task.path);
 		debugLog('[DEBUG] handler found:', !!handler, 'for path:', task.path);
 		if (!handler) {
+			const message = `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`;
+			writeTaskRejectionLog(task, 'Bridge 任务处理器不存在', message, 'handler-lookup');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`,
+				message,
 			});
 			return;
 		}
 
 		let result: unknown;
-		let taskError: { message: string; stack?: string; code?: string; timeoutMs?: number } | undefined;
+		let taskError: { message: string; name?: string; stack?: string; code?: string; timeoutMs?: number } | undefined;
 		let handlerSettled: Promise<void> | undefined;
 		try {
 			debugLog('[DEBUG] calling handler for path:', task.path);
@@ -301,8 +359,25 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			const resultRecord = result && typeof result === 'object' && !Array.isArray(result)
 				? result as Record<string, unknown>
 				: undefined;
-			if (resultRecord?.ok === false && typeof resultRecord.error === 'string') {
-				writeTaskLog('error', 'bridge.task.result.failed', 'Bridge 任务返回失败结果', task, 'handler-result', new Error(resultRecord.error));
+			if (resultRecord?.ok === false) {
+				if (hasExplicitTaskResultFailure(resultRecord)) {
+					writeTaskLog(
+						'error',
+						'bridge.task.result.failed',
+						'Bridge 任务返回失败结果',
+						task,
+						'handler-result',
+						new Error(getTaskResultFailureMessage(resultRecord)),
+						typeof resultRecord.errorCode === 'string' && resultRecord.errorCode.trim().length > 0
+							? resultRecord.errorCode.trim()
+							: 'BRIDGE_TASK_RESULT_FAILED',
+					);
+				}
+				else {
+					// Some comparison/DRC APIs use ok:false to report a valid negative
+					// result rather than an execution failure.
+					writeTaskLog('warning', 'bridge.task.completed.result-negative', 'Bridge 任务完成，但结果为 ok:false', task, 'handler-result');
+				}
 			}
 			else {
 				writeTaskLog('success', 'bridge.task.completed', 'Bridge 任务执行完成', task, 'completed');
@@ -318,6 +393,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			debugLog('[DEBUG] handler threw error:', error);
 			taskError = {
 				message: toSafeErrorMessage(error),
+				name: error instanceof Error ? error.name : undefined,
 				stack: error instanceof Error ? error.stack : undefined,
 				...(error instanceof BridgeTaskTimeoutError
 					? { code: 'BRIDGE_TASK_TIMEOUT', timeoutMs: error.timeoutMs }

@@ -64,6 +64,10 @@ export class BridgeLogDispatchPipeline {
 			String(fields.message ?? '').trim(),
 			String(fields.detail ?? '').trim(),
 			String(fields.errorCode ?? '').trim(),
+			String(fields.requestId ?? '').trim(),
+			String(fields.bridgePath ?? '').trim(),
+			String(fields.toolName ?? '').trim(),
+			String(fields.phase ?? '').trim(),
 		].join('|');
 	}
 

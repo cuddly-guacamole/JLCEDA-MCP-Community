@@ -201,8 +201,11 @@ function formatBeijingTimeOnly(date: Date): string {
 }
 
 // 生成日志唯一 ID。
+let logSequence = 0;
+
 function createLogId(timestamp: string, event: string, module: string): string {
-	return `${Date.parse(timestamp) || Date.now()}_${module}_${event}`;
+	logSequence = (logSequence + 1) % 1_000_000;
+	return `${Date.parse(timestamp) || Date.now()}_${module}_${event}_${String(logSequence)}`;
 }
 
 // 清理字段空值，仅保留非空字段。
@@ -258,6 +261,7 @@ export class BridgeLogPipeline {
 	private hasLoadedStoredLogs = false;
 	private storageWritePending = false;
 	private storageWriteRequested = false;
+	private storageWriteReplaceRequested = false;
 
 	/**
 	 * 获取统一日志字段定义。
@@ -349,7 +353,18 @@ export class BridgeLogPipeline {
 	 * 获取完整诊断日志。该数据包含异常堆栈，仅用于本地存储和程序化诊断。
 	 */
 	public getLogs(): UnifiedLogEntry[] {
-		this.loadStoredLogs();
+		// Settings and index bundles can stay alive at the same time. Refresh the
+		// shared snapshot on reads so an already-open page sees newer diagnostics.
+		if (!this.storageWritePending) {
+			const storedLogs = this.readStoredLogs();
+			if (storedLogs !== undefined) {
+				this.hasLoadedStoredLogs = true;
+				this.mergeLogs(storedLogs);
+			}
+			else {
+				this.loadStoredLogs();
+			}
+		}
 		return this.logs.slice();
 	}
 
@@ -357,8 +372,14 @@ export class BridgeLogPipeline {
 	 * 清空本地完整诊断日志。
 	 */
 	public clearLogs(): void {
+		// 先读取其他页面可能刚写入的快照，再执行有意的全量清空。
+		const storedLogs = this.readStoredLogs();
+		if (storedLogs !== undefined) {
+			this.mergeLogs(storedLogs);
+			this.hasLoadedStoredLogs = true;
+		}
 		this.logs.splice(0, this.logs.length);
-		this.persistDetailedLogs();
+		this.persistDetailedLogs(true);
 	}
 
 	/**
@@ -463,6 +484,50 @@ export class BridgeLogPipeline {
 			.some(fieldKey => String(fields[fieldKey] ?? '').trim().length > 0);
 	}
 
+	private readStoredLogs(): UnifiedLogEntry[] | undefined {
+		const storage = getExtensionStorage();
+		if (!storage || typeof storage.getExtensionUserConfig !== 'function') {
+			return undefined;
+		}
+
+		try {
+			const raw = storage.getExtensionUserConfig(BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY);
+			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+				return [];
+			}
+			const stored = raw as Partial<StoredBridgeDiagnosticLogs>;
+			if (stored.schemaVersion !== 1 || !Array.isArray(stored.logs)) {
+				return [];
+			}
+			return stored.logs.filter(logEntry => this.isUnifiedLogEntry(logEntry));
+		}
+		catch {
+			return undefined;
+		}
+	}
+
+	private mergeLogs(logEntries: UnifiedLogEntry[]): void {
+		const existingIds = new Set(this.logs.map(logEntry => logEntry.id));
+		for (const logEntry of logEntries) {
+			if (existingIds.has(logEntry.id)) {
+				continue;
+			}
+			this.logs.push(logEntry);
+			existingIds.add(logEntry.id);
+		}
+		this.logs.sort((left, right) => {
+			const leftTime = Date.parse(left.timestamp);
+			const rightTime = Date.parse(right.timestamp);
+			if (leftTime !== rightTime) {
+				return leftTime - rightTime;
+			}
+			return left.id.localeCompare(right.id);
+		});
+		if (this.logs.length > BRIDGE_LOG_LIMIT) {
+			this.logs.splice(0, this.logs.length - BRIDGE_LOG_LIMIT);
+		}
+	}
+
 	private loadStoredLogs(): void {
 		if (this.hasLoadedStoredLogs) {
 			return;
@@ -472,33 +537,18 @@ export class BridgeLogPipeline {
 		if (!storage || typeof storage.getExtensionUserConfig !== 'function') {
 			return;
 		}
+		const storedLogs = this.readStoredLogs();
+		if (storedLogs === undefined) {
+			return;
+		}
 		this.hasLoadedStoredLogs = true;
-
-		try {
-			const raw = storage.getExtensionUserConfig(BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY);
-			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-				return;
-			}
-			const stored = raw as Partial<StoredBridgeDiagnosticLogs>;
-			if (stored.schemaVersion !== 1 || !Array.isArray(stored.logs)) {
-				return;
-			}
-			const validLogs = stored.logs.filter(logEntry => this.isUnifiedLogEntry(logEntry));
-			const existingIds = new Set(this.logs.map(logEntry => logEntry.id));
-			this.logs.push(...validLogs.filter(logEntry => !existingIds.has(logEntry.id)).slice(-BRIDGE_LOG_LIMIT));
-			if (this.logs.length > BRIDGE_LOG_LIMIT) {
-				this.logs.splice(0, this.logs.length - BRIDGE_LOG_LIMIT);
-			}
-		}
-		catch {
-			this.hasLoadedStoredLogs = false;
-			// 本地日志读取失败不影响 Bridge 运行。
-		}
+		this.mergeLogs(storedLogs);
 	}
 
-	private persistDetailedLogs(): void {
+	private persistDetailedLogs(replaceStored = false): void {
 		if (this.storageWritePending) {
 			this.storageWriteRequested = true;
+			this.storageWriteReplaceRequested ||= replaceStored;
 			return;
 		}
 
@@ -508,6 +558,13 @@ export class BridgeLogPipeline {
 		}
 
 		this.storageWritePending = true;
+		if (!replaceStored) {
+			// 每次追加都合并最新持久化快照，避免多个 EDA 页面各自覆盖日志。
+			const storedLogs = this.readStoredLogs();
+			if (storedLogs !== undefined) {
+				this.mergeLogs(storedLogs);
+			}
+		}
 		const snapshot: StoredBridgeDiagnosticLogs = {
 			schemaVersion: 1,
 			updatedAt: new Date().toISOString(),
@@ -529,7 +586,9 @@ export class BridgeLogPipeline {
 				this.storageWritePending = false;
 				if (this.storageWriteRequested) {
 					this.storageWriteRequested = false;
-					this.persistDetailedLogs();
+					const replaceRequested = this.storageWriteReplaceRequested;
+					this.storageWriteReplaceRequested = false;
+					this.persistDetailedLogs(replaceRequested);
 				}
 			});
 	}
