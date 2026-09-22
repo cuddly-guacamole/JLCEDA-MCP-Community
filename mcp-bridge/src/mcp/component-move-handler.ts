@@ -21,6 +21,10 @@ interface ComponentMoveItem {
 interface ComponentApi {
 	context: unknown;
 	get: (primitiveId: string) => Promise<unknown>;
+	modify?: (
+		primitiveId: string,
+		property: { x: number; y: number; rotation?: number },
+	) => Promise<unknown>;
 }
 
 type PrimitiveSetter = (...args: Array<unknown>) => unknown;
@@ -41,6 +45,14 @@ function resolveComponentApi(): ComponentApi {
 	return {
 		context: componentModule,
 		get: componentModule.get as (primitiveId: string) => Promise<unknown>,
+		// modify 为可选：官方文档标注 @beta 且仅对 COMPONENT 类型器件生效，
+		// 因此只做存在性探测，真正不可用时交给回退链处理。
+		modify: typeof componentModule.modify === 'function'
+			? componentModule.modify as (
+				primitiveId: string,
+				property: { x: number; y: number; rotation?: number },
+			) => Promise<unknown>
+			: undefined,
 	};
 }
 
@@ -116,7 +128,7 @@ function applyStateSetter(target: unknown, setter: PrimitiveSetter, value: numbe
  * @param item 移动参数。
  * @remarks setState_* 为 builder 式调用，只有 done() 才真正提交改动。
  */
-async function moveComponentPrimitive(primitive: unknown, item: ComponentMoveItem): Promise<void> {
+async function moveComponentPrimitiveBySetters(primitive: unknown, item: ComponentMoveItem): Promise<void> {
 	// 先探测全部需要的方法，避免只写入部分状态。
 	const setStateX = readPrimitiveMethod(primitive, 'setState_X');
 	const setStateY = readPrimitiveMethod(primitive, 'setState_Y');
@@ -151,6 +163,42 @@ async function moveComponentPrimitive(primitive: unknown, item: ComponentMoveIte
 	}
 
 	await Promise.resolve(done.call(updateTarget));
+}
+
+/**
+ * 提交单个器件的位置变更。
+ * @param api 已解析的器件 API。
+ * @param primitive 器件图元对象（仅回退链使用）。
+ * @param item 移动参数。
+ * @returns 实际生效的提交路径，便于在真机上确认走的是哪条链。
+ * @remarks 首选官方单次调用 eda.sch_PrimitiveComponent.modify；它一次提交位置与旋转，
+ * 不依赖"先 get 到实例、再调实例方法"这一未验证假设。
+ * modify 不存在或抛错时，回退到 setState_* + done() 的 builder 链。
+ */
+async function moveComponentPrimitive(
+	api: ComponentApi,
+	primitive: unknown,
+	item: ComponentMoveItem,
+): Promise<'modify' | 'setters'> {
+	const property = item.rotation === undefined
+		? { x: item.x, y: item.y }
+		: { x: item.x, y: item.y, rotation: item.rotation };
+
+	if (api.modify) {
+		try {
+			const updated = await Promise.resolve(api.modify.call(api.context, item.primitiveId, property));
+			if (updated === undefined || updated === null) {
+				throw new Error('modify 返回空结果。');
+			}
+			return 'modify';
+		}
+		catch {
+			// modify 标注为 @beta 且可能拒绝非 COMPONENT 类型图元，静默回退到 builder 链。
+		}
+	}
+
+	await moveComponentPrimitiveBySetters(primitive, item);
+	return 'setters';
 }
 
 /**
@@ -192,7 +240,7 @@ export async function handleComponentMoveTask(payload: unknown): Promise<unknown
 				throw new Error(`未找到图元 ID 为 "${move.primitiveId}" 的器件。`);
 			}
 
-			await moveComponentPrimitive(primitive, move);
+			const appliedVia = await moveComponentPrimitive(api, primitive, move);
 
 			succeeded += 1;
 			results.push({
@@ -200,6 +248,7 @@ export async function handleComponentMoveTask(payload: unknown): Promise<unknown
 				status: 'ok',
 				x: move.x,
 				y: move.y,
+				appliedVia,
 				...(move.rotation === undefined ? {} : { rotation: move.rotation }),
 			});
 		}

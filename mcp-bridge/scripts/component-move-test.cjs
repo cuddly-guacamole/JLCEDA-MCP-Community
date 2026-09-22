@@ -89,22 +89,97 @@ function createMockPrimitive(options = {}) {
 	};
 }
 
+// 构造 mock 的单次 modify 实现，用于验证首选路径。
+function createModifyImpl(options = {}) {
+	const modifyCalls = [];
+	const record = (...args) => modifyCalls.push(args);
+	const modify = async function modify(primitiveId, property) {
+		record(primitiveId, property);
+		if (options.throws) {
+			throw new Error('modify rejected the primitive');
+		}
+		if (options.returnsUndefined) {
+			return undefined;
+		}
+		return { primitiveId };
+	};
+
+	return { modify, modifyCalls };
+}
+
 // 安装 mock EDA 环境。
-function installEdaRuntime(primitiveById) {
+function installEdaRuntime(primitiveById, modifyImpl) {
 	const requestedIds = [];
-	globalThis.eda = {
-		sch_PrimitiveComponent: {
-			get: async (primitiveId) => {
-				requestedIds.push(primitiveId);
-				return primitiveById[primitiveId];
-			},
+	const module = {
+		get: async (primitiveId) => {
+			requestedIds.push(primitiveId);
+			return primitiveById[primitiveId];
 		},
 	};
+	// 只在显式提供实现时挂载 modify；缺省时保持"SDK 无 modify"，以覆盖回退链。
+	if (modifyImpl) {
+		module.modify = modifyImpl;
+	}
+
+	globalThis.eda = { sch_PrimitiveComponent: module };
 	return requestedIds;
 }
 
 async function main() {
-	// 1. 正常路径：坐标与旋转写入后由 done() 提交。
+	// 1a. 首选路径：单次 modify 提交位置与旋转，不再走 builder 链。
+	const primaryA = createMockPrimitive({ primitiveId: 'comp-modify-1' });
+	const primaryB = createMockPrimitive({ primitiveId: 'comp-modify-2' });
+	const primaryModify = createModifyImpl();
+	installEdaRuntime({ 'comp-modify-1': primaryA.primitive, 'comp-modify-2': primaryB.primitive }, primaryModify.modify);
+
+	const modified = await handleComponentMoveTask({
+		moves: [
+			{ primitiveId: 'comp-modify-1', x: 400, y: 300, rotation: 90 },
+			{ primitiveId: 'comp-modify-2', x: -12.5, y: 0 },
+		],
+	});
+	assert.equal(modified.ok, true);
+	assert.equal(modified.requested, 2);
+	assert.equal(modified.succeeded, 2);
+	assert.equal(modified.failed, 0);
+	assert.deepEqual(modified.moves, [
+		{ primitiveId: 'comp-modify-1', status: 'ok', x: 400, y: 300, appliedVia: 'modify', rotation: 90 },
+		{ primitiveId: 'comp-modify-2', status: 'ok', x: -12.5, y: 0, appliedVia: 'modify' },
+	]);
+	// 首选路径必须把 rotation 作为绝对值透传，且未请求时不带 rotation。
+	assert.deepEqual(primaryModify.modifyCalls, [
+		['comp-modify-1', { x: 400, y: 300, rotation: 90 }],
+		['comp-modify-2', { x: -12.5, y: 0 }],
+	]);
+	// 首选路径生效时不得再触碰 builder 链。
+	assert.deepEqual(primaryA.calls, []);
+	assert.equal(primaryA.state.committed, undefined);
+
+	// 1b. modify 存在但抛错：静默回退到 builder 链，仍然提交。
+	const rejectedModify = createModifyImpl({ throws: true });
+	const fallbackA = createMockPrimitive({ primitiveId: 'comp-modify-throws' });
+	installEdaRuntime({ 'comp-modify-throws': fallbackA.primitive }, rejectedModify.modify);
+	const fallbackResult = await handleComponentMoveTask({
+		moves: [{ primitiveId: 'comp-modify-throws', x: 40, y: 30, rotation: 180 }],
+	});
+	assert.equal(fallbackResult.ok, true);
+	assert.deepEqual(fallbackResult.moves, [
+		{ primitiveId: 'comp-modify-throws', status: 'ok', x: 40, y: 30, appliedVia: 'setters', rotation: 180 },
+	]);
+	assert.deepEqual(fallbackA.calls, [['setState_X', 40], ['setState_Y', 30], ['setState_Rotation', 180], ['done']]);
+
+	// 1c. modify 返回空结果：同样视为不可用并回退。
+	const emptyModify = createModifyImpl({ returnsUndefined: true });
+	const emptyA = createMockPrimitive({ primitiveId: 'comp-modify-empty' });
+	installEdaRuntime({ 'comp-modify-empty': emptyA.primitive }, emptyModify.modify);
+	const emptyResult = await handleComponentMoveTask({
+		moves: [{ primitiveId: 'comp-modify-empty', x: 4, y: 3 }],
+	});
+	assert.equal(emptyResult.ok, true);
+	assert.equal(emptyResult.moves[0].appliedVia, 'setters');
+	assert.deepEqual(emptyA.calls, [['setState_X', 4], ['setState_Y', 3], ['done']]);
+
+	// 2. 无 modify（SDK 未提供）时走 builder 链：坐标与旋转写入后由 done() 提交。
 	const first = createMockPrimitive({ primitiveId: 'comp-1' });
 	const second = createMockPrimitive({ primitiveId: 'comp-2' });
 	installEdaRuntime({ 'comp-1': first.primitive, 'comp-2': second.primitive });
@@ -120,8 +195,8 @@ async function main() {
 	assert.equal(moved.succeeded, 2);
 	assert.equal(moved.failed, 0);
 	assert.deepEqual(moved.moves, [
-		{ primitiveId: 'comp-1', status: 'ok', x: 400, y: 300, rotation: 90 },
-		{ primitiveId: 'comp-2', status: 'ok', x: -12.5, y: 0 },
+		{ primitiveId: 'comp-1', status: 'ok', x: 400, y: 300, appliedVia: 'setters', rotation: 90 },
+		{ primitiveId: 'comp-2', status: 'ok', x: -12.5, y: 0, appliedVia: 'setters' },
 	]);
 	assert.deepEqual(first.calls, [['setState_X', 400], ['setState_Y', 300], ['setState_Rotation', 90], ['done']]);
 	assert.equal(first.state.committed, true);
@@ -132,7 +207,7 @@ async function main() {
 	// 未请求 rotation 时不得调用 setState_Rotation。
 	assert.deepEqual(second.calls, [['setState_X', -12.5], ['setState_Y', 0], ['done']]);
 
-	// 2. builder 返回 undefined 时退回原对象，仍然提交。
+	// 3. builder 返回 undefined 时退回原对象，仍然提交。
 	const undefinedBuilder = createMockPrimitive({ primitiveId: 'comp-undefined', builderReturnsUndefined: true });
 	installEdaRuntime({ 'comp-undefined': undefinedBuilder.primitive });
 	const undefinedResult = await handleComponentMoveTask({
@@ -143,7 +218,7 @@ async function main() {
 	assert.equal(undefinedBuilder.state.committed, true);
 	assert.equal(undefinedBuilder.getCommitTarget(), undefinedBuilder.primitive);
 
-	// 3. builder 返回新对象时，在新对象上继续链式调用并提交。
+	// 4. builder 返回新对象时，在新对象上继续链式调用并提交。
 	const newObjectBuilder = createMockPrimitive({ primitiveId: 'comp-chain', builderReturnsNewObject: true });
 	installEdaRuntime({ 'comp-chain': newObjectBuilder.primitive });
 	const chainResult = await handleComponentMoveTask({
@@ -153,7 +228,7 @@ async function main() {
 	assert.deepEqual(newObjectBuilder.calls, [['setState_X', 5], ['chain.setState_Y', 6], ['chain.done']]);
 	assert.notEqual(newObjectBuilder.getCommitTarget(), newObjectBuilder.primitive);
 
-	// 4. 缺少 done()：该项明确失败，其余器件继续执行。
+	// 5. 缺少 done()：该项明确失败，其余器件继续执行。
 	const missingDone = createMockPrimitive({ primitiveId: 'comp-no-done', omit: ['done'] });
 	const healthyNeighbour = createMockPrimitive({ primitiveId: 'comp-healthy' });
 	installEdaRuntime({ 'comp-no-done': missingDone.primitive, 'comp-healthy': healthyNeighbour.primitive });
@@ -171,7 +246,7 @@ async function main() {
 	assert.equal(missingDoneResult.moves[1].status, 'ok');
 	assert.equal(healthyNeighbour.state.committed, true, 'one bad primitive must not block the rest of the batch');
 
-	// 5. 缺少 setState_X / setState_Y：抛出可读的 TypeError。
+	// 6. 缺少 setState_X / setState_Y：抛出可读的 TypeError。
 	const noSetters = createMockPrimitive({ primitiveId: 'comp-no-setter', omit: ['setState_X'] });
 	installEdaRuntime({ 'comp-no-setter': noSetters.primitive });
 	const noSetterResult = await handleComponentMoveTask({
@@ -180,7 +255,7 @@ async function main() {
 	assert.equal(noSetterResult.failed, 1);
 	assert.match(noSetterResult.moves[0].error, /setState_X/);
 
-	// 6. 请求 rotation 但 SDK 不支持：明确失败且不得只写入部分状态。
+	// 7. 请求 rotation 但 SDK 不支持：明确失败且不得只写入部分状态。
 	const noRotation = createMockPrimitive({ primitiveId: 'comp-no-rotation', omit: ['setState_Rotation'] });
 	installEdaRuntime({ 'comp-no-rotation': noRotation.primitive });
 	const noRotationResult = await handleComponentMoveTask({
@@ -198,7 +273,7 @@ async function main() {
 	assert.equal(noRotationMove.ok, true);
 	assert.deepEqual(noRotation.calls, [['setState_X', 7], ['setState_Y', 8], ['done']]);
 
-	// 7. 图元 ID 不存在：逐项失败，其余器件仍然移动。
+	// 8. 图元 ID 不存在：逐项失败，其余器件仍然移动。
 	const survivor = createMockPrimitive({ primitiveId: 'comp-survivor' });
 	const requestedIds = installEdaRuntime({ 'comp-survivor': survivor.primitive });
 	const missingIdResult = await handleComponentMoveTask({
@@ -216,7 +291,7 @@ async function main() {
 	assert.equal(missingIdResult.moves[0].primitiveId, 'does-not-exist');
 	assert.equal(survivor.state.committed, true);
 
-	// 8. done() 返回 Promise 时必须等待其结算。
+	// 9. done() 返回 Promise 时必须等待其结算。
 	const deferred = createMockPrimitive({ primitiveId: 'comp-async-done' });
 	const order = [];
 	deferred.primitive.done = function done() {
@@ -235,7 +310,7 @@ async function main() {
 	assert.equal(asyncDoneResult.ok, true);
 	assert.deepEqual(order, ['settled', 'handler-returned'], 'the handler must await an asynchronous done()');
 
-	// 9. 参数校验。
+	// 10. 参数校验。
 	await assert.rejects(() => handleComponentMoveTask(null), /component\/move 任务参数必须为对象/);
 	await assert.rejects(() => handleComponentMoveTask('moves'), /component\/move 任务参数必须为对象/);
 	await assert.rejects(() => handleComponentMoveTask({}), /moves 参数/);
