@@ -5,6 +5,7 @@ import { handleAutoLayoutTask } from '../mcp/auto-layout-handler.ts';
 import { handleAutoRoutingTask } from '../mcp/auto-routing-handler.ts';
 import { handleBoardSetupTask } from '../mcp/board-setup-handler.ts';
 import { handleCanvasSnapshotTask } from '../mcp/canvas-snapshot-handler.ts';
+import { handleComponentMoveTask } from '../mcp/component-move-handler.ts';
 import { handleComponentPlaceAutoTask } from '../mcp/component-place-auto-handler.ts';
 import {
 	handleComponentPlaceCheckTask,
@@ -72,6 +73,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/component/place/start': handleComponentPlaceStartTask,
 	'/bridge/jlceda/component/place': handleComponentPlaceTask,
 	'/bridge/jlceda/component/place-auto': handleComponentPlaceAutoTask,
+	'/bridge/jlceda/component/move': handleComponentMoveTask,
 	'/bridge/jlceda/component/select': handleComponentSelectTask,
 	'/bridge/jlceda/canvas/snapshot': handleCanvasSnapshotTask,
 	'/bridge/jlceda/context': handleEdaContextTask,

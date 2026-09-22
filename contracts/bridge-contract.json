@@ -595,6 +595,12 @@
 			"path": "/bridge/jlceda/auto/routing",
 			"owner": "bridge",
 			"timeoutPolicy": "default"
+		},
+		{
+			"toolName": "component_move",
+			"path": "/bridge/jlceda/component/move",
+			"owner": "bridge",
+			"timeoutPolicy": "default"
 		}
 	],
 	"internalOperations": [

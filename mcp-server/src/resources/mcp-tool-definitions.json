@@ -2273,5 +2273,56 @@
 		}
       ]
     }
+  },
+  {
+    "name": "component_move",
+    "description": "将原理图中已存在的器件移动到指定坐标，可选同时设置旋转角度。用于修正坐标错误的已放置器件，不会新增或删除器件。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "moves": {
+          "type": "array",
+          "description": "待移动器件列表（必填，单次最多 100 项）。",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "primitiveId": {
+                "type": "string",
+                "description": "器件图元 ID（必填，非空）。可用 schematic_read 读取原理图后获取。"
+              },
+              "x": {
+                "type": "number",
+                "description": "目标 X 坐标（必填，有限数字，与图纸坐标同系）。"
+              },
+              "y": {
+                "type": "number",
+                "description": "目标 Y 坐标（必填，有限数字，与图纸坐标同系）。"
+              },
+              "rotation": {
+                "type": "number",
+                "enum": [
+                  0,
+                  90,
+                  180,
+                  270
+                ],
+                "description": "旋转角度（可选）。若当前 SDK 不支持设置旋转，该器件会明确失败，不会被静默忽略。"
+              }
+            },
+            "required": [
+              "primitiveId",
+              "x",
+              "y"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "moves"
+      ],
+      "additionalProperties": false
+    }
   }
 ]
