@@ -36,6 +36,8 @@ const SERVER_IDLE_TIMEOUT_MS = 60000;
 // 检查服务端无活动状态的轮询间隔。
 const SERVER_IDLE_CHECK_INTERVAL_MS = 500;
 const BRIDGE_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
+// 失效诊断日志中错误原因的最大字符数，避免把超大对象整体写进日志。
+const BRIDGE_FAIL_REASON_MAX_CHARS = 240;
 const BRIDGE_STATUS_TEXT = BridgeStateManager.text;
 
 export function shouldLogTransportMessage(messageType: BridgeClientMessage['type']): boolean {
@@ -93,6 +95,35 @@ const VALID_SERVER_MESSAGE_TYPES = new Set([
 	'bridge/recover',
 	'bridge/error',
 ]);
+
+// 将任意错误原因压缩为定长摘要，避免诊断日志被超大对象撑爆。
+function summarizeFailReason(reason: unknown): string {
+	if (reason === undefined) {
+		return '(none)';
+	}
+	if (reason instanceof Error) {
+		const detail = String(reason.message ?? '').trim();
+		return detail.length > 0 ? detail.slice(0, BRIDGE_FAIL_REASON_MAX_CHARS) : reason.name;
+	}
+
+	let serialized: string;
+	try {
+		serialized = typeof reason === 'string' ? reason : JSON.stringify(reason) ?? String(reason);
+	}
+	catch {
+		// 循环引用或自定义 toJSON 抛错时退回字符串化，保证 fail() 本身不会二次失败。
+		serialized = Object.prototype.toString.call(reason);
+	}
+
+	const compact = serialized.replace(/\s+/g, ' ').trim();
+	if (compact.length === 0) {
+		return '(empty)';
+	}
+
+	return compact.length > BRIDGE_FAIL_REASON_MAX_CHARS
+		? `${compact.slice(0, BRIDGE_FAIL_REASON_MAX_CHARS)}...(truncated ${String(compact.length - BRIDGE_FAIL_REASON_MAX_CHARS)} chars)`
+		: compact;
+}
 
 // 将任意输入解析为服务端消息结构。
 async function parseServerMessage(data: unknown): Promise<BridgeServerMessage> {
@@ -571,6 +602,20 @@ export class BridgeTransport {
 		if (this.lostNotified) {
 			return;
 		}
+
+		// 归因日志：prior to this the transport failed silently, so a connection that
+		// dropped mid-request left no trace of which guard tripped and why.
+		debugLog(
+			`[DEBUG] bridge-transport fail: ${message}`,
+			'| reason:',
+			summarizeFailReason(reason),
+			'| socketId:',
+			this.socketId,
+			'| clientId:',
+			this.clientId,
+			'| welcomed:',
+			this.welcomed,
+		);
 
 		this.lostNotified = true;
 		this.closed = true;
