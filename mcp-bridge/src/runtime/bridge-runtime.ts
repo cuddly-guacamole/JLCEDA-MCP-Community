@@ -215,6 +215,15 @@ function getClientId(): string {
 	return clientId;
 }
 
+// 丢弃当前客户端标识，让下一次连接退化为一个全新的客户端身份。
+// 服务端按 clientId 认连接：同一 clientId 换 socket 会被判成"旧连接被替换"，
+// 从而拒绝该 clientId 上所有在飞请求（这正是"一写就断连"的错误来源）。
+// 断线后轮换 clientId，等价于服务端"受控恢复"路径（startControlledRecovery）
+// 里已有的做法，使新连接成为全新客户端而不误杀旧连接上的请求。
+function rotateClientId(): void {
+	clientId = '';
+}
+
 // 生成桥接 WebSocket 连接标识，序列号递增确保每次重连都使用全新 socketId，
 // 防止 EDA API 因 socketId 相同而复用旧连接状态导致 onOpen 不触发。
 function getSocketId(): string {
@@ -693,6 +702,10 @@ async function ensureConnected(): Promise<void> {
 			if (!started) {
 				return;
 			}
+			// 重连前轮换身份，避免服务端把这次重连误判为"同一 clientId 换 socket"
+			// 而拒绝上一个 socket 上仍在等待的写请求。
+			// 旧实例内部仍持有旧 clientId，因此即便有在飞任务也仍按旧身份回传结果。
+			rotateClientId();
 			statusReporter.markFailed(message);
 			scheduleReconnect();
 		},
