@@ -38,7 +38,7 @@ function createTransport() {
 			onDebugSwitchChanged: () => undefined,
 			onTask: () => undefined,
 			onRecoveryRequested: () => undefined,
-			onLost: (message) => lost.push(message),
+			onLost: message => lost.push(message),
 		},
 	);
 	return { transport, lost };
@@ -70,7 +70,7 @@ async function main() {
 		first.transport.fail('server idle timeout', longReason);
 	});
 
-	const failLine = lines.find((line) => line.includes('bridge-transport fail:'));
+	const failLine = lines.find(line => line.includes('bridge-transport fail:'));
 	assert.ok(failLine, `fail() must log its message, got: ${JSON.stringify(lines)}`);
 	assert.match(failLine, /bridge-transport fail: server idle timeout/);
 	assert.match(failLine, /reason:/);
@@ -82,7 +82,7 @@ async function main() {
 	assert.match(failLine, /socketId: test-socket/);
 	assert.match(failLine, /clientId: test-client/);
 	// 失效时关闭底层 socket。
-	assert.ok(closed.some((entry) => entry[0] === 'test-socket'), 'fail() must close the underlying socket');
+	assert.ok(closed.some(entry => entry[0] === 'test-socket'), 'fail() must close the underlying socket');
 	assert.deepEqual(first.lost, ['server idle timeout']);
 
 	// 2. Error 原因取 message；未提供原因时给出明确占位，不得抛错。
@@ -90,7 +90,7 @@ async function main() {
 	const secondLines = await captureConsole(async () => {
 		second.transport.fail('heartbeat failed', new Error('socket is closing'));
 	});
-	const secondFail = secondLines.find((line) => line.includes('bridge-transport fail:'));
+	const secondFail = secondLines.find(line => line.includes('bridge-transport fail:'));
 	assert.match(secondFail, /reason: socket is closing/);
 
 	const noReason = createTransport();
@@ -98,7 +98,7 @@ async function main() {
 		noReason.transport.fail('no reason supplied');
 	});
 	assert.match(
-		noReasonLines.find((line) => line.includes('bridge-transport fail:')),
+		noReasonLines.find(line => line.includes('bridge-transport fail:')),
 		/reason: \(none\)/,
 	);
 
@@ -110,7 +110,7 @@ async function main() {
 		third.transport.fail('circular reason', circular);
 	});
 	assert.ok(
-		thirdLines.find((line) => line.includes('bridge-transport fail: circular reason')),
+		thirdLines.find(line => line.includes('bridge-transport fail: circular reason')),
 		'fail() must survive a reason that JSON.stringify cannot serialize',
 	);
 	assert.deepEqual(third.lost, ['circular reason']);
