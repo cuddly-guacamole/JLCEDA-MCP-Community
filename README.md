@@ -1,6 +1,6 @@
 # JLCEDA MCP 社区版
 
-当前发布版本：Bridge `2.3.1`，MCP Server `2.3.1`。本版本增强 Bridge/MCP 任务诊断：以请求 ID 关联工具、Bridge 路由、执行阶段和异常，日志带版本与构建日期水印；EDA 界面显示简略报告，完整日志保存在扩展本地存储中。共享 Bridge 契约、多客户端路由和可选本机 token 认证继续受到支持。
+当前发布版本：Bridge `2.3.1`，MCP Server `2.3.1`。本版本增强 Bridge/MCP 任务诊断：以请求 ID 关联工具、Bridge 路由、执行阶段和异常，日志带版本与构建日期水印；EDA 界面显示简略报告，完整日志保存在扩展本地存储中。Server 同时修复 `component_select` 和 `design_compare` 的参数校验。共享 Bridge 契约、多客户端路由和可选本机 token 认证继续受到支持。
 
 ## 功能与工具
 
