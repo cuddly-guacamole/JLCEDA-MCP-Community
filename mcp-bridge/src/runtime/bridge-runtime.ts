@@ -49,6 +49,88 @@ let socketSequence = 0;
 const statusReporter = new BridgeStatusReporter();
 const bridgeLogDispatchPipeline = new BridgeLogDispatchPipeline();
 const BRIDGE_STATUS_TEXT = BridgeStateManager.text;
+const MAX_LOG_TEXT_LENGTH = 8000;
+
+function truncateLogText(value: unknown): string | undefined {
+	const text = String(value ?? '').trim();
+	if (text.length === 0) {
+		return undefined;
+	}
+	return text.length > MAX_LOG_TEXT_LENGTH ? `${text.slice(0, MAX_LOG_TEXT_LENGTH - 3)}...` : text;
+}
+
+function getTaskTarget(payload: unknown): { edaApi?: string; detail?: string } {
+	if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+		return {};
+	}
+	const record = payload as Record<string, unknown>;
+	const edaApi = typeof record.apiFullName === 'string' ? record.apiFullName.trim() : '';
+	const action = typeof record.action === 'string' ? record.action.trim() : '';
+	const kind = typeof record.kind === 'string' ? record.kind.trim() : '';
+	const detail = [action ? `action=${action}` : '', kind ? `kind=${kind}` : '']
+		.filter(Boolean)
+		.join(', ');
+	return {
+		edaApi: edaApi || undefined,
+		detail: detail || undefined,
+	};
+}
+
+function getTaskResultFailureMessage(result: Record<string, unknown>): string {
+	for (const key of ['error', 'reason', 'message', 'detail']) {
+		const value = result[key];
+		if (typeof value === 'string' && value.trim().length > 0) {
+			return value.trim();
+		}
+	}
+	return 'Bridge task returned ok:false.';
+}
+
+function hasExplicitTaskResultFailure(result: Record<string, unknown>): boolean {
+	return ['error', 'reason', 'errorCode'].some(key => typeof result[key] === 'string' && String(result[key]).trim().length > 0)
+		|| (typeof result.failedCount === 'number' && Number.isFinite(result.failedCount) && result.failedCount > 0)
+		|| result.image === null
+		|| result.archive === null
+		|| result.source === null;
+}
+
+function allowsNegativeTaskResult(path: string): boolean {
+	return path === '/bridge/jlceda/netlist/compare'
+		|| path === '/bridge/jlceda/design/compare'
+		|| path === '/bridge/jlceda/pcb/drc-check'
+		|| path === '/bridge/jlceda/schematic/drc-check';
+}
+
+function writeTaskLog(
+	level: 'info' | 'success' | 'warning' | 'error',
+	event: string,
+	summary: string,
+	task: { requestId: string; path: string; payload: unknown },
+	phase: string,
+	error?: unknown,
+	errorCode?: string,
+): void {
+	const operation = operationForBridgePath(task.path);
+	const target = getTaskTarget(task.payload);
+	const errorMessage = error instanceof Error ? error.message : error == null ? '' : String(error);
+	const logEntry = bridgeLogPipeline.append(bridgeLogPipeline.createEntry({
+		level,
+		module: 'bridge-runtime',
+		event,
+		summary,
+		message: errorMessage || summary,
+		toolName: operation?.toolName,
+		bridgePath: task.path,
+		edaApi: target.edaApi,
+		requestId: task.requestId,
+		phase,
+		detail: target.detail,
+		errorCode: errorCode ?? (error instanceof BridgeTaskTimeoutError ? 'BRIDGE_TASK_TIMEOUT' : error ? 'BRIDGE_TASK_FAILED' : undefined),
+		errorName: error instanceof Error ? error.name : undefined,
+		errorStack: truncateLogText(error instanceof Error ? error.stack : undefined),
+	}));
+	console.warn(bridgeLogPipeline.format(logEntry));
+}
 
 function writeRuntimeWarningLog(event: string, summary: string, message: string, detail = '', errorCode = ''): void {
 	const logEntry = bridgeLogPipeline.append(bridgeLogPipeline.createEntry({
@@ -62,6 +144,31 @@ function writeRuntimeWarningLog(event: string, summary: string, message: string,
 		leaseTerm: String(currentLeaseTerm),
 		detail,
 		errorCode,
+	}));
+	console.warn(bridgeLogPipeline.format(logEntry));
+}
+
+function writeTaskRejectionLog(
+	task: { requestId: string; path: string; payload: unknown },
+	summary: string,
+	message: string,
+	phase: string,
+): void {
+	const operation = operationForBridgePath(task.path);
+	const target = getTaskTarget(task.payload);
+	const logEntry = bridgeLogPipeline.append(bridgeLogPipeline.createEntry({
+		level: 'warning',
+		module: 'bridge-runtime',
+		event: 'bridge.task.rejected',
+		summary,
+		message,
+		toolName: operation?.toolName,
+		bridgePath: task.path,
+		edaApi: target.edaApi,
+		requestId: task.requestId,
+		phase,
+		detail: target.detail,
+		errorCode: 'BRIDGE_TASK_REJECTED',
 	}));
 	console.warn(bridgeLogPipeline.format(logEntry));
 }
@@ -166,6 +273,7 @@ function applyRole(message: BridgeServerRoleMessage): void {
 function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
 	if (controlledRecoveryPending) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 			message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
 		});
@@ -173,14 +281,17 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 	}
 	const activeQuarantine = taskQuarantine.getActive();
 	if (activeQuarantine) {
+		const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+		writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-			message: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`,
+			message,
 		});
 		return;
 	}
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
 		if (controlledRecoveryPending) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
 			});
@@ -188,12 +299,15 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		}
 		const activeQuarantine = taskQuarantine.getActive();
 		if (activeQuarantine) {
+			const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+			writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`,
+				message,
 			});
 			return;
 		}
 		if (currentRole !== 'active') {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', BRIDGE_STATUS_TEXT.runtime.taskRejectedStandby, 'standby');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: BRIDGE_STATUS_TEXT.runtime.taskRejectedStandby,
 			});
@@ -201,14 +315,17 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		}
 
 		if (task.leaseTerm !== currentLeaseTerm) {
+			writeTaskRejectionLog(task, 'Bridge 任务租约已过期', BRIDGE_STATUS_TEXT.runtime.taskLeaseExpired, 'lease');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: BRIDGE_STATUS_TEXT.runtime.taskLeaseExpired,
 			});
 			return;
 		}
 		if (operationForBridgePath(task.path)?.owner !== 'bridge') {
+			const message = `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`;
+			writeTaskRejectionLog(task, 'Bridge 任务路由不受支持', message, 'route');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`,
+				message,
 			});
 			return;
 		}
@@ -216,18 +333,21 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		const handler = getBridgeTaskHandler(task.path);
 		debugLog('[DEBUG] handler found:', !!handler, 'for path:', task.path);
 		if (!handler) {
+			const message = `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`;
+			writeTaskRejectionLog(task, 'Bridge 任务处理器不存在', message, 'handler-lookup');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: `${BRIDGE_STATUS_TEXT.runtime.taskPathUnsupportedPrefix}${task.path}`,
+				message,
 			});
 			return;
 		}
 
 		let result: unknown;
-		let taskError: { message: string; stack?: string } | undefined;
+		let taskError: { message: string; name?: string; stack?: string; code?: string; timeoutMs?: number } | undefined;
 		let handlerSettled: Promise<void> | undefined;
 		try {
 			debugLog('[DEBUG] calling handler for path:', task.path);
 			currentTransport.reportTaskStarted(task.requestId, task.leaseTerm);
+			writeTaskLog('info', 'bridge.task.started', 'Bridge 任务开始执行', task, 'handler');
 			// 任务执行前刷新服务端活动时间戳，避免空闲超时误判
 			currentTransport.refreshServerActivity();
 			const timeoutMs = resolveBridgeTaskTimeoutMs(task.path, task.payload);
@@ -241,6 +361,32 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			// 任务完成后再次刷新，确保结果回传前连接不被断开
 			currentTransport.refreshServerActivity();
 			debugLog('[DEBUG] handler completed successfully, result:', typeof result);
+			const resultRecord = result && typeof result === 'object' && !Array.isArray(result)
+				? result as Record<string, unknown>
+				: undefined;
+			if (resultRecord?.ok === false) {
+				if (!allowsNegativeTaskResult(task.path) || hasExplicitTaskResultFailure(resultRecord)) {
+					writeTaskLog(
+						'error',
+						'bridge.task.result.failed',
+						'Bridge 任务返回失败结果',
+						task,
+						'handler-result',
+						getTaskResultFailureMessage(resultRecord),
+						typeof resultRecord.errorCode === 'string' && resultRecord.errorCode.trim().length > 0
+							? resultRecord.errorCode.trim()
+							: 'BRIDGE_TASK_RESULT_FAILED',
+					);
+				}
+				else {
+					// Some comparison/DRC APIs use ok:false to report a valid negative
+					// result rather than an execution failure.
+					writeTaskLog('warning', 'bridge.task.completed.result-negative', 'Bridge 任务完成，但结果为 ok:false', task, 'handler-result');
+				}
+			}
+			else {
+				writeTaskLog('success', 'bridge.task.completed', 'Bridge 任务执行完成', task, 'completed');
+			}
 		}
 		catch (error: unknown) {
 			if (error instanceof BridgeTaskTimeoutError) {
@@ -252,11 +398,20 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			debugLog('[DEBUG] handler threw error:', error);
 			taskError = {
 				message: toSafeErrorMessage(error),
+				name: error instanceof Error ? error.name : undefined,
 				stack: error instanceof Error ? error.stack : undefined,
 				...(error instanceof BridgeTaskTimeoutError
 					? { code: 'BRIDGE_TASK_TIMEOUT', timeoutMs: error.timeoutMs }
 					: {}),
 			};
+			writeTaskLog(
+				error instanceof BridgeTaskTimeoutError ? 'warning' : 'error',
+				error instanceof BridgeTaskTimeoutError ? 'bridge.task.timeout' : 'bridge.task.failed',
+				error instanceof BridgeTaskTimeoutError ? 'Bridge 任务超时' : 'Bridge 任务执行失败',
+				task,
+				error instanceof BridgeTaskTimeoutError ? 'timeout' : 'error',
+				error,
+			);
 		}
 
 		debugLog('[DEBUG] completing task, hasError:', !!taskError);

@@ -75,6 +75,30 @@ interface BridgeTask {
   timeoutMs: number;
 }
 
+export interface BridgeTaskErrorDetails {
+  message: string;
+  name?: string;
+  stack?: string;
+  code?: string;
+  timeoutMs?: number;
+}
+
+/** Error raised from a Bridge task while retaining the serialized task metadata. */
+export class BridgeTaskError extends Error {
+  public readonly code?: string;
+  public readonly timeoutMs?: number;
+
+  public constructor(details: BridgeTaskErrorDetails) {
+    super(details.message);
+    this.name = details.name || 'BridgeTaskError';
+    this.code = details.code;
+    this.timeoutMs = details.timeoutMs;
+    if (details.stack) {
+      this.stack = details.stack;
+    }
+  }
+}
+
 const BRIDGE_QUEUE_TIMEOUT_MS = 15 * 60 * 1000;
 const INTERNAL_QUEUE_RESPONSE_GRACE_MS = 5_000;
 const BRIDGE_MAX_PENDING_REQUESTS = 64;
@@ -138,6 +162,33 @@ function validateInternalTaskMessage(value: unknown): string | undefined {
 function optionalString(value: unknown): string | undefined {
   const text = typeof value === 'string' ? value.trim() : '';
   return text || undefined;
+}
+
+function serializeBridgeError(error: unknown): unknown {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  // Preserve the historical string form for ordinary internal failures. Only
+  // Bridge-originated errors need a structured envelope for metadata.
+  if (!(error instanceof BridgeTaskError)
+    && !(typeof (error as Error & { code?: unknown }).code === 'string')
+    && !(typeof (error as Error & { timeoutMs?: unknown }).timeoutMs === 'number')) {
+    return error.message;
+  }
+  const details: Record<string, unknown> = {
+    message: error.message,
+    name: error.name,
+    stack: error.stack && error.stack.length > 8000 ? `${error.stack.slice(0, 8000)}...` : error.stack,
+  };
+  const code = (error as Error & { code?: unknown }).code;
+  const timeoutMs = (error as Error & { timeoutMs?: unknown }).timeoutMs;
+  if (typeof code === 'string' && code.length > 0) {
+    details.code = code;
+  }
+  if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+    details.timeoutMs = timeoutMs;
+  }
+  return details;
 }
 
 function parseClientContext(value: unknown): BridgeClientContext | undefined {
@@ -422,7 +473,7 @@ export class EdaBridgeServer {
       this.trySend(socket, {
         type: 'bridge/debug-switch',
         clientId,
-        debugSwitch: { enableSystemLog: false, enableConnectionList: false },
+        debugSwitch: { enableSystemLog: true, enableConnectionList: false },
       });
       this.broadcastRoles('Client handshake completed');
       return;
@@ -453,6 +504,8 @@ export class EdaBridgeServer {
       return;
     }
     if (type === 'bridge/log') {
+      const log = isRecord(rawMessage.log) ? rawMessage.log : {};
+      process.stderr.write(`[BridgeLog clientId=${peer.clientId}] ${JSON.stringify(log)}\n`);
       return;
     }
     throw new Error(`Unsupported bridge message type: ${type}`);
@@ -565,7 +618,15 @@ export class EdaBridgeServer {
       this.recordTimedOutRequest(requestId, pending, bridgeTimeoutMs);
     }
     if (isRecord(message.error) && typeof message.error.message === 'string') {
-      pending.reject(new Error(message.error.message));
+      const code = typeof message.error.code === 'string' ? message.error.code : undefined;
+      const timeoutMs = Number(message.error.timeoutMs);
+      pending.reject(new BridgeTaskError({
+        message: message.error.message,
+        name: typeof message.error.name === 'string' ? message.error.name : undefined,
+        stack: typeof message.error.stack === 'string' ? message.error.stack : undefined,
+        code,
+        timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
+      }));
       return;
     }
     if (message.error) {
@@ -659,7 +720,7 @@ export class EdaBridgeServer {
         (error) => this.trySend(socket, {
           type: 'bridge/result',
           requestId,
-          error: error instanceof Error ? error.message : String(error),
+          error: serializeBridgeError(error),
         }),
       );
     });
@@ -691,7 +752,16 @@ export class EdaBridgeServer {
       }
       this.clearPendingTimeout(pending);
       this.pendingRequests.delete(requestId);
-      if (message.error) {
+      if (isRecord(message.error) && typeof message.error.message === 'string') {
+        const timeoutMs = Number(message.error.timeoutMs);
+        pending.reject(new BridgeTaskError({
+          message: message.error.message,
+          name: typeof message.error.name === 'string' ? message.error.name : undefined,
+          stack: typeof message.error.stack === 'string' ? message.error.stack : undefined,
+          code: typeof message.error.code === 'string' ? message.error.code : undefined,
+          timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined,
+        }));
+      } else if (message.error) {
         pending.reject(new Error(String(message.error)));
       } else {
         pending.resolve(message.result);

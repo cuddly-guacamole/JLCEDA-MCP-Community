@@ -58,6 +58,7 @@ export interface BridgeClientResultMessage {
 	result?: unknown;
 	error?: {
 		message: string;
+		name?: string;
 		stack?: string;
 		code?: string;
 		timeoutMs?: number;

@@ -4,6 +4,7 @@ const process = require('node:process');
 process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', moduleResolution: 'node' });
 require('ts-node/register/transpile-only');
 
+const { BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY, BridgeLogPipeline, bridgeLogPipeline } = require('../src/logging/log.ts');
 const { handleAutoLayoutTask } = require('../src/mcp/auto-layout-handler.ts');
 const { handleAutoRoutingTask } = require('../src/mcp/auto-routing-handler.ts');
 const { handleComponentPlaceAutoTask } = require('../src/mcp/component-place-auto-handler.ts');
@@ -15,6 +16,33 @@ const { shouldLogTransportMessage } = require('../src/runtime/bridge-transport.t
 const { BridgeTaskQuarantine, BridgeTaskTimeoutError, resolveBridgeTaskTimeoutMs, startTimedTask } = require('../src/runtime/task-timeout.ts');
 const { startConnectionStatusMonitor } = require('../src/state/status-monitor.ts');
 const { readConnectionStatus, saveConnectionStatus } = require('../src/state/status-store.ts');
+
+const diagnosticLog = bridgeLogPipeline.createEntry({
+	level: 'error',
+	module: 'test',
+	event: 'test.diagnostic',
+	summary: 'diagnostic log',
+	message: 'handler failed',
+	toolName: 'api_invoke',
+	bridgePath: '/bridge/jlceda/api/invoke',
+	edaApi: 'eda.sch_PrimitiveComponent.create',
+	requestId: 'test-request',
+	phase: 'handler',
+	errorName: 'TypeError',
+	errorStack: 'stack',
+});
+assert.equal(BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY, 'mcp_bridge_diagnostic_logs');
+assert.equal(diagnosticLog.fields.version, '2.3.0');
+assert.equal(diagnosticLog.fields.buildDate, 'dev');
+assert.equal(diagnosticLog.fields.buildWatermark, 'v2.3.0 | dev');
+assert.equal(diagnosticLog.fields.toolName, 'api_invoke');
+assert.equal(diagnosticLog.fields.edaApi, 'eda.sch_PrimitiveComponent.create');
+assert.equal(diagnosticLog.fields.requestId, 'test-request');
+assert.equal(diagnosticLog.fields.errorStack, 'stack');
+assert.match(bridgeLogPipeline.formatEdaReportLine(diagnosticLog), /工具=api_invoke/);
+assert.match(bridgeLogPipeline.formatEdaReportLine(diagnosticLog), /API=eda\.sch_PrimitiveComponent\.create/);
+assert.match(bridgeLogPipeline.formatEdaReportLine(diagnosticLog), /阶段=handler/);
+assert.doesNotMatch(bridgeLogPipeline.formatEdaReportLine(diagnosticLog), /stack/);
 
 for (const name of ['UART_TX', 'SPI_CLK', 'BLUE_LED_DATA']) {
 	assert.equal(detectNetLabelKind(name), 'NetLabel', `${name} must use an ordinary net label`);
@@ -116,6 +144,111 @@ async function main() {
 		updatedAt: new Date().toISOString(),
 	}));
 	assert.equal(readConnectionStatus(), undefined);
+	let storedDiagnosticLogs;
+	globalThis.eda.sys_Storage = {
+		setExtensionUserConfig: (key, value) => {
+			if (key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY) {
+				storedDiagnosticLogs = value;
+			}
+			return true;
+		},
+		getExtensionUserConfig: () => undefined,
+	};
+	bridgeLogPipeline.append(diagnosticLog);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(storedDiagnosticLogs.logs[0].fields.errorStack, 'stack');
+	assert.doesNotMatch(bridgeLogPipeline.getEdaReport(), /stack/);
+	let sharedDiagnosticSnapshot;
+	globalThis.eda.sys_Storage = {
+		getExtensionUserConfig: key => key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY ? sharedDiagnosticSnapshot : undefined,
+		setExtensionUserConfig: (key, value) => {
+			if (key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY) {
+				sharedDiagnosticSnapshot = value;
+			}
+			return true;
+		},
+	};
+	const firstPageLogs = new BridgeLogPipeline();
+	const secondPageLogs = new BridgeLogPipeline();
+	firstPageLogs.append(firstPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'before-clear',
+		summary: 'old',
+		message: 'old',
+	}));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(secondPageLogs.getLogs().length, 1);
+	secondPageLogs.clearLogs();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(firstPageLogs.getLogs(), []);
+	firstPageLogs.append(firstPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'after-clear',
+		summary: 'new',
+		message: 'new',
+	}));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(sharedDiagnosticSnapshot.logs.map(log => log.fields.event), ['after-clear']);
+	secondPageLogs.clearLogs();
+	secondPageLogs.append(secondPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'immediately-after-clear',
+		summary: 'latest',
+		message: 'latest',
+	}));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(sharedDiagnosticSnapshot.logs.map(log => log.fields.event), ['immediately-after-clear']);
+	let resolveOldWrite;
+	let delayFirstWrite = true;
+	globalThis.eda.sys_Storage = {
+		getExtensionUserConfig: key => key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY ? sharedDiagnosticSnapshot : undefined,
+		setExtensionUserConfig: (key, value) => {
+			if (key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY) {
+				sharedDiagnosticSnapshot = value;
+			}
+			if (delayFirstWrite) {
+				delayFirstWrite = false;
+				return new Promise((resolve) => {
+					resolveOldWrite = resolve;
+				});
+			}
+			return true;
+		},
+	};
+	const pendingPageLogs = new BridgeLogPipeline();
+	const clearingPageLogs = new BridgeLogPipeline();
+	pendingPageLogs.append(pendingPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'pending-old',
+		summary: 'pending old',
+		message: 'pending old',
+	}));
+	clearingPageLogs.clearLogs();
+	assert.deepEqual(pendingPageLogs.getLogs(), []);
+	pendingPageLogs.append(pendingPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'pending-new',
+		summary: 'pending new',
+		message: 'pending new',
+	}));
+	resolveOldWrite();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(sharedDiagnosticSnapshot.logs.map(log => log.fields.event), ['pending-new']);
+	globalThis.eda.sys_Storage.setExtensionUserConfig = () => {
+		throw new Error('diagnostic storage unavailable');
+	};
+	assert.doesNotThrow(() => bridgeLogPipeline.append(bridgeLogPipeline.createEntry({
+		level: 'warning',
+		module: 'test',
+		event: 'test.storage-failure',
+		summary: 'storage failure',
+		message: 'storage failure',
+	})));
 	globalThis.eda.sys_Storage.setExtensionUserConfig = () => Promise.reject(new Error('storage rejected'));
 	assert.doesNotThrow(() => saveConnectionStatus({
 		bridgeType: 'error',

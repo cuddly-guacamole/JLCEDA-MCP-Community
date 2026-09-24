@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import type { EdaBridgeServer } from './bridge-client.js';
 import { bridgePathForTool, bridgeTimeoutForTool } from './bridge-contract.js';
+import { SERVER_BUILD_DATE } from './build-info.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -40,6 +41,21 @@ export interface ToolCallResult {
 
 function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function optionalErrorString(error: unknown, field: string): string | undefined {
+  if (!isPlainObjectRecord(error) || typeof error[field] !== 'string') {
+    return undefined;
+  }
+  return error[field] as string;
+}
+
+function optionalErrorTimeoutMs(error: unknown): number | undefined {
+  if (!isPlainObjectRecord(error)) {
+    return undefined;
+  }
+  const timeoutMs = Number(error.timeoutMs);
+  return Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : undefined;
 }
 
 function delay(ms: number): Promise<void> {
@@ -80,7 +96,10 @@ function loadToolDefinitions(): readonly ToolDefinition[] {
 const TOOL_DEFINITIONS = loadToolDefinitions();
 
 export class ToolDispatcher {
-  constructor(private readonly bridgeServer: EdaBridgeServer) {}
+  constructor(
+    private readonly bridgeServer: EdaBridgeServer,
+    private readonly serverVersion = 'unknown',
+  ) {}
 
   /**
    * 返回工具定义列表
@@ -112,6 +131,32 @@ export class ToolDispatcher {
       // 包装为MCP响应格式
       return this.toToolContent(result);
     } catch (error) {
+      let bridgePath: string | undefined;
+      try {
+        bridgePath = bridgePathForTool(toolCallParams.name);
+      }
+      catch {
+        bridgePath = undefined;
+      }
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorCode = optionalErrorString(error, 'code');
+      const errorTimeoutMs = optionalErrorTimeoutMs(error);
+      process.stderr.write(`${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'error',
+        source: 'mcp-server',
+        version: this.serverVersion,
+        buildDate: SERVER_BUILD_DATE,
+        buildWatermark: `v${this.serverVersion} | ${SERVER_BUILD_DATE}`,
+        toolName: toolCallParams.name,
+        bridgePath,
+        phase: 'dispatch',
+        message: error instanceof Error ? error.message : String(error),
+        errorName: error instanceof Error ? error.name : typeof error,
+        errorCode,
+        errorTimeoutMs,
+        errorStack: errorStack && errorStack.length > 8000 ? `${errorStack.slice(0, 8000)}...` : errorStack,
+      })}\n`);
       throw new Error(`工具 ${toolCallParams.name} 执行失败: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
