@@ -11,7 +11,7 @@
 
 - `bridge_clients`：列出所有已连接 EDA 页面及其官方 API 返回的项目、文档、图页身份。在存在多个客户端，或用户指定了项目/页面时，任何 EDA 读取或修改操作前必须先调用并核对目标。
 - `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
-- EDA 修改超时或已开始的写任务中途失联后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，重启 EDA 宿主以终止旧调用，再打开目标图页，使用 `bridge_recover_client` 验证新客户端身份和当前页状态；不要把恢复请求当成取消 EDA 调用。
+- EDA 修改超时或已开始的写任务中途失联后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`，先用 `bridge_recover_client` 的 `action=recover` 建立恢复会话。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，再重启原 EDA 宿主以终止旧调用，打开目标图页，等待恢复会话建立后的新 Bridge 连接；最后以 `action=readback` 验证新客户端身份和当前页状态。恢复请求本身不能取消 EDA 调用，恢复前已经连接的客户端不能用于本次回读。
 - 原理图当前页器件 ID 回读优先用 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args: [null, false]`；需要器件对象时可用 `eda.sch_PrimitiveComponent.getAll` 搭配同样的参数。这两种精确参数形式可通过恢复期只读隔离，无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。跨页查询不得用于判断当前页的超时操作是否提交。
 - PCB 器件位置恢复回读可用 `api_invoke` 调用 `eda.pcb_PrimitiveComponent.getAll`，传 `args: []`。若原操作是 `eda.pcb_Document.autoLayout`，`bridge_recover_client` 必须以该完整器件列表作为回读；只读 `/context` 不会解除写阻断。先核对活动 PCB 的文档身份，再与超时前的位置快照比较。
 - `schematic_read`：仅在执行器件选型（`component_select`）或器件放置（`component_place`）任务时，需要了解当前页已有器件与网络连接关系时才调用，用于获取辅助上下文。仅覆盖当前激活页面。禁止在原理图检查、审查、功能分析、连线核查等场景调用此工具；此类场景必须使用 `schematic_review`。
@@ -44,7 +44,7 @@
 - `pcb_constraints_query`：按需读取当前规则、命名规则配置、网络规则、网络间规则、区域规则或约束组；查询命名规则配置时必须提供 `configurationName`，查询焊盘对最短线长时使用 `pad_pair_min_wire_length` 和 `padPairGroupName`。
 - `pcb_document_action`：读取 PCB 计算状态、画布/过滤器、选中图元或坐标区域图元，进行坐标转换和画布导航，或执行用户明确要求的保存、飞线计算启停、布线清除、原理图变更导入、JSON/SES 自动布线/布局导入。`clear_routing` 必须指定 `routingType` 并传入 `confirm: true`；导航动作也会改变 EDA 状态，必须先确认用户意图。区域查询必须提供有效边界并使用 `limit` 控制结果大小；导入文件必须使用 Base64，执行后应运行 DRC 并让用户确认结果。
 - `pcb_document_action` 的 `import_changes` 返回 `commitState: "pending_confirmation"` 时，EDA 仅打开原生确认框；必须在 EDA 点击“应用变更”，再用 PCB 器件和网络读回确认导入完成。不得把 `imported: true` 当成已提交。
-- 通过 `api_invoke` 调用 `eda.pcb_Document.autoLayout` 前，先记录当前 PCB UUID，并用无参数 `eda.pcb_PrimitiveComponent.getAll()` 记录全部器件位置和旋转。若布局返回 `commitState: "unknown"`，布局可能已在后台提交；先关闭并重启原 EDA 宿主，保持 MCP Server 运行以保留诊断，再切回同一 PCB，用无参数 `getAll()` 完成受控回读并与调用前快照比较。仅重连 Bridge 不等于终止原生布局；旧连接未断开或其他 PCB、带过滤参数的读回都不会解除写阻断。
+- 通过 `api_invoke` 调用 `eda.pcb_Document.autoLayout` 前，先记录当前 PCB UUID，并用无参数 `eda.pcb_PrimitiveComponent.getAll()` 记录全部器件位置和旋转。若布局返回 `commitState: "unknown"`，布局可能已在后台提交；先从 `bridge_clients` 取得诊断 `requestId` 并调用 `bridge_recover_client action=recover`，然后关闭并重启原 EDA 宿主，保持 MCP Server 运行以保留诊断。恢复会话建立后的新 Bridge 连接同一 PCB 时，用无参数 `getAll()` 完成 `action=readback`，再与调用前快照比较。仅重连 Bridge 不等于终止原生布局；旧连接未断开或其他 PCB、带过滤参数的读回都不会解除写阻断。
 - `eda.pcb_Document.autoRouting` 属于 BETA API。若返回 `routingState: "not_started"` 或 `"incomplete"`，必须检查导线、过孔与 DRC；不得根据调用完成就声称 PCB 已布线。官方示例使用 `nets`，当前 `IPCB_AutoRoutingProps` 类型定义使用 `RoutingNets`；调用前用 `api_search` 检索该类型确认字段。
 - `pcb_net_query`：默认返回网络详情；只需名称时使用 `mode: "names"`，查询单个官方网络时使用 `mode: "exact"` 与原始大小写的 `query`。
 

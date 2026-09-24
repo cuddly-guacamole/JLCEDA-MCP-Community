@@ -17,6 +17,7 @@
 - Server 与 Bridge 超时先后交错、或 EDA 原生自动布局返回提交状态未知时保留恢复诊断，避免重启 Bridge 后绕过位置回读。
 - 原理图导线及 NetPort 的迟到结果若标记 `commitUnknown: true`，继续保留未确认写入诊断，避免另一页面提前再次写入。
 - 所有未确认写操作的恢复回读均要求原 Bridge 连接已经断开；另一页面的新连接不能在旧原生调用仍运行时提前解除隔离。PCB 自动布局仍须重启原 EDA 宿主并读回全部器件位置。
+- 明确恢复顺序：先以 `action=recover` 建立会话，持续挂起或 PCB 自动布局提交未知时再重启原 EDA 宿主，最后使用会话之后的新连接完成 `action=readback`。
 - 恢复目标按 WebSocket 连接身份识别新 Bridge，避免新连接与恢复请求落在同一毫秒时被错误拒绝。
 - `schematic_connectivity_action` 的导线预览按只读分类，超时或断线不再留下未确认写入诊断。
 
