@@ -5,6 +5,7 @@ process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', modu
 require('ts-node/register/transpile-only');
 
 const { handleSchematicConnectivityTask } = require('../src/mcp/schematic-connectivity-handler.ts');
+const { getBridgeTaskHandler } = require('../src/runtime/bridge-handler-registry.ts');
 
 function wire(id, net, line) {
 	return {
@@ -374,6 +375,81 @@ async function main() {
 	assert.equal(createdWithReadbackNoise.ok, true);
 	assert.equal(createdWithReadbackNoise.primitiveVerified, true);
 	assert.equal(createdWithReadbackNoise.commitUnknown, false);
+
+	// The registered Bridge route must report an unknown commit when an EDA write
+	// succeeds but its following primitive read fails. A pre-write failure still throws.
+	const route = getBridgeTaskHandler('/bridge/jlceda/schematic/connectivity');
+	assert.equal(route, handleSchematicConnectivityTask);
+	wires.splice(0, wires.length);
+	ports.splice(0, ports.length);
+	const wireApi = globalThis.eda.sch_PrimitiveWire;
+	const originalWireGetAll = wireApi.getAll;
+	let wireReadAttempts = 0;
+	wireApi.getAll = async () => {
+		if (++wireReadAttempts === 2)
+			throw new Error('wire readback failed');
+		return wires;
+	};
+	const wireWritesBeforeReadbackFailure = wireCreates;
+	const uncertainWire = await route({ action: 'wire_create', line: [0, 0, 10, 0] });
+	assert.equal(wireCreates, wireWritesBeforeReadbackFailure + 1);
+	assert.equal(uncertainWire.ok, false);
+	assert.equal(uncertainWire.reason, 'post_write_readback_failed');
+	assert.match(uncertainWire.error, /wire readback failed/);
+	assert.equal(uncertainWire.commitUnknown, true);
+	assert.equal(uncertainWire.readbackRequired, true);
+	wireApi.getAll = async () => {
+		throw new Error('wire pre-write read failed');
+	};
+	await assert.rejects(route({ action: 'wire_create', line: [20, 0, 30, 0] }), /wire pre-write read failed/);
+	assert.equal(wireCreates, wireWritesBeforeReadbackFailure + 1);
+	wireApi.getAll = originalWireGetAll;
+
+	wires.splice(0, wires.length);
+	const movedPort = { id: 'port-readback-failure', net: 'NET_A', x: 0, y: 0 };
+	ports.splice(0, ports.length, movedPort);
+	const componentApi = globalThis.eda.sch_PrimitiveComponent;
+	const originalComponentGetAll = componentApi.getAll;
+	let moveReadAttempts = 0;
+	componentApi.getAll = async (...args) => {
+		if (++moveReadAttempts === 2)
+			throw new Error('port move readback failed');
+		return originalComponentGetAll(...args);
+	};
+	const uncertainMove = await route({ action: 'netport_move', id: movedPort.id, x: 10, y: 0 });
+	assert.equal(movedPort.x, 10, 'NetPort move completed before the readback error');
+	assert.equal(uncertainMove.ok, false);
+	assert.equal(uncertainMove.reason, 'post_write_readback_failed');
+	assert.match(uncertainMove.error, /port move readback failed/);
+	assert.equal(uncertainMove.commitUnknown, true);
+	componentApi.getAll = async () => {
+		throw new Error('port move pre-write read failed');
+	};
+	await assert.rejects(route({ action: 'netport_move', id: movedPort.id, x: 20, y: 0 }), /port move pre-write read failed/);
+	assert.equal(movedPort.x, 10);
+	componentApi.getAll = originalComponentGetAll;
+
+	ports.splice(0, ports.length);
+	let createReadAttempts = 0;
+	componentApi.getAll = async (...args) => {
+		if (++createReadAttempts === 2)
+			throw new Error('port create readback failed');
+		return originalComponentGetAll(...args);
+	};
+	const portWritesBeforeReadbackFailure = portCreates;
+	const uncertainPort = await route({ action: 'netport_create', net: 'NET_A', x: 20, y: 20 });
+	assert.equal(portCreates, portWritesBeforeReadbackFailure + 1);
+	assert.equal(uncertainPort.ok, false);
+	assert.equal(uncertainPort.reason, 'post_write_readback_failed');
+	assert.match(uncertainPort.error, /port create readback failed/);
+	assert.equal(uncertainPort.commitUnknown, true);
+	assert.equal(uncertainPort.primitiveId, ports[0].id);
+	componentApi.getAll = async () => {
+		throw new Error('port create pre-write read failed');
+	};
+	await assert.rejects(route({ action: 'netport_create', net: 'NET_A', x: 30, y: 30 }), /port create pre-write read failed/);
+	assert.equal(portCreates, portWritesBeforeReadbackFailure + 1);
+	componentApi.getAll = originalComponentGetAll;
 }
 
 main().catch((error) => {

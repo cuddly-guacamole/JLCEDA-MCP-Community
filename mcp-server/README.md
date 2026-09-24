@@ -28,7 +28,7 @@ PCB 器件位置回读可将 `readbackPath` 设为 `/bridge/jlceda/api/invoke`�
 
 Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Server 会将该结果纳入同一受控恢复诊断流程，不要求必须等 Server 自身的备用计时器触发。
 
-`schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；Server 超时后的迟到结果同样保留诊断。需按当前图页回读并完成受控恢复，不能把未知结果当作已确认提交。
+`schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。需按当前图页回读并完成受控恢复，不能把未知结果当作已确认提交。
 
 ## 工具说明
 

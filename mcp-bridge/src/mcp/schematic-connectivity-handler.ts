@@ -8,6 +8,18 @@ type ConnectivityAction = 'wire_preview' | 'wire_create' | 'netport_create' | 'n
 const COORDINATE_EPSILON = 1e-6;
 const MAX_WIRE_LINE_COORDINATES = 512;
 
+function unknownCommitAfterReadback(action: Exclude<ConnectivityAction, 'wire_preview'>, error: unknown, context: Record<string, unknown>): Record<string, unknown> {
+	return {
+		ok: false,
+		action,
+		...context,
+		reason: 'post_write_readback_failed',
+		error: error instanceof Error ? error.message : String(error),
+		commitUnknown: true,
+		readbackRequired: true,
+	};
+}
+
 interface WireState {
 	id: string;
 	net: string;
@@ -310,31 +322,36 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 	if (typeof api.create !== 'function')
 		throw new TypeError('EDA sch_PrimitiveWire.create API is unavailable.');
 	const result = await (api.create as (line: number[], net?: string) => Promise<unknown>).call(api, normalizedLine, net);
-	const after = await readWires(api);
-	const afterIds = new Set(after.map(wire => wire.id));
-	const changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
-	const removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
-	const unexpectedChangedWireIds = changedWireIds.filter(id => beforeById.has(id) && !allowed.has(id));
-	const unexpectedRemovedWireIds = removedWireIds.filter(id => !allowed.has(id));
-	const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
-	const committed = changedWireIds.length > 0 || removedWireIds.length > 0;
-	return {
-		ok: committed && unexpectedChangedWireIds.length === 0 && unexpectedRemovedWireIds.length === 0,
-		action,
-		committed,
-		commitUnknown: !committed || unexpectedChangedWireIds.length > 0 || unexpectedRemovedWireIds.length > 0,
-		returnedPrimitiveId,
-		returnedExistingWire: beforeById.has(returnedPrimitiveId),
-		net: net ?? null,
-		changedWireIds,
-		removedWireIds,
-		unexpectedChangedWireIds,
-		unexpectedRemovedWireIds,
-		touches,
-		portTouches,
-		labelTouches,
-		readbackRequired: true,
-	};
+	try {
+		const after = await readWires(api);
+		const afterIds = new Set(after.map(wire => wire.id));
+		const changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
+		const removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
+		const unexpectedChangedWireIds = changedWireIds.filter(id => beforeById.has(id) && !allowed.has(id));
+		const unexpectedRemovedWireIds = removedWireIds.filter(id => !allowed.has(id));
+		const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
+		const committed = changedWireIds.length > 0 || removedWireIds.length > 0;
+		return {
+			ok: committed && unexpectedChangedWireIds.length === 0 && unexpectedRemovedWireIds.length === 0,
+			action,
+			committed,
+			commitUnknown: !committed || unexpectedChangedWireIds.length > 0 || unexpectedRemovedWireIds.length > 0,
+			returnedPrimitiveId,
+			returnedExistingWire: beforeById.has(returnedPrimitiveId),
+			net: net ?? null,
+			changedWireIds,
+			removedWireIds,
+			unexpectedChangedWireIds,
+			unexpectedRemovedWireIds,
+			touches,
+			portTouches,
+			labelTouches,
+			readbackRequired: true,
+		};
+	}
+	catch (error: unknown) {
+		return unknownCommitAfterReadback('wire_create', error, { returnedPrimitiveId: String(getSyncState(result, 'getState_PrimitiveId', '')), net: net ?? null });
+	}
 }
 
 async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<string, unknown>): Promise<unknown> {
@@ -367,21 +384,26 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 	(primitive.setState_X as (value: number) => unknown).call(primitive, x);
 	(primitive.setState_Y as (value: number) => unknown).call(primitive, y);
 	await Promise.resolve((primitive.done as () => unknown).call(primitive));
-	const observed = (await readComponents(api)).find(component => component.id === id);
-	const verified = Boolean(observed && samePoint(observed, target) && observed.net === current.net && observed.type === 'netport');
-	return {
-		ok: verified,
-		action: 'netport_move',
-		id,
-		net: current.net,
-		from: { x: current.x, y: current.y },
-		to: { x, y },
-		observed: observed ? { x: observed.x, y: observed.y, net: observed.net } : null,
-		netlistReadback: await readTargetNetwork(current.net),
-		commitUnknown: !verified,
-		readbackRequired: true,
-		semanticScope: 'current_schematic_page_hierarchical_port',
-	};
+	try {
+		const observed = (await readComponents(api)).find(component => component.id === id);
+		const verified = Boolean(observed && samePoint(observed, target) && observed.net === current.net && observed.type === 'netport');
+		return {
+			ok: verified,
+			action: 'netport_move',
+			id,
+			net: current.net,
+			from: { x: current.x, y: current.y },
+			to: { x, y },
+			observed: observed ? { x: observed.x, y: observed.y, net: observed.net } : null,
+			netlistReadback: await readTargetNetwork(current.net),
+			commitUnknown: !verified,
+			readbackRequired: true,
+			semanticScope: 'current_schematic_page_hierarchical_port',
+		};
+	}
+	catch (error: unknown) {
+		return unknownCommitAfterReadback('netport_move', error, { id, net: current.net, from: { x: current.x, y: current.y }, to: target });
+	}
 }
 
 async function readTargetNetwork(net: string): Promise<unknown> {
@@ -431,22 +453,27 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 		return { ok: false, action: 'netport_create', reason: 'existing_port_direction_unverified', net, requestedDirection: direction, target: { x, y }, conflictingPrimitiveIds: [existingPort.id] };
 	const created = await (api.createNetPort as (direction: 'IN' | 'OUT' | 'BI', net: string, x: number, y: number) => Promise<unknown>).call(api, direction, net, x, y);
 	const returnedId = String(getSyncState(created, 'getState_PrimitiveId', ''));
-	const beforeIds = new Set(before.map(component => component.id));
-	const observed = (await readComponents(api)).find(component => !beforeIds.has(component.id) && component.type === 'netport' && component.net === net && samePoint(component, target) && (!returnedId || component.id === returnedId));
-	const verified = Boolean(observed && observed.type === 'netport' && observed.net === net && samePoint(observed, target));
-	const netlistReadback = await readTargetNetwork(net);
-	return {
-		ok: verified,
-		action: 'netport_create',
-		primitiveId: observed?.id || returnedId,
-		direction,
-		net,
-		position: { x, y },
-		primitiveVerified: verified,
-		netlistReadback,
-		commitUnknown: !verified,
-		semanticScope: 'current_schematic_page_hierarchical_port',
-	};
+	try {
+		const beforeIds = new Set(before.map(component => component.id));
+		const observed = (await readComponents(api)).find(component => !beforeIds.has(component.id) && component.type === 'netport' && component.net === net && samePoint(component, target) && (!returnedId || component.id === returnedId));
+		const verified = Boolean(observed && observed.type === 'netport' && observed.net === net && samePoint(observed, target));
+		const netlistReadback = await readTargetNetwork(net);
+		return {
+			ok: verified,
+			action: 'netport_create',
+			primitiveId: observed?.id || returnedId,
+			direction,
+			net,
+			position: { x, y },
+			primitiveVerified: verified,
+			netlistReadback,
+			commitUnknown: !verified,
+			semanticScope: 'current_schematic_page_hierarchical_port',
+		};
+	}
+	catch (error: unknown) {
+		return unknownCommitAfterReadback('netport_create', error, { primitiveId: returnedId, direction, net, position: target });
+	}
 }
 
 export async function handleSchematicConnectivityTask(payload: unknown): Promise<unknown> {
