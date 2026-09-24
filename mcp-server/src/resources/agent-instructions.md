@@ -41,7 +41,7 @@
 - `pcb_constraints_query`：按需读取当前规则、命名规则配置、网络规则、网络间规则、区域规则或约束组；查询命名规则配置时必须提供 `configurationName`，查询焊盘对最短线长时使用 `pad_pair_min_wire_length` 和 `padPairGroupName`。
 - `pcb_document_action`：读取 PCB 计算状态、画布/过滤器、选中图元或坐标区域图元，进行坐标转换和画布导航，或执行用户明确要求的保存、飞线计算启停、布线清除、原理图变更导入、JSON/SES 自动布线/布局导入。`clear_routing` 必须指定 `routingType` 并传入 `confirm: true`；导航动作也会改变 EDA 状态，必须先确认用户意图。区域查询必须提供有效边界并使用 `limit` 控制结果大小；导入文件必须使用 Base64，执行后应运行 DRC 并让用户确认结果。
 - `pcb_document_action` 的 `import_changes` 返回 `commitState: "pending_confirmation"` 时，EDA 仅打开原生确认框；必须在 EDA 点击“应用变更”，再用 PCB 器件和网络读回确认导入完成。不得把 `imported: true` 当成已提交。
-- 通过 `api_invoke` 调用 `eda.pcb_Document.autoLayout` 前，先用 `eda.pcb_PrimitiveComponent.getAll` 记录器件位置和旋转。若布局返回 `commitState: "unknown"`，布局可能已经在后台提交；再次布局前读回并与调用前快照比较。`retryBlocked: true` 表示 Bridge 暂不允许重复布局。
+- 通过 `api_invoke` 调用 `eda.pcb_Document.autoLayout` 前，先记录当前 PCB UUID，并用无参数 `eda.pcb_PrimitiveComponent.getAll()` 记录全部器件位置和旋转。若布局返回 `commitState: "unknown"`，布局可能已在后台提交；必须切回同一 PCB，用无参数 `getAll()` 读回并与调用前快照比较。其他 PCB 或带过滤参数的读回不会解除 `retryBlocked`。
 - `eda.pcb_Document.autoRouting` 属于 BETA API。若返回 `routingState: "not_started"` 或 `"incomplete"`，必须检查导线、过孔与 DRC；不得根据调用完成就声称 PCB 已布线。官方示例使用 `nets`，当前 `IPCB_AutoRoutingProps` 类型定义使用 `RoutingNets`；调用前用 `api_search` 检索该类型确认字段。
 - `pcb_net_query`：默认返回网络详情；只需名称时使用 `mode: "names"`，查询单个官方网络时使用 `mode: "exact"` 与原始大小写的 `query`。
 

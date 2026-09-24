@@ -14,7 +14,12 @@ import { getSyncState, isPlainObjectRecord, toSafeErrorMessage, toSerializableAs
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
 const PCB_COMPONENT_GET_ALL = 'eda.pcb_primitivecomponent.getall';
-let pcbAutoLayoutReadbackRequired = false;
+let pendingAutoLayoutPcbUuid: string | undefined;
+
+async function currentPcbUuid(): Promise<string | undefined> {
+	const pcb = await Promise.resolve(eda.dmt_Pcb.getCurrentPcbInfo());
+	return isPlainObjectRecord(pcb) && typeof pcb.uuid === 'string' ? pcb.uuid : undefined;
+}
 
 // 在对象上解析段名，要求精确匹配。
 function resolveSegmentKey(target: Record<string, unknown>, segment: string): string {
@@ -143,35 +148,43 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		return { apiFullName: resolvedPath, result: failedIds.length === 0, deletedIds, failedIds };
 	}
 
-	if (normalizedPath === PCB_AUTO_LAYOUT && pcbAutoLayoutReadbackRequired) {
+	if (normalizedPath === PCB_AUTO_LAYOUT && pendingAutoLayoutPcbUuid) {
 		return {
 			apiFullName: resolvedPath,
 			ok: false,
 			commitState: 'unknown',
 			retryBlocked: true,
-			verification: 'Read back PCB component positions with eda.pcb_PrimitiveComponent.getAll before another autoLayout call.',
+			pcbUuid: pendingAutoLayoutPcbUuid,
+			verification: 'Activate the timed-out PCB and read all components with eda.pcb_PrimitiveComponent.getAll() before another autoLayout call.',
 		};
 	}
+	const layoutPcbUuid = normalizedPath === PCB_AUTO_LAYOUT ? await currentPcbUuid() : undefined;
+	if (normalizedPath === PCB_AUTO_LAYOUT && !layoutPcbUuid)
+		throw new Error('无法确认当前 PCB 身份，未启动自动布局。');
+	const readbackPcbUuid = normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && pendingAutoLayoutPcbUuid
+		? await currentPcbUuid()
+		: undefined;
 	let invokeResult: unknown;
 	try {
 		invokeResult = await Promise.resolve(callable.apply(thisArg, invokeArgs));
 	}
 	catch (error: unknown) {
 		if (normalizedPath === PCB_AUTO_LAYOUT && /RPC Call autoLayout Timed Out/i.test(toSafeErrorMessage(error))) {
-			pcbAutoLayoutReadbackRequired = true;
+			pendingAutoLayoutPcbUuid = layoutPcbUuid;
 			return {
 				apiFullName: resolvedPath,
 				ok: false,
 				commitState: 'unknown',
 				retryBlocked: true,
+				pcbUuid: layoutPcbUuid,
 				error: toSafeErrorMessage(error),
-				verification: 'Auto layout may still commit. Read back PCB component positions with eda.pcb_PrimitiveComponent.getAll before retrying.',
+				verification: 'Auto layout may still commit. Activate this PCB and read all component positions with eda.pcb_PrimitiveComponent.getAll() before retrying.',
 			};
 		}
 		throw error;
 	}
-	if (normalizedPath === PCB_COMPONENT_GET_ALL && pcbAutoLayoutReadbackRequired && Array.isArray(invokeResult)) {
-		pcbAutoLayoutReadbackRequired = false;
+	if (normalizedPath === PCB_COMPONENT_GET_ALL && pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid && Array.isArray(invokeResult)) {
+		pendingAutoLayoutPcbUuid = undefined;
 		return {
 			apiFullName: resolvedPath,
 			result: await toSerializableAsync(invokeResult),

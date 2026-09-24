@@ -651,6 +651,9 @@ async function main() {
 	assert.match(String(storageErrors[0][1]), /storage unavailable/);
 	console.error = originalConsoleError;
 	globalThis.eda.sys_Storage.setExtensionUserConfig = originalStorageWrite;
+	const originalCurrentPcbInfo = globalThis.eda.dmt_Pcb.getCurrentPcbInfo;
+	let activePcbUuid = 'pcb-1';
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => ({ uuid: activePcbUuid });
 	let pcbAutoLayoutCalls = 0;
 	globalThis.eda.pcb_Document.autoLayout = async () => {
 		pcbAutoLayoutCalls += 1;
@@ -665,12 +668,21 @@ async function main() {
 	globalThis.eda.pcb_PrimitiveComponent = {
 		async getAll() { return [{ uuid: 'R1', x: 10, y: 20, rotation: 90 }]; },
 	};
-	const layoutReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] });
+	const filteredReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] });
+	assert.equal(filteredReadback.autoLayoutReadbackPerformed, undefined);
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] })).retryBlocked, true);
+	activePcbUuid = 'pcb-2';
+	const otherPcbReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+	assert.equal(otherPcbReadback.autoLayoutReadbackPerformed, undefined);
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] })).retryBlocked, true);
+	activePcbUuid = 'pcb-1';
+	const layoutReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
 	assert.equal(layoutReadback.autoLayoutReadbackPerformed, true);
 	assert.equal(layoutReadback.result[0].rotation, 90);
 	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
 	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(completedLayout.result.success, true);
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = originalCurrentPcbInfo;
 	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: false, successNetsCount: 0, duration: 0, failedNets: ['VCC'] });
 	const failedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });
 	assert.equal(failedRouting.ok, false);
