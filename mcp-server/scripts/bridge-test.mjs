@@ -478,11 +478,23 @@ try {
     /writes are blocked pending recovery readback/,
   );
   assert.deepEqual(
+    await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] }, 2000),
+    { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
+  );
+  assert.deepEqual(
     await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] }, 2000),
+    { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
+  );
+  assert.deepEqual(
+    await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, false] }, 2000),
     { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
   );
   await assert.rejects(
     recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, true] }, 2000),
+    /writes are blocked pending recovery readback/,
+  );
+  await assert.rejects(
+    recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [1, false] }, 2000),
     /writes are blocked pending recovery readback/,
   );
   await assert.rejects(
@@ -506,7 +518,7 @@ try {
     expectedDocumentUuid: 'recovery-document',
     expectedProjectUuid: 'recovery-project',
     readbackPath: '/bridge/jlceda/api/invoke',
-    readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] },
+    readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] },
   }, 2000);
   assert.equal(recoveryReadback.readbackVerified, true);
   assert.equal(recoveryReadback.readback.path, '/bridge/jlceda/api/invoke');

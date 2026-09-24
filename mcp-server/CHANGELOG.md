@@ -8,7 +8,7 @@
 - 新增 `schematic_connectivity_action`，提供导线交点预览、需显式允许已有导线接触的创建流程，以及当前图页 NetPort 创建和移动入口。
 - 按最近心跳判定 Bridge 客户端是否就绪，并让心跳停滞的连接超时退出；`bridge_clients` 增加 `lastHeartbeatMsAgo`。
 - 已开始的写任务若因 EDA 客户端或 MCP 调用方失联而中断，保留未确认修改诊断；重连隔离时间届满仍需恢复回读才能再次写入。
-- 恢复隔离期间允许无参数的当前页器件 ID / 器件查询，并可用器件 ID 查询作为受控恢复回读；其余 `api_invoke` 仍按写入隔离。
+- 恢复隔离期间允许 `getAllPrimitiveId` / `getAll` 以严格的 `args:[null,false]` 查询当前页器件，并可用于受控恢复回读；无参数调用继续兼容，其余 `api_invoke` 仍按写入隔离。
 
 ## [2.3.1] - 2026-09-24
 

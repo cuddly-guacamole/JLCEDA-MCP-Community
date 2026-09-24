@@ -8,6 +8,7 @@ export interface BridgeOperation {
 	readOnly?: boolean;
 	readOnlyUnless?: { field: string; equals: unknown };
 	readOnlyIfNoArgsApiFullNames?: string[];
+	readOnlyIfCurrentPageArgsApiFullNames?: string[];
 }
 
 type FieldKind = 'any' | 'bridge-path' | 'context' | 'debug-switch' | 'finite-number' | 'non-empty-string' | 'non-negative-integer' | 'positive-integer' | 'record' | 'role' | 'string' | 'task-error';
@@ -50,10 +51,15 @@ export function bridgePathForTool(toolName: string): string {
 
 export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean {
 	const operation = operationForBridgePath(path);
-	if (operation?.readOnlyIfNoArgsApiFullNames) {
-		return isRecord(payload)
-			&& operation.readOnlyIfNoArgsApiFullNames.includes(payload.apiFullName as string)
-			&& (!Array.isArray(payload.args) || payload.args.length === 0);
+	if (operation?.readOnlyIfNoArgsApiFullNames || operation?.readOnlyIfCurrentPageArgsApiFullNames) {
+		if (!isRecord(payload))
+			return false;
+		const apiFullName = payload.apiFullName as string;
+		const args = payload.args;
+		const noArgs = !Array.isArray(args) || args.length === 0;
+		const currentPageArgs = Array.isArray(args) && args.length === 2 && args[0] === null && args[1] === false;
+		return (noArgs && (operation.readOnlyIfNoArgsApiFullNames?.includes(apiFullName) ?? false))
+			|| (currentPageArgs && (operation.readOnlyIfCurrentPageArgsApiFullNames?.includes(apiFullName) ?? false));
 	}
 	if (!operation?.readOnly)
 		return false;
