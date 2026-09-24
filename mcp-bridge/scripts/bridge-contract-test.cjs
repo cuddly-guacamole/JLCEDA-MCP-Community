@@ -5,6 +5,7 @@ process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', modu
 require('ts-node/register/transpile-only');
 
 const {
+	isReadOnlyBridgeRequest,
 	resolveContractTimeoutMs,
 	validateBridgeServerMessage,
 } = require('../src/bridge/bridge-contract.ts');
@@ -23,6 +24,13 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/api/invoke', { timeoutMs: 
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', {}), 30000);
 assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', { timeoutMs: 4999 }), /5000/);
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/select', { timeoutMs: 1 }), 25000);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'check' }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'fix' }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, true] }), false);
 
 assert.equal(validateBridgeServerMessage({
 	type: 'bridge/task',

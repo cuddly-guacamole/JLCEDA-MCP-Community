@@ -12,9 +12,13 @@
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由，不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
-`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复：先显式确认并请求新的 Bridge 运行时世代，再用新 `clientId` 做文档身份校验和只读回读；回读完成前，EDA 写操作都会被阻止，但普通只读查询仍可执行。`schematic_layout_check` 只有默认检查模式是只读，`mode: "fix"` 会按写操作隔离。
+`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`。若原 EDA Promise 一直挂起，须重启 EDA 宿主，终止旧调用后再打开目标图页；保持 MCP Server 运行以保留诊断。随后以 `action=recover` 建立恢复会话，再用新 `clientId` 做文档身份校验和当前页只读回读。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 
 恢复时必须从 `bridge_clients` 选择具体超时写操作的 `requestId`；`readbackPath` 与 `readbackPayload` 始终只能描述只读操作，恢复目标客户端在首次回读后锁定。多个未解决的超时写操作会继续保持写阻断，直到各自收到迟到结果或完成受控恢复；未确认完成的写诊断不会因 TTL 自动放行写入。
+
+已开始的写任务若因页面失联、心跳停滞或 MCP 调用方断开而无法确认完成，也会留下同样的诊断；`uncertaintyReason` 标明失联原因。重连等待期届满不会自动解除写阻断。
+
+原理图当前页器件 ID 回读可使用 `readbackPath: "/bridge/jlceda/api/invoke"` 和 `readbackPayload: {"apiFullName":"eda.sch_PrimitiveComponent.getAllPrimitiveId","args":[]}`。只有此方法及 `getAll` 的无参数调用被视作只读；`allSchematicPages: true` 不适合当前页恢复判断。`bridge_clients` 的 `ready` 依据最近心跳判定，`lastHeartbeatMsAgo` 可用于识别仅有其他消息但心跳已停的客户端。
 
 Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Server 会将该结果纳入同一受控恢复诊断流程，不要求必须等 Server 自身的备用计时器触发。
 

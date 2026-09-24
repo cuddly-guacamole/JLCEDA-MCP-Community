@@ -94,7 +94,7 @@ function attachTaskResponder(socket, clientId, transform) {
   });
 }
 
-async function registerEda(url, clientId, context = undefined) {
+async function registerEda(url, clientId, context = undefined, sendInitialHeartbeat = true) {
   const socket = await connect(url);
   const welcome = waitForMessage(socket, (message) => message.type === 'bridge/welcome');
   const role = waitForMessage(socket, (message) => message.type === 'bridge/role');
@@ -104,9 +104,11 @@ async function registerEda(url, clientId, context = undefined) {
   assert.equal(welcomeMessage.protocolVersion, 1);
   const initialRole = await role;
   socket.send(JSON.stringify({ type: 'bridge/ready', clientId, readyAt: Date.now() }));
-  const heartbeat = waitForMessage(socket, (message) => message.type === 'bridge/heartbeat-ack');
-  socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId, sentAt: Date.now() }));
-  await heartbeat;
+  if (sendInitialHeartbeat) {
+    const heartbeat = waitForMessage(socket, (message) => message.type === 'bridge/heartbeat-ack');
+    socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId, sentAt: Date.now() }));
+    await heartbeat;
+  }
   return { socket, initialRole };
 }
 
@@ -118,6 +120,7 @@ const tokenQuery = '?token=bridge-test-token';
 const mainServer = new EdaBridgeServer(port);
 const secondaryServer = new EdaBridgeServer(port);
 let expiryServer;
+let livenessServer;
 let queueServer;
 let recoveryServer;
 let disconnectServer;
@@ -474,6 +477,14 @@ try {
     recoveryServer.request('/bridge/test/write-blocked', {}, 2000),
     /writes are blocked pending recovery readback/,
   );
+  assert.deepEqual(
+    await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] }, 2000),
+    { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
+  );
+  await assert.rejects(
+    recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, true] }, 2000),
+    /writes are blocked pending recovery readback/,
+  );
   await assert.rejects(
     recoveryServer.request('/bridge/admin/recover-client', {
       action: 'readback',
@@ -494,9 +505,11 @@ try {
     clientId: 'recovered-page',
     expectedDocumentUuid: 'recovery-document',
     expectedProjectUuid: 'recovery-project',
-    readbackPath: '/bridge/jlceda/schematic/read',
+    readbackPath: '/bridge/jlceda/api/invoke',
+    readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] },
   }, 2000);
   assert.equal(recoveryReadback.readbackVerified, true);
+  assert.equal(recoveryReadback.readback.path, '/bridge/jlceda/api/invoke');
   assert.deepEqual(
     await recoveryServer.request('/bridge/test/recovery-write-after-readback', {}, 2000),
     { source: 'replacement', path: '/bridge/test/recovery-write-after-readback' },
@@ -617,6 +630,7 @@ try {
     mcpSocket.once('error', reject);
   });
   await mcpReady;
+  const disconnectedTaskStarted = waitForMessage(mcpSocket, message => message.type === 'bridge/task-started' && message.requestId === 'disconnected-mcp-request');
   mcpSocket.send(JSON.stringify({
     type: 'bridge/task',
     requestId: 'disconnected-mcp-request',
@@ -625,6 +639,7 @@ try {
     timeoutMs: 300,
   }));
   await waitUntil(() => receivedDisconnectedTask);
+  await disconnectedTaskStarted;
   mcpSocket.close();
   await waitUntil(async () => {
     try {
@@ -635,8 +650,8 @@ try {
     }
   });
   assert.deepEqual(
-    await disconnectServer.request('/bridge/test/disconnected-recovered', {}, 2000),
-    { source: 'disconnect-replacement', path: '/bridge/test/disconnected-recovered' },
+    await disconnectServer.request('/bridge/jlceda/context', {}, 2000),
+    { source: 'disconnect-replacement', path: '/bridge/jlceda/context' },
   );
   disconnectReconnected = await registerEda(
     `ws://127.0.0.1:${disconnectPort}/bridge/ws${tokenQuery}`,
@@ -648,13 +663,14 @@ try {
   }));
   await disconnectServer.request('/bridge/admin/select-client', { clientId: 'disconnect-active' }, 2000);
   await assert.rejects(
-    disconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000),
+    disconnectServer.request('/bridge/jlceda/context', {}, 2000),
     /quarantined after reconnect/,
   );
   await new Promise((resolve) => setTimeout(resolve, 350));
+  await assert.rejects(disconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000), /writes are blocked pending recovery readback/);
   assert.deepEqual(
-    await disconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000),
-    { source: 'disconnect-reconnected', path: '/bridge/jlceda/api/invoke' },
+    await disconnectServer.request('/bridge/jlceda/context', {}, 2000),
+    { source: 'disconnect-reconnected', path: '/bridge/jlceda/context' },
   );
   disconnectActive.socket.close();
   disconnectActive = undefined;
@@ -692,8 +708,11 @@ try {
   await assert.rejects(edaFirstPending, /disconnected/);
   await waitUntil(async () => {
     const snapshot = await edaFirstServer.request('/bridge/admin/clients', {}, 2000);
-    return snapshot.clients.length === 0;
+    return snapshot.clients.every(client => !client.ready);
   });
+  const lostEdaDiagnostic = (await edaFirstServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+  assert.equal(lostEdaDiagnostic.mutating, true);
+  assert.equal(lostEdaDiagnostic.uncertaintyReason, 'Active EDA client disconnected');
   edaFirstNew = await registerEda(
     `ws://127.0.0.1:${edaFirstPort}/bridge/ws${tokenQuery}`,
     'eda-first-page',
@@ -703,13 +722,14 @@ try {
     path: message.path,
   }));
   await assert.rejects(
-    edaFirstServer.request('/bridge/jlceda/api/invoke', {}, 2000),
+    edaFirstServer.request('/bridge/jlceda/context', {}, 2000),
     /quarantined after reconnect/,
   );
   await new Promise((resolve) => setTimeout(resolve, 350));
+  await assert.rejects(edaFirstServer.request('/bridge/jlceda/api/invoke', {}, 2000), /writes are blocked pending recovery readback/);
   assert.deepEqual(
-    await edaFirstServer.request('/bridge/jlceda/api/invoke', {}, 2000),
-    { source: 'eda-first-reconnected', path: '/bridge/jlceda/api/invoke' },
+    await edaFirstServer.request('/bridge/jlceda/context', {}, 2000),
+    { source: 'eda-first-reconnected', path: '/bridge/jlceda/context' },
   );
   edaFirstOld = undefined;
   edaFirstNew.socket.close();
@@ -755,7 +775,7 @@ try {
   await assert.rejects(queuedDisconnectSecond, /disconnected/);
   await waitUntil(async () => {
     const snapshot = await queuedDisconnectServer.request('/bridge/admin/clients', {}, 2000);
-    return snapshot.clients.length === 0;
+    return snapshot.clients.every(client => !client.ready);
   });
   queuedDisconnectNew = await registerEda(
     `ws://127.0.0.1:${queuedDisconnectPort}/bridge/ws${tokenQuery}`,
@@ -766,13 +786,14 @@ try {
     path: message.path,
   }));
   await assert.rejects(
-    queuedDisconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000),
+    queuedDisconnectServer.request('/bridge/jlceda/context', {}, 2000),
     /quarantined after reconnect/,
   );
   await new Promise((resolve) => setTimeout(resolve, 800));
+  await assert.rejects(queuedDisconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000), /writes are blocked pending recovery readback/);
   assert.deepEqual(
-    await queuedDisconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000),
-    { source: 'queued-disconnect-reconnected', path: '/bridge/jlceda/api/invoke' },
+    await queuedDisconnectServer.request('/bridge/jlceda/context', {}, 2000),
+    { source: 'queued-disconnect-reconnected', path: '/bridge/jlceda/context' },
   );
   queuedDisconnectOld = undefined;
   queuedDisconnectNew.socket.close();
@@ -823,18 +844,19 @@ try {
   await reconnectPendingAssertion;
   await reconnectServer.request('/bridge/admin/select-client', { clientId: 'reconnect-target' }, 2000);
   assert.deepEqual(
-    await reconnectServer.request('/bridge/test/reconnect-recovered', {}, 2000),
-    { source: 'reconnect-target', path: '/bridge/test/reconnect-recovered' },
+    await reconnectServer.request('/bridge/jlceda/context', {}, 2000),
+    { source: 'reconnect-target', path: '/bridge/jlceda/context' },
   );
   await reconnectServer.request('/bridge/admin/select-client', { clientId: 'reconnect-page' }, 2000);
   await assert.rejects(
-    reconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000),
+    reconnectServer.request('/bridge/jlceda/context', {}, 2000),
     /quarantined after reconnect/,
   );
   await new Promise((resolve) => setTimeout(resolve, 1050));
+  await assert.rejects(reconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000), /writes are blocked pending recovery readback/);
   assert.deepEqual(
-    await reconnectServer.request('/bridge/jlceda/api/invoke', {}, 2000),
-    { source: 'reconnect-page-new', path: '/bridge/jlceda/api/invoke' },
+    await reconnectServer.request('/bridge/jlceda/context', {}, 2000),
+    { source: 'reconnect-page-new', path: '/bridge/jlceda/context' },
   );
   reconnectOld.socket.close();
   reconnectOld = undefined;
@@ -852,12 +874,47 @@ try {
     `ws://127.0.0.1:${expiryPort}/bridge/ws${tokenQuery}`,
     'stale-page',
   );
-  const [staleCloseCode] = await new Promise((resolve) => {
-    stale.socket.once('close', (...args) => resolve(args));
-  });
+  const nonHeartbeatTraffic = setInterval(() => {
+    if (stale.socket.readyState === WebSocket.OPEN)
+      stale.socket.send(JSON.stringify({ type: 'bridge/ready', clientId: 'stale-page', readyAt: Date.now() }));
+  }, 50);
+  const [staleCloseCode] = await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('stale heartbeat peer did not close')), 2000);
+    stale.socket.once('close', (...args) => {
+      clearTimeout(timeout);
+      resolve(args);
+    });
+  }).finally(() => clearInterval(nonHeartbeatTraffic));
   assert.equal(staleCloseCode, 4000);
   expiryServer.close();
   expiryServer = undefined;
+
+  const livenessPort = await reservePort();
+  livenessServer = new EdaBridgeServer(livenessPort, { peerTtlMs: 400, peerSweepIntervalMs: 1000 });
+  await livenessServer.start();
+  const livenessPeer = await registerEda(`ws://127.0.0.1:${livenessPort}/bridge/ws${tokenQuery}`, 'liveness-page', undefined, false);
+  await waitUntil(async () => (await livenessServer.request('/bridge/admin/clients', {}, 2000)).clients[0].ready === true);
+  const initialHeartbeat = waitForMessage(livenessPeer.socket, message => message.type === 'bridge/heartbeat-ack');
+  livenessPeer.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'liveness-page', sentAt: Date.now() }));
+  await initialHeartbeat;
+  await new Promise(resolve => setTimeout(resolve, 450));
+  livenessPeer.socket.send(JSON.stringify({ type: 'bridge/ready', clientId: 'liveness-page', readyAt: Date.now() }));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const staleHeartbeat = await livenessServer.request('/bridge/admin/clients', {}, 2000);
+  assert.equal(staleHeartbeat.clients[0].ready, false, 'recent non-heartbeat traffic must not make a stale client ready');
+  assert(staleHeartbeat.clients[0].lastHeartbeatMsAgo >= 400);
+  await assert.rejects(
+    livenessServer.request('/bridge/admin/select-client', { clientId: 'liveness-page' }, 2000),
+    /not connected and ready/,
+  );
+  await assert.rejects(livenessServer.request('/bridge/jlceda/context', {}, 2000), /No ready EDA client connected/);
+  const freshHeartbeat = waitForMessage(livenessPeer.socket, message => message.type === 'bridge/heartbeat-ack');
+  livenessPeer.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'liveness-page', sentAt: Date.now() }));
+  await freshHeartbeat;
+  assert.equal((await livenessServer.request('/bridge/admin/clients', {}, 2000)).clients[0].ready, true);
+  livenessPeer.socket.close();
+  livenessServer.close();
+  livenessServer = undefined;
 
   mainServer.close();
   await waitUntil(() => secondaryServer.getMode() === 'main');
@@ -891,6 +948,7 @@ try {
   disconnectedRecoveryOld?.socket.close();
   disconnectedRecoveryTarget?.socket.close();
   expiryServer?.close();
+  livenessServer?.close();
   queueServer?.close();
   recoveryServer?.close();
   disconnectServer?.close();

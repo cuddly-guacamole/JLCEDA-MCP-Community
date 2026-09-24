@@ -7,6 +7,7 @@ export interface BridgeOperation {
 	timeoutPolicy?: 'default' | 'api' | 'standard-read' | 'extended-read';
 	readOnly?: boolean;
 	readOnlyUnless?: { field: string; equals: unknown };
+	readOnlyIfNoArgsApiFullNames?: string[];
 }
 
 type FieldKind = 'any' | 'bridge-path' | 'context' | 'debug-switch' | 'finite-number' | 'non-empty-string' | 'non-negative-integer' | 'positive-integer' | 'record' | 'role' | 'string' | 'task-error';
@@ -45,6 +46,20 @@ export function bridgePathForTool(toolName: string): string {
 		throw new Error(`Unknown Bridge tool: ${toolName}`);
 	}
 	return path;
+}
+
+export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean {
+	const operation = operationForBridgePath(path);
+	if (operation?.readOnlyIfNoArgsApiFullNames) {
+		return isRecord(payload)
+			&& operation.readOnlyIfNoArgsApiFullNames.includes(payload.apiFullName as string)
+			&& (!Array.isArray(payload.args) || payload.args.length === 0);
+	}
+	if (!operation?.readOnly)
+		return false;
+	if (!operation.readOnlyUnless)
+		return true;
+	return !isRecord(payload) || payload[operation.readOnlyUnless.field] !== operation.readOnlyUnless.equals;
 }
 
 export function resolveContractTimeoutMs(path: string, payload: unknown): number {

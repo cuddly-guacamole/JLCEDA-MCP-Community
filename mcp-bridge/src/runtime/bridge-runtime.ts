@@ -12,7 +12,7 @@
 import type { BridgeClientContext, BridgeDebugSwitch, BridgeRole, BridgeServerRoleMessage } from '../bridge/protocol.ts';
 import type { UnifiedLogEntry } from '../logging/log.ts';
 import extensionConfig from '../../extension.json';
-import { operationForBridgePath } from '../bridge/bridge-contract.ts';
+import { isReadOnlyBridgeRequest, operationForBridgePath } from '../bridge/bridge-contract.ts';
 import { getConfiguredMcpUrl, getMcpServerUrlChangedTopic } from '../bridge/config.ts';
 import { BridgeLogDispatchPipeline } from '../logging/log-dispatch.ts';
 import { bridgeLogPipeline } from '../logging/log.ts';
@@ -272,7 +272,8 @@ function applyRole(message: BridgeServerRoleMessage): void {
 // 调度任务执行并回传结果。
 function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
-	if (controlledRecoveryPending) {
+	const readOnly = isReadOnlyBridgeRequest(task.path, task.payload);
+	if (controlledRecoveryPending && !readOnly) {
 		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 			message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
@@ -280,7 +281,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		return;
 	}
 	const activeQuarantine = taskQuarantine.getActive();
-	if (activeQuarantine) {
+	if (activeQuarantine && !readOnly) {
 		const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
 		writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
@@ -290,7 +291,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 	}
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
-		if (controlledRecoveryPending) {
+		if (controlledRecoveryPending && !readOnly) {
 			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
@@ -298,7 +299,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			return;
 		}
 		const activeQuarantine = taskQuarantine.getActive();
-		if (activeQuarantine) {
+		if (activeQuarantine && !readOnly) {
 			const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
 			writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {

@@ -171,7 +171,11 @@
 			"toolName": "api_invoke",
 			"path": "/bridge/jlceda/api/invoke",
 			"owner": "bridge",
-			"timeoutPolicy": "api"
+			"timeoutPolicy": "api",
+			"readOnlyIfNoArgsApiFullNames": [
+				"eda.sch_PrimitiveComponent.getAllPrimitiveId",
+				"eda.sch_PrimitiveComponent.getAll"
+			]
 		},
 		{
 			"toolName": "eda_context",

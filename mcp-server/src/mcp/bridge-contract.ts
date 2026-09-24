@@ -18,6 +18,7 @@ export interface BridgeOperation {
   timeoutPolicy?: TimeoutPolicyName;
   readOnly?: boolean;
   readOnlyUnless?: { field: string; equals: unknown };
+  readOnlyIfNoArgsApiFullNames?: string[];
 }
 
 interface BridgeContract {
@@ -100,6 +101,11 @@ export function bridgeTimeoutForTool(toolName: string, payload: Record<string, u
 
 export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean {
   const operation = operationForPath(path);
+  if (operation?.readOnlyIfNoArgsApiFullNames) {
+    return isRecord(payload)
+      && operation.readOnlyIfNoArgsApiFullNames.includes(payload.apiFullName as string)
+      && (!Array.isArray(payload.args) || payload.args.length === 0);
+  }
   if (!operation?.readOnly) {
     return false;
   }

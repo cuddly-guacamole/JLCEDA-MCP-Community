@@ -5,7 +5,7 @@
 ## 功能与工具
 
 - `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由；它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
-- `bridge_recover_client`：不可取消 EDA 修改超时时，以显式确认请求新的 Bridge 运行时，再对新客户端执行文档身份校验和只读回读；回读确认前始终阻止写操作，并明确提示超时修改可能已完成。
+- `bridge_recover_client`：不可取消 EDA 修改超时时，先检查 `bridge_clients` 的超时诊断。底层调用若持续挂起，需重启 EDA 宿主以终止旧调用；宿主恢复后按新客户端的文档身份和当前页只读回读完成恢复。回读前始终阻止写操作，超时修改可能已经完成。
 - `schematic_document_action`：检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置；执行视图导航、图元选择、图元属性/BBox 读取、保存和变更导入。
 - `schematic_layout_check`：基于结构化 EDA 几何估算原理图符号、引脚、属性文本、网络标签和导线重叠，报告密集区域与可选页面越界；`mode: "fix"` 仅在 `confirm: true` 时移动属性文本。
 - `schematic_connectivity_action`：预览新导线与现有导线的接触、明确允许接触后创建导线，并创建或移动当前图页 NetPort；返回图元和网络回读状态。NetPort 适合同页连接与层次图端口，跨页连接应使用跨页连接标识。
@@ -30,7 +30,7 @@
 - `manufacture_export`：生成受限的 BOM、Gerber、网表、贴片坐标等制造文件。
 - `manufacture_templates_query`：列出 PCB BOM 模板或原理图装配变体；`manufacture_export` 可使用返回的装配变体。
 
-当前版本会拒绝空的自动布局/自动布线 UUID；EDA 操作超时后仍保持串行，直到底层 API 真正结束；网络标签修改同时支持普通标签和组件形式的电源/地标识。
+当前版本会拒绝空的自动布局/自动布线 UUID；EDA 修改超时后允许当前客户端执行只读查询，但读回结果在原调用仍挂起时只能视为暂时快照，写操作继续隔离；网络标签修改同时支持普通标签和组件形式的电源/地标识。
 
 待发布改进：PCB `import_changes` 返回 `pending_confirmation` 时，还需在 EDA 原生对话框点击“应用变更”并读回器件、网络。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求先读回器件坐标再重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
 

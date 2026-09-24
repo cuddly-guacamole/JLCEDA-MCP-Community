@@ -14,6 +14,7 @@ interface BridgePeer {
   context?: BridgeClientContext;
   isReady: boolean;
   lastSeenAt: number;
+  lastHeartbeatAt: number;
   socket: WebSocket;
 }
 
@@ -53,6 +54,7 @@ interface RecoveryDiagnostic {
   timeoutMs: number;
   timedOutAtMs: number;
   mutating: boolean;
+  uncertaintyReason?: string;
   context?: BridgeClientContext;
 }
 
@@ -389,7 +391,7 @@ export class EdaBridgeServer {
   private expireStalePeers(): void {
     const now = Date.now();
     for (const peer of [...this.peers.values()]) {
-      if (now - peer.lastSeenAt <= this.peerTtlMs) {
+      if (now - (peer.lastHeartbeatAt || peer.connectedAt) <= this.peerTtlMs) {
         continue;
       }
       this.rejectPendingForClient(peer.clientId, 'EDA client heartbeat timed out');
@@ -482,7 +484,9 @@ export class EdaBridgeServer {
     const peer = this.getBoundPeer(socket, rawMessage.clientId);
     peer.lastSeenAt = Date.now();
     if (type === 'bridge/heartbeat') {
+      peer.lastHeartbeatAt = peer.lastSeenAt;
       peer.context = parseClientContext(rawMessage.context) ?? peer.context;
+      this.promoteReadyPeerIfNeeded(peer);
       this.trySend(socket, {
         type: 'bridge/heartbeat-ack',
         clientId: peer.clientId,
@@ -493,6 +497,7 @@ export class EdaBridgeServer {
     }
     if (type === 'bridge/ready') {
       peer.isReady = true;
+      this.promoteReadyPeerIfNeeded(peer);
       return;
     }
     if (type === 'bridge/task-started') {
@@ -536,6 +541,7 @@ export class EdaBridgeServer {
       context,
       isReady: previous?.socket === socket ? previous.isReady : false,
       lastSeenAt: now,
+      lastHeartbeatAt: previous?.socket === socket ? previous.lastHeartbeatAt : 0,
       socket,
     };
     this.peers.set(clientId, peer);
@@ -579,7 +585,7 @@ export class EdaBridgeServer {
     }
     if (this.activeClientId === clientId) {
       this.rejectPendingForClient(clientId, 'Active EDA client disconnected');
-      const replacement = [...this.peers.values()].sort((left, right) => left.connectedAt - right.connectedAt)[0];
+      const replacement = [...this.peers.values()].filter(candidate => this.isPeerReady(candidate)).sort((left, right) => left.connectedAt - right.connectedAt)[0];
       this.activeClientId = replacement?.clientId ?? '';
       this.leaseTerm += 1;
       this.broadcastRoles('Active client disconnected; standby promoted');
@@ -796,6 +802,20 @@ export class EdaBridgeServer {
     return this.dispatchToEda(path, payload, timeoutMs, mcpSocket, false, undefined, internalRequestId);
   }
 
+  private isPeerReady(peer: BridgePeer, now = Date.now()): boolean {
+    return peer.isReady
+      && peer.socket.readyState === WebSocket.OPEN
+      && now - (peer.lastHeartbeatAt || peer.connectedAt) <= this.peerTtlMs;
+  }
+
+  private promoteReadyPeerIfNeeded(peer: BridgePeer): void {
+    if (this.activeClientId || !this.isPeerReady(peer))
+      return;
+    this.activeClientId = peer.clientId;
+    this.leaseTerm += 1;
+    this.broadcastRoles('Ready standby promoted');
+  }
+
   private getClientSnapshot(): Record<string, unknown> {
     this.pruneRecoveryDiagnostics();
     const now = Date.now();
@@ -804,10 +824,11 @@ export class EdaBridgeServer {
       .map((peer) => ({
         clientId: peer.clientId,
         active: peer.clientId === this.activeClientId,
-        ready: peer.isReady && peer.socket.readyState === WebSocket.OPEN,
+        ready: this.isPeerReady(peer, now),
         bridgeVersion: peer.bridgeVersion,
         connectedAt: new Date(peer.connectedAt).toISOString(),
         lastSeenMsAgo: Math.max(0, now - peer.lastSeenAt),
+        lastHeartbeatMsAgo: peer.lastHeartbeatAt ? Math.max(0, now - peer.lastHeartbeatAt) : null,
         context: peer.context,
         quarantine: this.recoverySession?.targetClientId === peer.clientId
           ? { state: 'readback-required', recoveryId: this.recoverySession.recoveryId }
@@ -835,6 +856,7 @@ export class EdaBridgeServer {
         bridgeVersion: 'unknown',
         connectedAt: diagnostics[0].startedAt,
         lastSeenMsAgo: Math.max(0, now - diagnostics.reduce((earliest, diagnostic) => Math.min(earliest, diagnostic.timedOutAtMs), now)),
+        lastHeartbeatMsAgo: null,
         context: diagnostics.find((diagnostic) => diagnostic.context)?.context,
         quarantine: { state: 'timed-out', diagnostics },
       });
@@ -847,7 +869,7 @@ export class EdaBridgeServer {
       throw new Error('clientId is required');
     }
     const peer = this.peers.get(clientId);
-    if (!peer || !peer.isReady || peer.socket.readyState !== WebSocket.OPEN) {
+    if (!peer || !this.isPeerReady(peer)) {
       throw new Error(`EDA client is not connected and ready: ${clientId}`);
     }
     if (this.recoverySession && this.activeClientId !== clientId && !allowRecoverySessionSwitch) {
@@ -870,7 +892,7 @@ export class EdaBridgeServer {
     return this.getClientSnapshot();
   }
 
-  private recordTimedOutRequest(requestId: string, pending: PendingRequest, timeoutMs: number): void {
+  private recordTimedOutRequest(requestId: string, pending: PendingRequest, timeoutMs: number, uncertaintyReason = 'execution timeout'): void {
     if (!pending.clientId) {
       return;
     }
@@ -883,6 +905,7 @@ export class EdaBridgeServer {
       timeoutMs,
       timedOutAtMs: Date.now(),
       mutating: !isReadOnlyRequest(pending.path ?? '', pending.payload),
+      uncertaintyReason,
       context: pending.context,
     };
     this.recoveryDiagnostics.set(requestId, diagnostic);
@@ -914,7 +937,7 @@ export class EdaBridgeServer {
         throw new Error('The active timed-out task was read-only and does not require controlled mutation recovery.');
       }
       const source = this.peers.get(sourceClientId);
-      const sourceConnected = Boolean(source?.isReady && source.socket.readyState === WebSocket.OPEN);
+      const sourceConnected = Boolean(source && this.isPeerReady(source));
       const recoveryId = randomUUID();
       this.recoverySession = {
         recoveryId,
@@ -964,7 +987,7 @@ export class EdaBridgeServer {
       throw new Error('readbackPath and readbackPayload must describe a read-only operation; schematic layout mode=fix is not allowed.');
     }
     const target = this.peers.get(targetClientId);
-    if (!target || !target.isReady || target.socket.readyState !== WebSocket.OPEN)
+    if (!target || !this.isPeerReady(target))
       throw new Error(`EDA client is not connected and ready: ${targetClientId}`);
     if (session.targetClientId && session.targetConnectedAt !== target.connectedAt) {
       throw new Error('Recovery readback target connection was replaced; retry with the new Bridge generation.');
@@ -1016,7 +1039,7 @@ export class EdaBridgeServer {
     this.pruneRecoveryDiagnostics();
     const routedClientId = targetClientId ?? this.activeClientId;
     const peer = this.peers.get(routedClientId);
-    if (!peer || !peer.isReady || peer.socket.readyState !== WebSocket.OPEN) {
+    if (!peer || !this.isPeerReady(peer)) {
       throw new Error('No ready EDA client connected');
     }
     if (!recoveryReadback && !isReadOnlyRequest(path, payload) && (this.recoverySession || hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values()))) {
@@ -1162,6 +1185,8 @@ export class EdaBridgeServer {
       if (pending.clientId !== clientId) {
         continue;
       }
+      if (pending.started && !isReadOnlyRequest(pending.path ?? '', pending.payload))
+        this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, reason);
       this.clearPendingTimeout(pending);
       this.pendingRequests.delete(requestId);
       pending.reject(new Error(reason));
@@ -1206,6 +1231,8 @@ export class EdaBridgeServer {
         // the tombstone before deleting the pending request.
         this.enterReconnectBarrier(pending.clientId);
       }
+      if (pending.started && !isReadOnlyRequest(pending.path ?? '', pending.payload))
+        this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, reason);
       this.clearPendingTimeout(pending);
       this.pendingRequests.delete(requestId);
       pending.reject(new Error(reason));
