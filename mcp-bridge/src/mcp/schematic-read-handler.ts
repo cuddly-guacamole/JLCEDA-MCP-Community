@@ -19,7 +19,7 @@ function buildPinCoordinateKey(x: number, y: number): string {
 }
 
 // 从多段线坐标中提取相邻端点对，向邻接图中添加双向边。
-// getState_Line 返回 [x1, y1, x2, y2, ...] 平铺形态或 [[x1,y1],[x2,y2],...] 嵌套形态。
+// getState_Line 可以返回平铺坐标、连续点数组，或多段平铺坐标数组。
 function addWireEdgesToAdjacencyGraph(lineData: unknown, graph: Map<string, Set<string>>): void {
 	if (!Array.isArray(lineData) || lineData.length === 0) {
 		return;
@@ -43,24 +43,31 @@ function addWireEdgesToAdjacencyGraph(lineData: unknown, graph: Map<string, Set<
 		setB.add(keyA);
 	}
 
+	function addFlatEdges(flatLine: unknown[]): void {
+		for (let i = 0; i + 3 < flatLine.length; i += 2) {
+			addEdge(
+				buildPinCoordinateKey(flatLine[i] as number, flatLine[i + 1] as number),
+				buildPinCoordinateKey(flatLine[i + 2] as number, flatLine[i + 3] as number),
+			);
+		}
+	}
+
 	if (Array.isArray(lineData[0])) {
-		// [[x1, y1], [x2, y2], ...] 嵌套形态：相邻点之间连边
-		for (let i = 0; i + 1 < lineData.length; i++) {
-			const a = lineData[i] as unknown[];
-			const b = lineData[i + 1] as unknown[];
-			if (Array.isArray(a) && a.length >= 2 && Array.isArray(b) && b.length >= 2) {
-				addEdge(buildPinCoordinateKey(a[0] as number, a[1] as number), buildPinCoordinateKey(b[0] as number, b[1] as number));
+		const parts = lineData as unknown[][];
+		if (parts.every(part => Array.isArray(part) && part.length === 2)) {
+			// [[x1,y1], [x2,y2], ...] 是一条连续多段线。
+			addFlatEdges(parts.flat());
+		}
+		else {
+			// [[x1,y1,x2,y2], ...] 中每个子数组是一条独立线段或多段线。
+			for (const part of parts) {
+				if (Array.isArray(part))
+					addFlatEdges(part);
 			}
 		}
 	}
 	else {
-		// [x1, y1, x2, y2, ...] 平铺形态：每两个相邻坐标对之间连边
-		for (let i = 0; i + 3 < lineData.length; i += 2) {
-			addEdge(
-				buildPinCoordinateKey(lineData[i] as number, lineData[i + 1] as number),
-				buildPinCoordinateKey(lineData[i + 2] as number, lineData[i + 3] as number),
-			);
-		}
+		addFlatEdges(lineData);
 	}
 }
 
