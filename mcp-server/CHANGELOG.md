@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - `netlabel_place` 工具说明标明普通网络标签需要 EDA v4；EDA 3.x 将直接返回未开始，避免调用不可用的 API。
+- `pcb_document_action` 与代理指引标明 PCB 变更导入的原生确认阶段，以及 PCB BETA 自动布局/布线的结果验证步骤。
 
 ## [2.3.1] - 2026-09-24
 

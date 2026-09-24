@@ -319,7 +319,16 @@ export async function handlePcbDocumentTask(payload: unknown): Promise<unknown> 
 			throw new TypeError('EDA pcb_Document.importChanges API is unavailable in this client version.');
 		const uuid = optionalString(payload, 'uuid');
 		const imported = await api.importChanges(uuid);
-		return { ok: imported === true, action, imported: await toSerializableAsync(imported) };
+		// EDA returns true when it opens the native import preview. The user must
+		// still apply that dialog before the PCB actually changes.
+		return {
+			ok: imported === true,
+			action,
+			imported: await toSerializableAsync(imported),
+			commitState: imported === true ? 'pending_confirmation' : 'not_started',
+			requiresNativeConfirmation: imported === true,
+			verification: imported === true ? 'Apply Changes in EDA, then read back PCB components and nets.' : undefined,
+		};
 	}
 	const methodName = action === 'import_auto_route_json' ? 'importAutoRouteJsonFile' : action === 'import_auto_route_ses' ? 'importAutoRouteSesFile' : 'importAutoLayoutJsonFile';
 	const method = api[methodName];

@@ -30,7 +30,7 @@ Server 提供 `schematic_document_action`，用于受限地检查原理图坐标
 
 `library_preview` 可生成符号/封装预览图，`library_classification_query` 可浏览官方库分类树。`project_info` 可选返回受限的 Board 和 Panel 清单。
 
-Server 提供 PCB DRC、网络查询、库搜索、制造查询和受保护的文档操作。设备 `library_search` 支持 0.4.15 精确属性、官方单个/批量 LCSC C 编号映射和精确 UUID 获取；符号、封装、3D 模型、可复用模块和 Panel 库使用各自支持的 API。仿真模型搜索支持 Ngspice/SimulIDE 过滤，但官方模型读取 API 需要私有部署，因此不公开。制造导出包含官方飞针测试文件，PCB 自动布局/自动布线在目标客户端公开对应 API 前保持暂停。
+Server 提供 PCB DRC、网络查询、库搜索、制造查询和受保护的文档操作。设备 `library_search` 支持 0.4.15 精确属性、官方单个/批量 LCSC C 编号映射和精确 UUID 获取；符号、封装、3D 模型、可复用模块和 Panel 库使用各自支持的 API。仿真模型搜索支持 Ngspice/SimulIDE 过滤，但官方模型读取 API 需要私有部署，因此不公开。制造导出包含官方飞针测试文件，PCB 专用自动布局/自动布线 MCP 工具仍未启用；EDA BETA API 可经 `api_invoke` 调用，结果需用器件位置、导线、过孔和 DRC 读回确认。
 
 `pcb_constraints_manage` 是受确认保护的写入工具，用于网类、差分对、等长组和 Pad 对组的窄范围修改，并返回受影响项目的读取验证；不支持批量替换规则配置。
 

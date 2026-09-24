@@ -31,6 +31,8 @@
 
 当前版本会拒绝空的自动布局/自动布线 UUID；EDA 操作超时后仍保持串行，直到底层 API 真正结束；网络标签修改同时支持普通标签和组件形式的电源/地标识。
 
+待发布改进：PCB `import_changes` 返回 `pending_confirmation` 时，还需在 EDA 原生对话框点击“应用变更”并读回器件、网络。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求先读回器件坐标再重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
+
 社区维护的嘉立创 EDA 专业版 MCP 集成基于 [`sengbin/JLCEDA-MCP`](https://github.com/sengbin/JLCEDA-MCP) 改进。本项目不是嘉立创官方插件，也不代表上游维护者。
 
 - 社区联系与安全报告：`hs150521@proton.me`

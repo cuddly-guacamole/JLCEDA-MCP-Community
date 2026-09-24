@@ -14,6 +14,7 @@ const { handleEdaContextTask } = require('../src/mcp/context-handler.ts');
 const { handleDesignArchiveExportTask } = require('../src/mcp/design-archive-export-handler.ts');
 const { handleDesignCompareTask } = require('../src/mcp/design-compare-handler.ts');
 const { handleDesignSourceExportTask } = require('../src/mcp/design-source-export-handler.ts');
+const { handleApiInvokeTask } = require('../src/mcp/invoke-handler.ts');
 const { handleLibraryClassificationTask } = require('../src/mcp/library-classification-handler.ts');
 const { handleLibraryPreviewTask } = require('../src/mcp/library-preview-handler.ts');
 const { handleLibrarySearchTask } = require('../src/mcp/library-search-handler.ts');
@@ -650,6 +651,31 @@ async function main() {
 	assert.match(String(storageErrors[0][1]), /storage unavailable/);
 	console.error = originalConsoleError;
 	globalThis.eda.sys_Storage.setExtensionUserConfig = originalStorageWrite;
+	let pcbAutoLayoutCalls = 0;
+	globalThis.eda.pcb_Document.autoLayout = async () => {
+		pcbAutoLayoutCalls += 1;
+		throw new Error('RPC Call autoLayout Timed Out');
+	};
+	const unknownLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
+	assert.equal(unknownLayout.commitState, 'unknown');
+	assert.equal(unknownLayout.retryBlocked, true);
+	const blockedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
+	assert.equal(blockedLayout.retryBlocked, true);
+	assert.equal(pcbAutoLayoutCalls, 1);
+	globalThis.eda.pcb_PrimitiveComponent = {
+		async getAll() { return [{ uuid: 'R1', x: 10, y: 20, rotation: 90 }]; },
+	};
+	const layoutReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] });
+	assert.equal(layoutReadback.autoLayoutReadbackPerformed, true);
+	assert.equal(layoutReadback.result[0].rotation, 90);
+	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
+	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
+	assert.equal(completedLayout.result.success, true);
+	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: false, successNetsCount: 0, duration: 0, failedNets: ['VCC'] });
+	const failedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });
+	assert.equal(failedRouting.ok, false);
+	assert.equal(failedRouting.routingState, 'not_started');
+	assert.deepEqual(failedRouting.result.failedNets, ['VCC']);
 
 	const project = await handleProjectInfoTask({ includePages: true });
 	assert.equal(project.project.name, '2026');
@@ -765,7 +791,10 @@ async function main() {
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing' }), /routingType is required/);
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection' }), /confirm must be true/);
 	assert.equal((await handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection', confirm: true })).cleared, true);
-	assert.equal((await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' })).imported, true);
+	const pendingPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(pendingPcbImport.imported, true);
+	assert.equal(pendingPcbImport.commitState, 'pending_confirmation');
+	assert.equal(pendingPcbImport.requiresNativeConfirmation, true);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_json', fileName: 'route.json', dataBase64: 'e30=' })).bytes, 2);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_ses', fileName: 'route.ses', dataBase64: 'e30=' })).imported, true);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_layout_json', fileName: 'layout.json', dataBase64: 'e30=' })).imported, true);
@@ -791,7 +820,9 @@ async function main() {
 	assert.equal((await handlePcbDocumentTask({ action: 'start_ratline' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'stop_ratline' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection', confirm: true })).ok, false);
-	assert.equal((await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' })).ok, false);
+	const rejectedPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(rejectedPcbImport.ok, false);
+	assert.equal(rejectedPcbImport.commitState, 'not_started');
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_json', dataBase64: 'e30=' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_ses', dataBase64: 'e30=' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_layout_json', dataBase64: 'e30=' })).ok, false);

@@ -1016,7 +1016,7 @@
   },
   {
     "name": "pcb_document_action",
-    "description": "Inspect PCB coordinates, selection, filters, and primitives; navigate the active canvas; read calculation state; or perform explicitly requested PCB document actions/imports.",
+    "description": "Inspect PCB coordinates, selection, filters, and primitives; navigate the active canvas; read calculation state; or perform explicitly requested PCB document actions/imports. import_changes may open a native confirmation dialog; commitState=pending_confirmation is not a completed import.",
     "inputSchema": {
       "type": "object",
       "properties": {

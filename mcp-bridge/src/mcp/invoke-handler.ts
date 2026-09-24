@@ -9,7 +9,12 @@
  * ------------------------------------------------------------------------
  */
 
-import { isPlainObjectRecord, toSerializableAsync } from '../utils';
+import { isPlainObjectRecord, toSafeErrorMessage, toSerializableAsync } from '../utils';
+
+const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
+const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
+const PCB_COMPONENT_GET_ALL = 'eda.pcb_primitivecomponent.getall';
+let pcbAutoLayoutReadbackRequired = false;
 
 // 在对象上解析段名，要求精确匹配。
 function resolveSegmentKey(target: Record<string, unknown>, segment: string): string {
@@ -88,7 +93,52 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	const apiFullName = String(payload.apiFullName ?? '').trim();
 	const { callable, thisArg, resolvedPath } = resolveApiCallable(apiFullName);
 	const invokeArgs = Array.isArray(payload.args) ? payload.args : [];
-	const invokeResult = await Promise.resolve(callable.apply(thisArg, invokeArgs));
+	const normalizedPath = resolvedPath.toLowerCase();
+	if (normalizedPath === PCB_AUTO_LAYOUT && pcbAutoLayoutReadbackRequired) {
+		return {
+			apiFullName: resolvedPath,
+			ok: false,
+			commitState: 'unknown',
+			retryBlocked: true,
+			verification: 'Read back PCB component positions with eda.pcb_PrimitiveComponent.getAll before another autoLayout call.',
+		};
+	}
+	let invokeResult: unknown;
+	try {
+		invokeResult = await Promise.resolve(callable.apply(thisArg, invokeArgs));
+	}
+	catch (error: unknown) {
+		if (normalizedPath === PCB_AUTO_LAYOUT && /RPC Call autoLayout Timed Out/i.test(toSafeErrorMessage(error))) {
+			pcbAutoLayoutReadbackRequired = true;
+			return {
+				apiFullName: resolvedPath,
+				ok: false,
+				commitState: 'unknown',
+				retryBlocked: true,
+				error: toSafeErrorMessage(error),
+				verification: 'Auto layout may still commit. Read back PCB component positions with eda.pcb_PrimitiveComponent.getAll before retrying.',
+			};
+		}
+		throw error;
+	}
+	if (normalizedPath === PCB_COMPONENT_GET_ALL && pcbAutoLayoutReadbackRequired && Array.isArray(invokeResult)) {
+		pcbAutoLayoutReadbackRequired = false;
+		return {
+			apiFullName: resolvedPath,
+			result: await toSerializableAsync(invokeResult),
+			autoLayoutReadbackPerformed: true,
+			verification: 'Compare these component positions and rotations with the pre-layout snapshot before deciding whether to retry.',
+		};
+	}
+	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {
+		return {
+			apiFullName: resolvedPath,
+			result: await toSerializableAsync(invokeResult),
+			ok: false,
+			routingState: invokeResult.successNetsCount === 0 && invokeResult.duration === 0 ? 'not_started' : 'incomplete',
+			verification: 'Check PCB tracks, vias, and DRC before treating this routing attempt as complete.',
+		};
+	}
 
 	return {
 		apiFullName: resolvedPath,
