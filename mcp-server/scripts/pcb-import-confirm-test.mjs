@@ -35,12 +35,15 @@ async function registerEda(port, clientId, token, reportedPageUuid = 'pcb-one') 
   return socket;
 }
 
-function respond(socket, clientId, transform) {
+function respond(socket, clientId, transform, options = {}) {
   socket.on('message', data => {
     const message = JSON.parse(data.toString());
     if (message.type !== 'bridge/task') return;
-    socket.send(JSON.stringify({ type: 'bridge/task-started', clientId, requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now() }));
-    socket.send(JSON.stringify({ type: 'bridge/result', clientId, requestId: message.requestId, leaseTerm: message.leaseTerm, result: transform(message) }));
+    socket.send(JSON.stringify({ type: 'bridge/task-started', clientId, requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: options.executionContext?.() }));
+    const resultMessage = { type: 'bridge/result', clientId, requestId: message.requestId, leaseTerm: message.leaseTerm, result: transform(message) };
+    const delayMs = options.resultDelayMs?.(message) ?? 0;
+    if (delayMs > 0) setTimeout(() => socket.send(JSON.stringify(resultMessage)), delayMs);
+    else socket.send(JSON.stringify(resultMessage));
   });
 }
 
@@ -57,11 +60,23 @@ try {
   let truncateNets = false;
   let netCount = 1;
   let netPages = 0;
+  let partialImportContext = false;
+  let conflictingImportContext = false;
+  let delayedImportResultMs = 0;
+  const executionContext = () => ({ documentUuid: 'document-one', projectUuid: 'project-one', pageKind: 'pcb', pageUuid });
+  const responseOptions = {
+    executionContext,
+    resultDelayMs: message => message.path === '/bridge/jlceda/pcb/document' && message.payload?.action === 'import_changes'
+      ? delayedImportResultMs : 0,
+  };
   const transform = message => {
     switch (message.path) {
       case '/bridge/jlceda/pcb/document':
         return message.payload?.action === 'import_changes'
-          ? { ok: true, action: 'import_changes', commitState: 'pending_confirmation', importContext: { pageKind: 'pcb', pageUuid: 'pcb-one', documentUuid: 'document-one', projectUuid: 'project-one' } }
+          ? { ok: true, action: 'import_changes', commitState: 'pending_confirmation', importContext: conflictingImportContext
+            ? { pageKind: 'pcb', pageUuid: 'pcb-one', documentUuid: 'document-one', projectUuid: 'other-project' }
+            : partialImportContext ? { pageKind: 'pcb' }
+              : { pageKind: 'pcb', pageUuid: 'pcb-one', documentUuid: 'document-one', projectUuid: 'project-one' } }
           : { ok: true, action: message.payload?.action ?? 'status' };
       case '/bridge/jlceda/context':
         return { currentDocumentInfo: { uuid: 'document-one', parentProjectUuid: 'project-one' }, currentPcbInfo: { uuid: pageUuid } };
@@ -83,7 +98,7 @@ try {
     }
   };
   oldSocket = await registerEda(port, 'import-original', 'import-test-token', 'stale-previous-pcb');
-  respond(oldSocket, 'import-original', transform);
+  respond(oldSocket, 'import-original', transform, responseOptions);
   const importResult = await server.request('/bridge/jlceda/pcb/document', { action: 'import_changes' }, 2000);
   assert.equal(importResult.commitState, 'pending_confirmation');
   const snapshot = await server.request('/bridge/admin/clients', {}, 2000);
@@ -120,6 +135,30 @@ try {
   assert.equal(resolved.writesRemainBlocked, false);
   assert.equal((await server.request('/bridge/jlceda/pcb/document', { action: 'save' }, 2000)).ok, true);
 
+  partialImportContext = true;
+  await server.request('/bridge/jlceda/pcb/document', { action: 'import_changes' }, 2000);
+  const partialSnapshot = await server.request('/bridge/admin/clients', {}, 2000);
+  const partialDiagnostic = partialSnapshot.clients[0].quarantine.diagnostics.find(item => item.pendingNativeConfirmation);
+  assert.deepEqual({ pageKind: partialDiagnostic.context.pageKind, pageUuid: partialDiagnostic.context.pageUuid,
+    documentUuid: partialDiagnostic.context.documentUuid, projectUuid: partialDiagnostic.context.projectUuid }, executionContext());
+  assert.equal((await server.request('/bridge/admin/recover-client', {
+    action: 'resolve_import', confirm: true, requestId: partialDiagnostic.requestId, resolution: 'cancelled',
+  }, 2000)).readbackVerified, true);
+
+  delayedImportResultMs = 100;
+  await assert.rejects(server.request('/bridge/jlceda/pcb/document', { action: 'import_changes' }, 30), /execution timeout/);
+  await new Promise(resolve => setTimeout(resolve, 140));
+  const lateSnapshot = await server.request('/bridge/admin/clients', {}, 2000);
+  const lateDiagnostic = lateSnapshot.clients[0].quarantine.diagnostics.find(item => item.pendingNativeConfirmation);
+  assert.ok(lateDiagnostic);
+  assert.deepEqual({ pageKind: lateDiagnostic.context.pageKind, pageUuid: lateDiagnostic.context.pageUuid,
+    documentUuid: lateDiagnostic.context.documentUuid, projectUuid: lateDiagnostic.context.projectUuid }, executionContext());
+  assert.equal((await server.request('/bridge/admin/recover-client', {
+    action: 'resolve_import', confirm: true, requestId: lateDiagnostic.requestId, resolution: 'applied',
+  }, 2000)).readbackVerified, true);
+  delayedImportResultMs = 0;
+  partialImportContext = false;
+
   await server.request('/bridge/jlceda/pcb/document', { action: 'import_changes' }, 2000);
   netCount = 1001;
   netPages = 0;
@@ -129,7 +168,7 @@ try {
   oldSocket.close();
   await new Promise(resolve => oldSocket.once('close', resolve));
   freshSocket = await registerEda(port, 'import-fresh', 'import-test-token');
-  respond(freshSocket, 'import-fresh', transform);
+  respond(freshSocket, 'import-fresh', transform, responseOptions);
   const fallback = {
     action: 'readback', confirm: true, recoveryId: recovery.recoveryId, clientId: 'import-fresh',
     readbackPath: '/bridge/jlceda/api/invoke', readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
@@ -139,6 +178,19 @@ try {
   assert.equal(recovered.readbackVerified, true);
   assert.equal(netPages, 2);
   assert.equal((await server.request('/bridge/jlceda/pcb/document', { action: 'save' }, 2000)).ok, true);
+  conflictingImportContext = true;
+  await server.request('/bridge/jlceda/pcb/document', { action: 'import_changes' }, 2000);
+  const conflictSnapshot = await server.request('/bridge/admin/clients', {}, 2000);
+  const conflictDiagnostic = conflictSnapshot.clients.find(item => item.clientId === 'import-fresh').quarantine.diagnostics.find(item => item.pendingNativeConfirmation);
+  assert.equal(conflictDiagnostic.importContextConflict, true);
+  assert.equal(conflictDiagnostic.context.projectUuid, 'project-one');
+  await assert.rejects(server.request('/bridge/admin/recover-client', {
+    action: 'resolve_import', confirm: true, requestId: conflictDiagnostic.requestId, resolution: 'applied',
+  }, 2000), /identity disagrees/);
+  await assert.rejects(server.request('/bridge/admin/recover-client', {
+    action: 'recover', confirm: true, requestId: conflictDiagnostic.requestId,
+  }, 2000), /identity disagrees/);
+  await assert.rejects(server.request('/bridge/jlceda/pcb/document', { action: 'save' }, 2000), /writes are blocked/);
   process.stdout.write('PCB import confirmation Server tests passed\n');
 } finally {
   oldSocket?.close();

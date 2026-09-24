@@ -63,6 +63,7 @@ interface RecoveryDiagnostic {
   targetPageMayBeAbsent?: boolean;
   requiredReadback?: 'pcb_component_positions' | 'schematic_project_review' | 'schematic_page_inventory';
   pendingNativeConfirmation?: boolean;
+  importContextConflict?: boolean;
   uncertaintyReason?: string;
   context?: BridgeClientContext;
 }
@@ -328,6 +329,28 @@ function parseClientContext(value: unknown): BridgeClientContext | undefined {
     pageKind,
     pageUuid: optionalString(value.pageUuid),
     pageName: optionalString(value.pageName),
+  };
+}
+
+function updatePendingPcbImportContext(diagnostic: RecoveryDiagnostic, result: unknown): void {
+  const importContext = isRecord(result) ? parseClientContext(result.importContext) : undefined;
+  if (!importContext)
+    return;
+  const executionContext = diagnostic.context;
+  if ((executionContext?.pageKind && importContext.pageKind && executionContext.pageKind !== importContext.pageKind)
+    || (executionContext?.pageUuid && importContext.pageUuid && executionContext.pageUuid !== importContext.pageUuid)
+    || (executionContext?.documentUuid && importContext.documentUuid && executionContext.documentUuid !== importContext.documentUuid)
+    || (executionContext?.projectUuid && importContext.projectUuid && executionContext.projectUuid !== importContext.projectUuid)) {
+    diagnostic.importContextConflict = true;
+    diagnostic.uncertaintyReason = 'native PCB import identity disagrees with execution context';
+    return;
+  }
+  diagnostic.context = {
+    ...executionContext,
+    ...(importContext.pageKind ? { pageKind: importContext.pageKind } : {}),
+    ...(importContext.pageUuid ? { pageUuid: importContext.pageUuid } : {}),
+    ...(importContext.documentUuid ? { documentUuid: importContext.documentUuid } : {}),
+    ...(importContext.projectUuid ? { projectUuid: importContext.projectUuid } : {}),
   };
 }
 
@@ -751,7 +774,7 @@ export class EdaBridgeServer {
       if (pendingImport) {
         diagnostic.pendingNativeConfirmation = true;
         diagnostic.uncertaintyReason = 'native PCB import confirmation pending';
-        diagnostic.context = isRecord(message.result) ? parseClientContext(message.result.importContext) : undefined;
+        updatePendingPcbImportContext(diagnostic, message.result);
         this.pendingImportSockets.set(requestId, peer.socket);
       }
       else if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown) {
@@ -781,7 +804,7 @@ export class EdaBridgeServer {
       this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native PCB import confirmation pending');
       const diagnostic = this.recoveryDiagnostics.get(requestId)!;
       diagnostic.pendingNativeConfirmation = true;
-      diagnostic.context = isRecord(message.result) ? parseClientContext(message.result.importContext) : undefined;
+      updatePendingPcbImportContext(diagnostic, message.result);
       this.pendingImportSockets.set(requestId, peer.socket);
     }
     this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
@@ -1138,6 +1161,8 @@ export class EdaBridgeServer {
       const diagnostic = this.recoveryDiagnostics.get(requestId);
       if (!diagnostic)
         throw new Error(`No unresolved timeout diagnostic exists for requestId: ${requestId}`);
+      if (diagnostic.importContextConflict)
+        throw new Error('PCB import identity disagrees with its execution context; inspect both PCB pages before restarting the MCP Server. Writes remain blocked.');
       const sourceClientId = diagnostic.clientId;
       if (!diagnostic.mutating) {
         throw new Error('The active timed-out task was read-only and does not require controlled mutation recovery.');
@@ -1405,6 +1430,8 @@ export class EdaBridgeServer {
     const diagnostic = this.recoveryDiagnostics.get(requestId);
     if (!diagnostic?.pendingNativeConfirmation)
       throw new Error(`No pending PCB import confirmation exists for requestId: ${requestId}`);
+    if (diagnostic.importContextConflict)
+      throw new Error('PCB import identity disagrees with its execution context; writes remain blocked.');
     if (this.recoverySession || this.resolvingImports.has(requestId))
       throw new Error('A Bridge recovery or PCB import resolution is already in progress.');
     const peer = this.peers.get(diagnostic.clientId);
