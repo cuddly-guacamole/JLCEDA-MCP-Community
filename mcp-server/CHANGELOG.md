@@ -1,6 +1,6 @@
 # 更新日志
 
-## [Unreleased]
+## [2.3.2] - 2026-09-25
 
 - `netlabel_place` 工具说明标明普通网络标签需要 EDA v4；EDA 3.x 将直接返回未开始，避免调用不可用的 API。
 - `pcb_document_action` 与代理指引标明 PCB 变更导入的原生确认阶段，以及 PCB BETA 自动布局/布线的结果验证步骤。
@@ -11,6 +11,7 @@
 - 恢复隔离期间允许 `getAllPrimitiveId` / `getAll` 以严格的 `args:[null,false]` 查询当前页器件，并可用于受控恢复回读；无参数调用继续兼容，其余 `api_invoke` 仍按写入隔离。
 - PCB 恢复期间可用无参数的 `eda.pcb_PrimitiveComponent.getAll` 回读器件位置；带筛选参数的调用继续受隔离。
 - `bridge_recover_client` 使用原始超时诊断的图页 UUID 校验新客户端与实际 `/context` 回读；同一文档中的其他原理图页或 PCB 不再能解除当前图页的写入阻断。
+- PCB 器件位置回读返回完整的位置、旋转角和位号摘要，不会在多于 120 个器件时截断恢复依据。
 
 ## [2.3.1] - 2026-09-24
 

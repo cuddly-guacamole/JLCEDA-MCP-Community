@@ -1,6 +1,6 @@
 # JLCEDA MCP 社区版
 
-当前发布版本：Bridge `2.3.1`，MCP Server `2.3.1`。本版本增强 Bridge/MCP 任务诊断：以请求 ID 关联工具、Bridge 路由、执行阶段和异常，日志带版本与构建日期水印；EDA 界面显示简略报告，完整日志保存在扩展本地存储中。Server 同时修复 `component_select` 和 `design_compare` 的参数校验。共享 Bridge 契约、多客户端路由和可选本机 token 认证继续受到支持。
+当前发布版本：Bridge `2.3.2`，MCP Server `2.3.2`。本版本改进原理图当前页读取、器件放置、BOM 属性修改和连通性操作，并明确 PCB 导入与自动布局的提交状态。EDA 修改超时或连接失联后，Server 会保留诊断，要求在原图页完成只读回读才能恢复写入。
 
 ## 功能与工具
 
@@ -30,11 +30,11 @@
 - `manufacture_export`：生成受限的 BOM、Gerber、网表、贴片坐标等制造文件。
 - `manufacture_templates_query`：列出 PCB BOM 模板或原理图装配变体；`manufacture_export` 可使用返回的装配变体。
 
-当前版本会拒绝空的自动布局/自动布线 UUID；EDA 修改超时后允许当前客户端执行只读查询，但读回结果在原调用仍挂起时只能视为暂时快照，写操作继续隔离；网络标签修改同时支持普通标签和组件形式的电源/地标识。
+当前版本会拒绝空的自动布局/自动布线 UUID；EDA 修改超时后允许当前客户端执行只读查询，但读回结果在原调用仍挂起时只能视为暂时快照，写操作继续隔离。EDA 3.x 尚不支持普通网络标签的 `createNetLabel` API；电源/地标识仍可用。
 
-待发布改进：PCB `import_changes` 返回 `pending_confirmation` 时，还需在 EDA 原生对话框点击“应用变更”并读回器件、网络。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求先读回器件坐标再重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
+PCB `import_changes` 返回 `pending_confirmation` 时，还需在 EDA 原生对话框点击“应用变更”并读回器件、网络。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求先读回全部器件坐标再重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
 
-待发布的原理图改进：交互放置等待用户退出当前放置模式，只把退出后仍存在的图元作为已放置结果；重复图元或未知提交状态会停止后续放置。坐标放置发现已有器件位号变化或无法核对时也会停止，并返回已放置明细。`api_invoke` 的器件属性修改保留省略的 BOM 扩展属性，批量删除逐项执行并核对结果。
+交互放置等待用户退出当前放置模式，只把退出后仍存在的图元作为已放置结果；重复图元、连接失联或未知提交状态会停止后续放置。坐标放置发现已有器件位号变化或无法核对时也会停止，并返回已放置明细。`api_invoke` 的器件属性修改保留省略的 BOM 扩展属性，批量删除逐项执行并核对结果。
 
 社区维护的嘉立创 EDA 专业版 MCP 集成基于 [`sengbin/JLCEDA-MCP`](https://github.com/sengbin/JLCEDA-MCP) 改进。本项目不是嘉立创官方插件，也不代表上游维护者。
 
@@ -48,10 +48,10 @@
 Codex / Claude / Cursor / 其他 MCP 客户端
                   | STDIO MCP
                   v
-       JLCEDA MCP Server 2.3.1
+       JLCEDA MCP Server 2.3.2
                   | 本机 WebSocket
                   v
-       MCP Bridge 社区版 2.3.1
+       MCP Bridge 社区版 2.3.2
                   | JLCEDA 扩展 API
                   v
            嘉立创 EDA 专业版
@@ -59,16 +59,16 @@ Codex / Claude / Cursor / 其他 MCP 客户端
 
 市场中的 `.eext` 只包含 EDA Bridge；原生 MCP Server 需要从同一个 GitHub Release 另行安装。社区版不依赖旧版 VS Code/Cursor MCP Hub。
 
-## 安装 2.3.1
+## 安装 2.3.2
 
 需要 Node.js 20 或更高版本。
 
-1. 从 [发布页](https://github.com/hs150521/JLCEDA-MCP-Community/releases) 下载并在嘉立创 EDA 扩展管理器中安装 `mcp-bridge-community-2.3.1.eext`。
+1. 从 [发布页](https://github.com/hs150521/JLCEDA-MCP-Community/releases) 下载并在嘉立创 EDA 扩展管理器中安装 `mcp-bridge-community-2.3.2.eext`。
    安装后在“已安装”的扩展详情中确认已允许“外部交互”，否则 Bridge 无法连接本机 MCP Server。
 2. 下载 MCP Server 包并安装：
 
    ```powershell
-   npm install --global .\jlceda-mcp-server-2.3.1.tgz
+   npm install --global .\jlceda-mcp-server-2.3.2.tgz
    Get-Command jlceda-mcp
    ```
 
