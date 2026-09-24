@@ -175,6 +175,17 @@ async function main() {
 	};
 	await assert.rejects(handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['preflight'] }), /pre-delete ID read failed/);
 	assert.equal(preflightDeleteCalls, 0);
+	const allSchematicPages = Array.from({ length: 135 }, (_, index) => ({
+		uuid: `page-${index}`,
+		parentSchematicUuid: 'target-schematic',
+		name: `Page ${index}`,
+	}));
+	globalThis.eda.dmt_Schematic.getAllSchematicPagesInfo = async () => allSchematicPages;
+	const pageInventory = await handleApiInvokeTask({ apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo', args: [] });
+	assert.equal(pageInventory.result.length, 120, 'ordinary API results retain their bounded form');
+	assert.equal(pageInventory.schematicPages.length, allSchematicPages.length, 'recovery inventory must include every page');
+	assert.equal(pageInventory.pageCount, allSchematicPages.length);
+	assert.equal(pageInventory.schematicPages[134].uuid, 'page-134');
 
 	// One immediate click may happen before placeComponentWithMouse returns.
 	const ids = ['existing'];

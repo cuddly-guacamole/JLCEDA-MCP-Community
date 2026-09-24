@@ -75,6 +75,7 @@ async function main() {
 	let readCalls = 0;
 	let pcbWriteCalls = 0;
 	let currentDocumentType = 3;
+	let gatedDocumentRead;
 	globalThis.eda = {
 		EDMT_EditorDocumentType: { SCHEMATIC_PAGE: 1, PCB: 3 },
 		sys_Storage: { getExtensionUserConfig() { return undefined; }, async setExtensionUserConfig() {} },
@@ -85,6 +86,12 @@ async function main() {
 		sys_Message: { showToastMessage() {} },
 		dmt_SelectControl: {
 			async getCurrentDocumentInfo() {
+				if (gatedDocumentRead) {
+					const gate = gatedDocumentRead;
+					gatedDocumentRead = undefined;
+					gate.entered.resolve();
+					await gate.release.promise;
+				}
 				return {
 					uuid: currentDocumentType === 3 ? 'pcb-document' : 'schematic-one',
 					documentType: currentDocumentType,
@@ -129,7 +136,12 @@ async function main() {
 	await transportReady.promise;
 	const transport = activeTransport;
 	const path = '/bridge/jlceda/api/invoke';
-	const submit = (requestId, payload) => enqueueTask({ requestId, path, payload, leaseTerm: 1 }, transport);
+	let submittedLease = 1;
+	const submit = (requestId, payload) => enqueueTask({ requestId, path, payload, leaseTerm: submittedLease }, transport);
+	const holdNextDocumentRead = () => {
+		gatedDocumentRead = { entered: deferred(), release: deferred() };
+		return gatedDocumentRead;
+	};
 	let writeAtCompletionRejected = false;
 	transport.beforeComplete = (requestId) => {
 		if (requestId !== 'uncertain-delete')
@@ -150,6 +162,45 @@ async function main() {
 		const wrongPage = await transport.resultFor('wrong-page-write');
 		assert.match(wrongPage.error.message, /Current editor is schematic/);
 		assert.equal(transport.started.includes('wrong-page-write'), false);
+		const roleGate = holdNextDocumentRead();
+		submit('role-changed-during-context', { apiFullName: 'eda.sch_PrimitiveComponent.create', args: [] });
+		await roleGate.entered.promise;
+		transport.callbacks.onRoleChanged({
+			type: 'bridge/role',
+			clientId: transport.clientId,
+			activeClientId: 'other-client',
+			role: 'standby',
+			leaseTerm: 2,
+		});
+		roleGate.release.resolve();
+		const staleRole = await transport.resultFor('role-changed-during-context');
+		assert.match(staleRole.error.message, /standby|待命/i);
+		assert.equal(transport.started.includes('role-changed-during-context'), false);
+		assert.equal(secondWriteCalls, 0);
+		transport.callbacks.onRoleChanged({
+			type: 'bridge/role',
+			clientId: transport.clientId,
+			activeClientId: transport.clientId,
+			role: 'active',
+			leaseTerm: 3,
+		});
+		submittedLease = 3;
+		const leaseGate = holdNextDocumentRead();
+		submit('lease-changed-during-context', { apiFullName: 'eda.sch_PrimitiveComponent.create', args: [] });
+		await leaseGate.entered.promise;
+		transport.callbacks.onRoleChanged({
+			type: 'bridge/role',
+			clientId: transport.clientId,
+			activeClientId: transport.clientId,
+			role: 'active',
+			leaseTerm: 4,
+		});
+		leaseGate.release.resolve();
+		const staleLease = await transport.resultFor('lease-changed-during-context');
+		assert.match(staleLease.error.message, /lease|租约/i);
+		assert.equal(transport.started.includes('lease-changed-during-context'), false);
+		assert.equal(secondWriteCalls, 0);
+		submittedLease = 4;
 		submit('uncertain-delete', { apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['to-delete'] });
 		await deleteEntered.promise;
 		// Both following tasks enter taskChain before the first handler returns.

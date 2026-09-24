@@ -178,7 +178,8 @@
 			"readOnlyIfNoArgsApiFullNames": [
 				"eda.sch_PrimitiveComponent.getAllPrimitiveId",
 				"eda.sch_PrimitiveComponent.getAll",
-				"eda.pcb_PrimitiveComponent.getAll"
+				"eda.pcb_PrimitiveComponent.getAll",
+				"eda.dmt_Schematic.getAllSchematicPagesInfo"
 			],
 			"readOnlyIfCurrentPageArgsApiFullNames": [
 				"eda.sch_PrimitiveComponent.getAllPrimitiveId",

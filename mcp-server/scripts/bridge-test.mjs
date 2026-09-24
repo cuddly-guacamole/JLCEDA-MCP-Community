@@ -1293,6 +1293,99 @@ try {
     crossPageDeleteServer.close();
   }
 
+  const pageMutationPort = await reservePort();
+  const pageMutationServer = new EdaBridgeServer(pageMutationPort);
+  assert.equal(pageMutationServer.validateCompleteSchematicPages({
+    apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo', schematicPages: [], pageCount: 0,
+  }, { targetSchematicUuid: 'empty-schematic', targetSchematicMayBeEmpty: true }), 0);
+  assert.equal(pageMutationServer.validateCompleteSchematicPages({
+    apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo',
+    schematicPages: [{ uuid: 'source-page', parentSchematicUuid: 'source-schematic', name: 'Source' }], pageCount: 1,
+  }, {
+    targetSchematicUuid: 'empty-target-schematic', targetSchematicMayBeEmpty: true,
+    sourceSchematicPageUuid: 'source-page',
+  }), 1);
+  assert.throws(() => pageMutationServer.validateCompleteSchematicPages({
+    apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo', schematicPages: [], pageCount: 0,
+  }, {
+    targetSchematicUuid: 'empty-target-schematic', targetSchematicMayBeEmpty: true,
+    sourceSchematicPageUuid: 'source-page',
+  }), /Source schematic page is absent/);
+  let pageMutationOld;
+  let pageMutationFresh;
+  let includeTargetPage = false;
+  try {
+    await pageMutationServer.start();
+    pageMutationOld = await registerEda(`ws://127.0.0.1:${pageMutationPort}/bridge/ws${tokenQuery}`, 'page-mutation-old', {
+      documentUuid: 'active-page-document', projectUuid: 'target-project', pageKind: 'schematic', pageUuid: 'active-page',
+    });
+    pageMutationOld.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      pageMutationOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'page-mutation-old', requestId: message.requestId,
+        leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'active-page-document', projectUuid: 'target-project', pageKind: 'schematic', pageUuid: 'active-page' },
+      }));
+      pageMutationOld.socket.send(JSON.stringify({
+        type: 'bridge/result', clientId: 'page-mutation-old', requestId: message.requestId,
+        leaseTerm: message.leaseTerm, result: { commitUnknown: true },
+      }));
+    });
+    await pageMutationServer.request('/bridge/jlceda/schematic/pages-manage', {
+      operation: 'rename', schematicPageUuid: 'target-page', newName: 'renamed', confirm: true,
+    }, 2000);
+    const pageDiagnostic = (await pageMutationServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(pageDiagnostic.pageBound, false);
+    assert.equal(pageDiagnostic.requiredReadback, 'schematic_page_inventory');
+    assert.equal(pageDiagnostic.targetSchematicPageUuid, 'target-page');
+    const pageRecovery = await pageMutationServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: pageDiagnostic.requestId,
+    }, 2000);
+    pageMutationOld.socket.close();
+    await waitUntil(async () => (await pageMutationServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'page-mutation-old')?.ready === false);
+    pageMutationFresh = await registerEda(`ws://127.0.0.1:${pageMutationPort}/bridge/ws${tokenQuery}`, 'page-mutation-fresh', {
+      documentUuid: 'another-page-document', projectUuid: 'target-project', pageKind: 'schematic', pageUuid: 'another-page',
+    });
+    attachTaskResponder(pageMutationFresh.socket, 'page-mutation-fresh', message => message.path === '/bridge/jlceda/api/invoke'
+      ? {
+          apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo',
+          schematicPages: includeTargetPage
+            ? [
+                { uuid: 'active-page', parentSchematicUuid: 'target-schematic', name: 'Active' },
+                { uuid: 'target-page', parentSchematicUuid: 'target-schematic', name: 'Renamed' },
+              ]
+            : [{ uuid: 'active-page', parentSchematicUuid: 'target-schematic', name: 'Active' }],
+          pageCount: includeTargetPage ? 2 : 1,
+        }
+      : {
+          currentDocumentInfo: { uuid: 'another-page-document', parentProjectUuid: 'target-project' },
+          currentProjectInfo: { uuid: 'target-project' },
+          currentSchematicPageInfo: { uuid: 'another-page' },
+        });
+    const pageReadback = {
+      action: 'readback', confirm: true, recoveryId: pageRecovery.recoveryId,
+      clientId: 'page-mutation-fresh', readbackPath: '/bridge/jlceda/api/invoke',
+      readbackPayload: { apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo', args: [] },
+    };
+    await assert.rejects(pageMutationServer.request('/bridge/admin/recover-client', {
+      ...pageReadback, readbackPath: '/bridge/jlceda/context',
+    }, 2000), /requires eda.dmt_Schematic.getAllSchematicPagesInfo/);
+    await assert.rejects(pageMutationServer.request('/bridge/admin/recover-client', pageReadback, 2000), /Target schematic page is absent/);
+    await assert.rejects(pageMutationServer.request('/bridge/jlceda/schematic/pages-manage', {
+      operation: 'rename', schematicPageUuid: 'target-page', newName: 'again', confirm: true,
+    }, 2000), /writes are blocked pending recovery readback/);
+    includeTargetPage = true;
+    const verifiedInventory = await pageMutationServer.request('/bridge/admin/recover-client', pageReadback, 2000);
+    assert.equal(verifiedInventory.readbackVerified, true);
+    assert.equal(verifiedInventory.readback.pageCount, 2);
+  } finally {
+    pageMutationOld?.socket.close();
+    pageMutationFresh?.socket.close();
+    pageMutationServer.close();
+  }
+
   const disconnectPort = await reservePort();
   disconnectServer = new EdaBridgeServer(disconnectPort);
   await disconnectServer.start();

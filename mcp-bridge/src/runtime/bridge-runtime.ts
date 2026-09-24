@@ -475,8 +475,12 @@ export function enqueueTask(task: { requestId: string; path: string; payload: un
 			const handlerPayload = autoLayoutTask
 				? { ...(task.payload as Record<string, unknown>), expectedPcbUuid: executionContext!.pageUuid }
 				: task.payload;
-			if (taskGeneration !== transportGeneration)
+			if (taskGeneration !== transportGeneration || transport !== currentTransport)
 				throw new Error('Bridge connection changed before the EDA task started.');
+			if (currentRole !== 'active')
+				throw new Error(BRIDGE_STATUS_TEXT.runtime.taskRejectedStandby);
+			if (task.leaseTerm !== currentLeaseTerm)
+				throw new Error(BRIDGE_STATUS_TEXT.runtime.taskLeaseExpired);
 			currentTransport.reportTaskStarted(task.requestId, task.leaseTerm, executionContext);
 			writeTaskLog('info', 'bridge.task.started', 'Bridge 任务开始执行', task, 'handler');
 			// 任务执行前刷新服务端活动时间戳，避免空闲超时误判

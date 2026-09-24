@@ -14,6 +14,7 @@ import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSa
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
 const PCB_COMPONENT_GET_ALL = 'eda.pcb_primitivecomponent.getall';
+const SCHEMATIC_PAGES_GET_ALL = 'eda.dmt_schematic.getallschematicpagesinfo';
 let pendingAutoLayoutPcbUuid: string | undefined;
 
 function pcbComponentPosition(component: unknown): { primitiveId: string; designator: string; x: number; y: number; rotation: number } | undefined {
@@ -282,6 +283,19 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 				...readbackDetails,
 			};
 		}
+	}
+	if (normalizedPath === SCHEMATIC_PAGES_GET_ALL && invokeArgs.length === 0 && Array.isArray(invokeResult)) {
+		const schematicPages = invokeResult.map(page => isPlainObjectRecord(page)
+			? { uuid: page.uuid, parentSchematicUuid: page.parentSchematicUuid, name: page.name }
+			: undefined);
+		if (schematicPages.some(page => !page || typeof page.uuid !== 'string' || typeof page.parentSchematicUuid !== 'string'))
+			return { apiFullName: resolvedPath, ok: false, error: 'Schematic page inventory omitted a UUID or parent schematic UUID.' };
+		return {
+			apiFullName: resolvedPath,
+			result: await toSerializableAsync(invokeResult),
+			schematicPages: preserveBoundedArray(schematicPages),
+			pageCount: schematicPages.length,
+		};
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {
 		return {

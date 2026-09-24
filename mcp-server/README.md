@@ -40,7 +40,7 @@ Server 提供 `schematic_document_action`，用于受限地检查原理图坐标
 
 `schematic_document_action` 和 `pcb_document_action` 的纯查询及画布导航可在写入隔离期间使用；改变选择状态、飞线计算、保存和导入仍受写入隔离约束。
 
-`schematic_pages_manage` 只有在 `confirm: true` 时才会创建、复制、重命名或完整重排页面。重排必须提供每个页面 UUID，Bridge 会重新读取页面对象并验证最终顺序；不提供删除功能。
+`schematic_pages_manage` 只有在 `confirm: true` 时才会创建、复制、重命名或完整重排页面。重排必须提供每个页面 UUID，Bridge 会重新读取页面对象并验证最终顺序；不提供删除功能。页面操作可指向非当前图页；提交状态未知时，用无参数 `eda.dmt_Schematic.getAllSchematicPagesInfo` 读回完整目录，并核对目标页面或原理图归属，当前图页的 `/context` 回读不会解除隔离。
 
 `eda_context` 在客户端支持时返回客户端版本、连接模式、编辑器版本、编译日期和当前画布数据单位。`eda_canvas_snapshot` 可在不改变文档或视图的情况下返回受限的画布图像。
 

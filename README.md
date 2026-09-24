@@ -1,8 +1,8 @@
 # JLCEDA MCP 社区版
 
-当前发布版本：Bridge `2.3.2`，MCP Server `2.3.2`。本版本改进原理图当前页读取、器件放置、BOM 属性修改和连通性操作，并明确 PCB 导入与自动布局的提交状态。EDA 修改超时或连接失联后，Server 会保留诊断，要求在原图页完成只读回读才能恢复写入。
+当前发布版本：Bridge `2.3.2`，MCP Server `2.3.2`。本版本改进原理图当前页读取、器件放置、BOM 属性修改和连通性操作，并明确 PCB 导入与自动布局的提交状态。EDA 修改超时或连接失联后，Server 会保留诊断，按操作目标完成只读回读后才能恢复写入。
 
-多页面连接时，首个页面未就绪会自动改选已就绪页面；显式选择或正在执行任务时不会自动切换。所有页面写入使用执行时的实际图页身份进行恢复核对，提交状态不明时本机也立即阻止后续写入；完整安全恢复要求 Bridge 和 Server 均升级到 2.3.2。调用 `eda.pcb_PrimitiveComponent.getAll` 时可指定 `includeCompletePositions:true` 额外获取不截断的 `componentPositions`，通用 `result` 保持原有字段。
+多页面连接时，首个页面未就绪会自动改选已就绪页面；显式选择或正在执行任务时不会自动切换。当前页写入使用执行时的实际图页身份进行恢复核对，提交状态不明时本机也立即阻止后续写入；跨图页的页面管理操作不能用当前图页回读解除隔离。完整安全恢复要求 Bridge 和 Server 均升级到 2.3.2。调用 `eda.pcb_PrimitiveComponent.getAll` 时可指定 `includeCompletePositions:true` 额外获取不截断的 `componentPositions`，通用 `result` 保持原有字段。
 
 ## 功能与工具
 
