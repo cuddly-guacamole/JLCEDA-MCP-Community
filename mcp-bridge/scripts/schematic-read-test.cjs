@@ -52,14 +52,18 @@ async function main() {
 		getState_SubPartName: () => '',
 	};
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [netPort, device];
-	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = async id => id === 'device' ? [{
-		getState_PinNumber: () => '1',
-		getState_PinName: () => 'IN',
-		getState_PinType: () => 'input',
-		getState_X: () => 100,
-		getState_Y: () => 100,
-		getState_NoConnected: () => false,
-	}] : [];
+	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = async (id) => {
+		if (id !== 'device')
+			return [];
+		return [{
+			getState_PinNumber: () => '1',
+			getState_PinName: () => 'IN',
+			getState_PinType: () => 'input',
+			getState_X: () => 100,
+			getState_Y: () => 100,
+			getState_NoConnected: () => false,
+		}];
+	};
 	globalThis.eda.sch_PrimitiveWire.getAll = async () => [{
 		getState_Line: () => [[0, 0, 100, 0], [100, 0, 100, 100]],
 		getState_Net: () => '',

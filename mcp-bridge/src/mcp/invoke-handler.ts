@@ -206,16 +206,17 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			};
 		}
 		const autoLayoutReadbackPerformed = Boolean(pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid);
-		if (autoLayoutReadbackPerformed)
+		const readbackDetails: Record<string, unknown> = {};
+		if (autoLayoutReadbackPerformed) {
 			pendingAutoLayoutPcbUuid = undefined;
+			readbackDetails.autoLayoutReadbackPerformed = true;
+			readbackDetails.verification = 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.';
+		}
 		return {
 			apiFullName: resolvedPath,
 			result: componentPositions,
 			componentCount: componentPositions.length,
-			...(autoLayoutReadbackPerformed ? {
-				autoLayoutReadbackPerformed: true,
-				verification: 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.',
-			} : {}),
+			...readbackDetails,
 		};
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {
