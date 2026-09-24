@@ -120,7 +120,7 @@ Claude Desktop、Claude Code、Cursor 等客户端应将 `jlceda-mcp` 注册为�
 - MCP 工具能够修改当前工程。操作前请保存工程，并审查 AI 提议的写操作。
 - `api_invoke` 是可选的 API 透传能力，只应在信任的 MCP 客户端中启用。
 - 已在嘉立创 EDA 专业版 3.2.181 上测试；其他 3.x 版本需自行验证。
-- `createNetLabel` 属于 Alpha API；3.2.181 中普通网络标签创建可能超时。Bridge 会明确报告失败并释放任务队列。
+- `createNetLabel` 从 EDA v4 起提供；3.2.181 中普通网络标签创建可能超时。Bridge 会明确报告失败并隔离后续写操作；若底层调用持续挂起，需重启 EDA 并完成恢复回读。
 - 扩展只在原理图或 PCB 页面建立 Bridge 连接。
 
 ## 状态说明

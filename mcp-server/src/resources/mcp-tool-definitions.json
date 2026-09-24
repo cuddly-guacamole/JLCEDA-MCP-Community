@@ -239,8 +239,38 @@
         }
       },
       "oneOf": [
-        { "required": ["keyword"] },
-        { "required": ["properties"] }
+        {
+          "type": "object",
+          "properties": {
+            "keyword": { "type": "string" },
+            "limit": { "type": "integer", "minimum": 2, "maximum": 20, "default": 5 }
+          },
+          "required": ["keyword"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "properties": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "value": { "type": "string", "minLength": 1 },
+                "symbolName": { "type": "string", "minLength": 1 },
+                "footprintName": { "type": "string", "minLength": 1 },
+                "supplierFootprint": { "type": "string", "minLength": 1 },
+                "supplierId": { "type": "string", "minLength": 1 },
+                "partNumber": { "type": "string", "minLength": 1 },
+                "partCode": { "type": "string", "minLength": 1 }
+              },
+              "minProperties": 1,
+              "additionalProperties": false
+            },
+            "limit": { "type": "integer", "minimum": 2, "maximum": 20, "default": 5 }
+          },
+          "required": ["properties"],
+          "additionalProperties": false
+        }
       ]
     }
   },
@@ -1137,6 +1167,7 @@
       "required": ["domain", "sourceA", "sourceB"],
       "oneOf": [
         {
+          "type": "object",
           "properties": {
             "domain": { "const": "netlist" },
             "sourceA": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "object", "properties": { "projectUuid": { "type": "string", "minLength": 1 }, "documentUuid": { "type": "string", "minLength": 1 } }, "required": ["projectUuid", "documentUuid"], "additionalProperties": false }] },
@@ -1144,6 +1175,7 @@
           }
         },
         {
+          "type": "object",
           "properties": {
             "domain": { "const": "schematic" },
             "sourceA": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "object", "properties": { "projectUuid": { "type": "string", "minLength": 1 }, "schematicUuid": { "type": "string", "minLength": 1 } }, "required": ["projectUuid", "schematicUuid"], "additionalProperties": false }] },
@@ -1151,6 +1183,7 @@
           }
         },
         {
+          "type": "object",
           "properties": {
             "domain": { "const": "pcb" },
             "sourceA": { "oneOf": [{ "type": "string", "minLength": 1 }, { "type": "object", "properties": { "projectUuid": { "type": "string", "minLength": 1 }, "pcbUuid": { "type": "string", "minLength": 1 } }, "required": ["projectUuid", "pcbUuid"], "additionalProperties": false }] },
