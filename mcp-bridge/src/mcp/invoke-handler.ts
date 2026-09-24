@@ -9,7 +9,7 @@
  * ------------------------------------------------------------------------
  */
 
-import { getSyncState, isPlainObjectRecord, toSafeErrorMessage, toSerializableAsync } from '../utils';
+import { getSyncState, isPlainObjectRecord, preserveBoundedArray, toSafeErrorMessage, toSerializableAsync } from '../utils';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
@@ -214,7 +214,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		}
 		return {
 			apiFullName: resolvedPath,
-			result: componentPositions,
+			result: preserveBoundedArray(componentPositions),
 			componentCount: componentPositions.length,
 			...readbackDetails,
 		};

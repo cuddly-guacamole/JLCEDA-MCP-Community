@@ -681,6 +681,8 @@ async function main() {
 	assert.equal(layoutReadback.componentCount, 125);
 	assert.equal(layoutReadback.result.length, 125, 'layout recovery must return every component position');
 	assert.equal(layoutReadback.result[124].primitiveId, 'R125');
+	const serializedLayoutReadback = await toSerializableAsync(layoutReadback);
+	assert.equal(serializedLayoutReadback.result.length, 125, 'Bridge result serialization must preserve every verified position');
 	assert.equal(layoutReadback.result[0].rotation, 90);
 	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
 	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
