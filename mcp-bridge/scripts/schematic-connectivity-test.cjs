@@ -19,8 +19,8 @@ function port(state) {
 		getState_PrimitiveId: () => state.id,
 		getState_ComponentType: () => state.type ?? 'netport',
 		getState_Net: () => state.net,
-		getState_X: () => state.x,
-		getState_Y: () => state.y,
+		getState_X: () => state.x + (state.readbackDeltaX ?? 0),
+		getState_Y: () => state.y + (state.readbackDeltaY ?? 0),
 		getState_Designator: () => '',
 		toAsync() { return this; },
 		setState_X(x) {
@@ -44,6 +44,7 @@ async function main() {
 	const ports = [{ id: 'port-a', net: 'NET_A', x: 0, y: 0 }];
 	let wireCreates = 0;
 	let portCreates = 0;
+	let createdPortReadbackDeltaY = 0;
 	globalThis.eda = {
 		sch_PrimitiveWire: {
 			async getAll() { return wires; },
@@ -62,7 +63,7 @@ async function main() {
 			async getAllPinsByPrimitiveId() { return []; },
 			async createNetPort(_direction, net, x, y) {
 				portCreates += 1;
-				const state = { id: `port-${portCreates}`, net, x, y };
+				const state = { id: `port-${portCreates}`, net, x, y, readbackDeltaY: createdPortReadbackDeltaY };
 				ports.push(state);
 				return port(state);
 			},
@@ -221,6 +222,62 @@ async function main() {
 	const remotePortPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [350, 325, 375, 325], net: 'NET_B', allowedWireIds: ['float-unnamed'] });
 	assert.equal(remotePortPreview.canCreate, false);
 	assert.deepEqual(remotePortPreview.conflictingNetWireIds, ['float-unnamed']);
+
+	// The native wire API rejects diagonal segments; preview and create must agree before calling it.
+	wires.splice(0, wires.length);
+	ports.splice(0, ports.length);
+	const diagonalLine = [0, 0, 100, 100];
+	const diagonalPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: diagonalLine });
+	assert.equal(diagonalPreview.canCreate, false);
+	assert.equal(diagonalPreview.reason, 'non_orthogonal_wire');
+	assert.equal(diagonalPreview.requiresBend, true);
+	assert.equal(diagonalPreview.segmentIndex, 0);
+	const wireCreatesBeforeDiagonal = wireCreates;
+	const diagonalCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: diagonalLine });
+	assert.equal(diagonalCreate.canCreate, false);
+	assert.equal(diagonalCreate.reason, 'non_orthogonal_wire');
+	assert.equal(wireCreates, wireCreatesBeforeDiagonal);
+	const bentPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [0, 0, 100, 0, 100, 100] });
+	assert.equal(bentPreview.canCreate, true);
+	const nearAxisCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [0, 0, 100, 1e-13], net: 'NET_A' });
+	assert.equal(nearAxisCreate.ok, true);
+	assert.deepEqual(wires.at(-1).getState_Line(), [0, 0, 100, 0], 'native API receives an exactly orthogonal line');
+	const wireCreatesBeforeTiny = wireCreates;
+	await assert.rejects(handleSchematicConnectivityTask({ action: 'wire_preview', line: [0, 0, 1e-13, 1e-13] }), /too short/);
+	assert.equal(wireCreates, wireCreatesBeforeTiny);
+
+	// Existing and newly read NetPorts use the same tiny coordinate tolerance as wire contacts.
+	wires.splice(0, wires.length);
+	const portCreatesBeforeFloat = portCreates;
+	ports.splice(0, ports.length, { id: 'foreign-near', net: 'NET_B', x: 325, y: nearly325 });
+	const foreignNearCreate = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 325, y: 325 });
+	assert.equal(foreignNearCreate.reason, 'target_net_conflict');
+	assert.deepEqual(foreignNearCreate.conflictingPrimitiveIds, ['foreign-near']);
+	ports.splice(0, ports.length, { id: 'existing-near', net: 'NET_A', x: 325, y: nearly325 });
+	const existingNearCreate = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 325, y: 325 });
+	assert.equal(existingNearCreate.reason, 'existing_port_direction_unverified');
+	assert.equal(portCreates, portCreatesBeforeFloat);
+	const unchangedState = { id: 'move-near', net: 'NET_A', x: 325, y: nearly325 };
+	ports.splice(0, ports.length, unchangedState);
+	const unchangedMove = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'move-near', x: 325, y: 325 });
+	assert.equal(unchangedMove.unchanged, true);
+	assert.equal(unchangedMove.from.y, nearly325);
+	assert.equal(unchangedState.y, nearly325);
+	ports.splice(0, ports.length, { id: 'moving-port', net: 'NET_A', x: 300, y: 300 }, { id: 'foreign-near', net: 'NET_B', x: 325, y: nearly325 });
+	const foreignNearMove = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'moving-port', x: 325, y: 325 });
+	assert.equal(foreignNearMove.reason, 'target_net_conflict');
+	assert.deepEqual(foreignNearMove.conflictingPrimitiveIds, ['foreign-near']);
+	ports.splice(0, ports.length, { id: 'moving-readback', net: 'NET_A', x: 300, y: 300, readbackDeltaY: nearly325 - 325 });
+	const movedWithReadbackNoise = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'moving-readback', x: 325, y: 325 });
+	assert.equal(movedWithReadbackNoise.ok, true);
+	assert.equal(movedWithReadbackNoise.commitUnknown, false);
+	assert.equal(movedWithReadbackNoise.observed.y, nearly325);
+	ports.splice(0, ports.length);
+	createdPortReadbackDeltaY = nearly325 - 325;
+	const createdWithReadbackNoise = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 325, y: 325 });
+	assert.equal(createdWithReadbackNoise.ok, true);
+	assert.equal(createdWithReadbackNoise.primitiveVerified, true);
+	assert.equal(createdWithReadbackNoise.commitUnknown, false);
 }
 
 main().catch((error) => {

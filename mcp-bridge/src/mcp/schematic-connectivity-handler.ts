@@ -35,6 +35,14 @@ function requiredString(value: unknown, name: string): string {
 	return value.trim();
 }
 
+function sameCoordinate(first: number, second: number): boolean {
+	return Math.abs(first - second) <= COORDINATE_EPSILON;
+}
+
+function samePoint(first: Point, second: Point): boolean {
+	return sameCoordinate(first.x, second.x) && sameCoordinate(first.y, second.y);
+}
+
 function segmentsFromFlatLine(line: unknown): Segment[] {
 	if (!Array.isArray(line) || line.length < 4 || line.length % 2 !== 0 || line.some(value => typeof value !== 'number' || !Number.isFinite(value)))
 		return [];
@@ -203,11 +211,28 @@ function effectiveWireNets(wires: WireState[], components: ComponentState[]): Ma
 
 async function handleWireAction(action: 'wire_preview' | 'wire_create', payload: Record<string, unknown>, eda: Record<string, unknown>): Promise<unknown> {
 	const line = payload.line;
-	const segments = segmentsFromFlatLine(line);
-	if (segments.length === 0 || !Array.isArray(line) || segments.length !== line.length / 2 - 1)
+	const inputSegments = segmentsFromFlatLine(line);
+	if (inputSegments.length === 0 || !Array.isArray(line) || inputSegments.length !== line.length / 2 - 1)
 		throw new TypeError('line must contain at least two distinct [x,y] points as a flat numeric array.');
 	const net = payload.net === undefined ? undefined : requiredString(payload.net, 'net');
 	const allowed = allowedWireIds(payload.allowedWireIds);
+	const normalizedLine = [...line] as number[];
+	for (let index = 0; index < inputSegments.length; index++) {
+		const start = { x: normalizedLine[index * 2], y: normalizedLine[index * 2 + 1] };
+		const endIndex = (index + 1) * 2;
+		const end = { x: normalizedLine[endIndex], y: normalizedLine[endIndex + 1] };
+		const sameX = sameCoordinate(start.x, end.x);
+		const sameY = sameCoordinate(start.y, end.y);
+		if (sameX && sameY)
+			throw new TypeError(`line segment ${index} is too short to create a wire.`);
+		if (!sameX && !sameY)
+			return { ok: false, action, canCreate: false, reason: 'non_orthogonal_wire', requiresBend: true, segmentIndex: index, message: 'Add a bend point: SCH_PrimitiveWire.create only accepts horizontal and vertical wire segments.' };
+		if (sameX)
+			normalizedLine[endIndex] = start.x;
+		else
+			normalizedLine[endIndex + 1] = start.y;
+	}
+	const segments = segmentsFromFlatLine(normalizedLine);
 	const api = wireApi(eda);
 	const before = await readWires(api);
 	const components = await readComponents(componentApi(eda));
@@ -226,7 +251,7 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		return { ok: canCreate, action, canCreate, touches, portTouches, conflictingNetWireIds: conflictingNets.map(wire => wire.id), conflictingNetPortIds: conflictingPorts.map(component => component.id), mixedNamedNets: touchedNetNames.size > 1, unapprovedWireIds: unapproved.map(wire => wire.id) };
 	if (typeof api.create !== 'function')
 		throw new TypeError('EDA sch_PrimitiveWire.create API is unavailable.');
-	const result = await (api.create as (line: number[], net?: string) => Promise<unknown>).call(api, line as number[], net);
+	const result = await (api.create as (line: number[], net?: string) => Promise<unknown>).call(api, normalizedLine, net);
 	const after = await readWires(api);
 	const afterIds = new Set(after.map(wire => wire.id));
 	const changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
@@ -257,6 +282,7 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 	const id = requiredString(payload.id, 'id');
 	const x = requiredNumber(payload.x, 'x');
 	const y = requiredNumber(payload.y, 'y');
+	const target = { x, y };
 	const api = componentApi(eda);
 	const components = await readComponents(api);
 	const current = components.find(component => component.id === id);
@@ -264,9 +290,9 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		throw new Error(`Current schematic page does not contain primitive ${id}.`);
 	if (current.type !== 'netport')
 		throw new TypeError(`Primitive ${id} is ${current.type || 'unknown'}, not a NetPort.`);
-	if (current.x === x && current.y === y)
-		return { ok: true, action: 'netport_move', id, net: current.net, from: { x, y }, to: { x, y }, unchanged: true, netlistReadback: await readTargetNetwork(current.net), semanticScope: 'current_schematic_page_hierarchical_port' };
-	const otherPort = components.find(component => component.id !== id && (component.type === 'netport' || component.type === 'netflag') && component.x === x && component.y === y && component.net !== current.net);
+	if (samePoint(current, target))
+		return { ok: true, action: 'netport_move', id, net: current.net, from: { x: current.x, y: current.y }, to: target, unchanged: true, netlistReadback: await readTargetNetwork(current.net), semanticScope: 'current_schematic_page_hierarchical_port' };
+	const otherPort = components.find(component => component.id !== id && (component.type === 'netport' || component.type === 'netflag') && samePoint(component, target) && component.net !== current.net);
 	const wires = await readWires(wireApi(eda));
 	const wireNets = effectiveWireNets(wires, components);
 	const foreignWire = wires.find(wire => [...(wireNets.get(wire.id) ?? [])].some(name => name !== current.net) && wire.segments.some(segment => pointOnSegment({ x, y }, segment)));
@@ -281,7 +307,7 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 	(primitive.setState_Y as (value: number) => unknown).call(primitive, y);
 	await Promise.resolve((primitive.done as () => unknown).call(primitive));
 	const observed = (await readComponents(api)).find(component => component.id === id);
-	const verified = observed?.x === x && observed.y === y && observed.net === current.net && observed.type === 'netport';
+	const verified = Boolean(observed && samePoint(observed, target) && observed.net === current.net && observed.type === 'netport');
 	return {
 		ok: verified,
 		action: 'netport_move',
@@ -322,6 +348,7 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 	const net = requiredString(payload.net, 'net');
 	const x = requiredNumber(payload.x, 'x');
 	const y = requiredNumber(payload.y, 'y');
+	const target = { x, y };
 	const direction = payload.direction === undefined ? 'BI' : requiredString(payload.direction, 'direction');
 	if (direction !== 'IN' && direction !== 'OUT' && direction !== 'BI')
 		throw new TypeError('direction must be IN, OUT, or BI.');
@@ -331,8 +358,8 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 	const before = await readComponents(api);
 	const wires = await readWires(wireApi(eda));
 	const wireNets = effectiveWireNets(wires, before);
-	const otherPort = before.find(component => (component.type === 'netport' || component.type === 'netflag') && component.x === x && component.y === y && component.net !== net);
-	const existingPort = before.find(component => component.type === 'netport' && component.x === x && component.y === y && component.net === net);
+	const otherPort = before.find(component => (component.type === 'netport' || component.type === 'netflag') && samePoint(component, target) && component.net !== net);
+	const existingPort = before.find(component => component.type === 'netport' && samePoint(component, target) && component.net === net);
 	const foreignWire = wires.find(wire => [...(wireNets.get(wire.id) ?? [])].some(name => name !== net) && wire.segments.some(segment => pointOnSegment({ x, y }, segment)));
 	if (otherPort || foreignWire)
 		return { ok: false, action: 'netport_create', reason: 'target_net_conflict', target: { x, y }, conflictingPrimitiveIds: [otherPort?.id, foreignWire?.id].filter(Boolean) };
@@ -342,8 +369,8 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 	const created = await (api.createNetPort as (direction: 'IN' | 'OUT' | 'BI', net: string, x: number, y: number) => Promise<unknown>).call(api, direction, net, x, y);
 	const returnedId = String(getSyncState(created, 'getState_PrimitiveId', ''));
 	const beforeIds = new Set(before.map(component => component.id));
-	const observed = (await readComponents(api)).find(component => !beforeIds.has(component.id) && component.type === 'netport' && component.net === net && component.x === x && component.y === y && (!returnedId || component.id === returnedId));
-	const verified = Boolean(observed && observed.type === 'netport' && observed.net === net && observed.x === x && observed.y === y);
+	const observed = (await readComponents(api)).find(component => !beforeIds.has(component.id) && component.type === 'netport' && component.net === net && samePoint(component, target) && (!returnedId || component.id === returnedId));
+	const verified = Boolean(observed && observed.type === 'netport' && observed.net === net && samePoint(observed, target));
 	const netlistReadback = await readTargetNetwork(net);
 	return {
 		ok: verified,
