@@ -24,6 +24,7 @@ function addWireEdgesToAdjacencyGraph(
 	lineData: unknown,
 	graph: Map<string, Set<string>>,
 	connectionPoints: Array<{ x: number; y: number }>,
+	wireVertices?: Array<{ x: number; y: number }>,
 ): void {
 	if (!Array.isArray(lineData) || lineData.length === 0) {
 		return;
@@ -54,6 +55,7 @@ function addWireEdgesToAdjacencyGraph(
 			const x2 = Math.round(flatLine[i + 2] as number);
 			const y2 = Math.round(flatLine[i + 3] as number);
 			const startKey = buildPinCoordinateKey(x1, y1);
+			wireVertices?.push({ x: x1, y: y1 }, { x: x2, y: y2 });
 			addEdge(startKey, buildPinCoordinateKey(x2, y2));
 			for (const point of connectionPoints) {
 				const { x, y } = point;
@@ -157,9 +159,16 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 	const wireAdjacencyGraph: Map<string, Set<string>> = new Map();
 	const wireListRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveWire.getAll()));
 	if (Array.isArray(wireListRaw)) {
+		// 先收集全部导线端点，下一轮才可将 T 形支线接到主线中段。
+		const wireVertices: Array<{ x: number; y: number }> = [];
 		for (const rawWire of wireListRaw) {
 			const lineData: unknown = getSyncState<unknown>(rawWire, 'getState_Line', null);
-			addWireEdgesToAdjacencyGraph(lineData, wireAdjacencyGraph, connectionPoints);
+			addWireEdgesToAdjacencyGraph(lineData, wireAdjacencyGraph, [], wireVertices);
+		}
+		const allConnectionPoints = [...connectionPoints, ...wireVertices];
+		for (const rawWire of wireListRaw) {
+			const lineData: unknown = getSyncState<unknown>(rawWire, 'getState_Line', null);
+			addWireEdgesToAdjacencyGraph(lineData, wireAdjacencyGraph, allConnectionPoints);
 			// 导线自身已有网络名时，将其所有端点作为种子。
 			const wireName = getSyncState<string>(rawWire, 'getState_Net', '');
 			if (wireName.length > 0 && Array.isArray(lineData)) {

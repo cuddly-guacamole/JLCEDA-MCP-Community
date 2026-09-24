@@ -38,6 +38,7 @@ async function main() {
 	assert.equal(await readCount(), 0, 'a newly opened empty page must not include earlier-page components');
 
 	let portX = 0;
+	let pinX = 100;
 	let pinY = 100;
 	const netPort = {
 		getState_PrimitiveId: () => 'net-port',
@@ -61,7 +62,7 @@ async function main() {
 			getState_PinNumber: () => '1',
 			getState_PinName: () => 'IN',
 			getState_PinType: () => 'input',
-			getState_X: () => 100,
+			getState_X: () => pinX,
 			getState_Y: () => pinY,
 			getState_NoConnected: () => false,
 		}];
@@ -81,6 +82,15 @@ async function main() {
 	pinY = 50;
 	const pinMidpoint = JSON.parse((await handleSchematicReadTask({})).schematicCircuitSnapshot);
 	assert.deepEqual(pinMidpoint.networks.find(network => network.networkName === 'SIG').connectedPinRefs, ['SIG.1', 'U1.1'], 'pin on an unnamed wire midpoint must inherit the NetPort name');
+	// A branch endpoint on a trunk midpoint is a normal T junction, even with no pin at the junction.
+	pinX = 50;
+	pinY = 100;
+	globalThis.eda.sch_PrimitiveWire.getAll = async () => [
+		{ getState_Line: () => [0, 0, 100, 0], getState_Net: () => '' },
+		{ getState_Line: () => [50, 0, 50, 100], getState_Net: () => '' },
+	];
+	const tJunction = JSON.parse((await handleSchematicReadTask({})).schematicCircuitSnapshot);
+	assert.deepEqual(tJunction.networks.find(network => network.networkName === 'SIG').connectedPinRefs, ['SIG.1', 'U1.1'], 'a T junction must carry a NetPort name through the branch to its pin');
 	console.log('schematic_read current-page test passed');
 }
 
