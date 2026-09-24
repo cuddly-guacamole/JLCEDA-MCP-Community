@@ -567,6 +567,14 @@ try {
   const disconnectedStart = await disconnectedRecoveryServer.request('/bridge/admin/recover-client', { confirm: true, requestId: disconnectedRequestId }, 2000);
   assert.equal(disconnectedStart.sourceConnected, false);
   assert.equal(disconnectedStart.freshBridgeGenerationRequested, false);
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
+    action: 'readback',
+    confirm: true,
+    recoveryId: disconnectedStart.recoveryId,
+    clientId: 'disconnected-recovery-target',
+    expectedDocumentUuid: 'disconnected-document',
+    expectedProjectUuid: 'disconnected-project',
+  }, 2000), /not a fresh Bridge generation/);
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-blocked', {}, 2000), /writes are blocked pending recovery readback/);
   disconnectedRecoveryTarget.socket.close();
   disconnectedRecoveryTarget = undefined;

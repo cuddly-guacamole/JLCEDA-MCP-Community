@@ -992,7 +992,9 @@ export class EdaBridgeServer {
     if (session.targetClientId && session.targetConnectedAt !== target.connectedAt) {
       throw new Error('Recovery readback target connection was replaced; retry with the new Bridge generation.');
     }
-    if (session.sourceConnected && target.connectedAt < session.requestedAtMs)
+    // A disconnected source may still have a native EDA call in flight; an
+    // already-connected standby is not a new host generation.
+    if (target.connectedAt <= session.requestedAtMs)
       throw new Error('clientId is not a fresh Bridge generation created after recovery was requested.');
     if (targetClientId === session.diagnostic.clientId
       && target.connectedAt <= (session.sourceConnectedAt ?? session.requestedAtMs)) {
