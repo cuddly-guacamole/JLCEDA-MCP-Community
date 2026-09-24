@@ -63,12 +63,11 @@ interface RecoverySession {
   recoveryId: string;
   diagnostic: RecoveryDiagnostic;
   requestedAt: string;
-  requestedAtMs: number;
   sourceConnected: boolean;
-  sourceConnectedAt?: number;
   sourceSocket?: WebSocket;
+  preRecoverySockets: Set<WebSocket>;
   targetClientId?: string;
-  targetConnectedAt?: number;
+  targetSocket?: WebSocket;
 }
 
 interface BridgeTask {
@@ -549,7 +548,7 @@ export class EdaBridgeServer {
     if (previous && previous.socket !== socket) {
       if (this.recoverySession?.targetClientId === clientId) {
         this.recoverySession.targetClientId = undefined;
-        this.recoverySession.targetConnectedAt = undefined;
+        this.recoverySession.targetSocket = undefined;
       }
       this.enterReconnectBarrier(clientId);
       this.rejectPendingForClient(clientId, 'EDA client reconnected before the pending request completed');
@@ -604,7 +603,7 @@ export class EdaBridgeServer {
       // The readback target is a socket generation, not merely a clientId.
       // Permit a later generation to rebind after this socket disconnects.
       this.recoverySession.targetClientId = undefined;
-      this.recoverySession.targetConnectedAt = undefined;
+      this.recoverySession.targetSocket = undefined;
     }
     if (this.activeClientId === clientId) {
       this.rejectPendingForClient(clientId, 'Active EDA client disconnected');
@@ -977,10 +976,9 @@ export class EdaBridgeServer {
         recoveryId,
         diagnostic,
         requestedAt: new Date().toISOString(),
-        requestedAtMs: Date.now(),
         sourceConnected,
-        sourceConnectedAt: source?.connectedAt,
         sourceSocket: source?.socket,
+        preRecoverySockets: new Set([...this.peers.values()].map(peer => peer.socket)),
       };
       if (sourceConnected) {
         this.trySend(source!.socket, {
@@ -1033,17 +1031,13 @@ export class EdaBridgeServer {
     const target = this.peers.get(targetClientId);
     if (!target || !this.isPeerReady(target))
       throw new Error(`EDA client is not connected and ready: ${targetClientId}`);
-    if (session.targetClientId && session.targetConnectedAt !== target.connectedAt) {
+    if (session.targetClientId && session.targetSocket !== target.socket) {
       throw new Error('Recovery readback target connection was replaced; retry with the new Bridge generation.');
     }
     // A disconnected source may still have a native EDA call in flight; an
     // already-connected standby is not a new host generation.
-    if (target.connectedAt <= session.requestedAtMs)
+    if (session.preRecoverySockets.has(target.socket))
       throw new Error('clientId is not a fresh Bridge generation created after recovery was requested.');
-    if (targetClientId === session.diagnostic.clientId
-      && target.connectedAt <= (session.sourceConnectedAt ?? session.requestedAtMs)) {
-      throw new Error('clientId must identify a newer Bridge generation than the timed-out source.');
-    }
     const expectedDocumentUuid = optionalString(payload.expectedDocumentUuid) ?? session.diagnostic.context?.documentUuid;
     const expectedProjectUuid = optionalString(payload.expectedProjectUuid) ?? session.diagnostic.context?.projectUuid;
     const expectedPageUuid = session.diagnostic.context?.pageUuid ?? optionalString(payload.expectedPageUuid);
@@ -1058,7 +1052,7 @@ export class EdaBridgeServer {
       throw new Error('Fresh Bridge client pageUuid does not match the timed-out page; writes remain blocked.');
     this.selectClient(targetClientId, true, true);
     session.targetClientId = targetClientId;
-    session.targetConnectedAt = target.connectedAt;
+    session.targetSocket = target.socket;
     const readback = await this.dispatchToEda(readbackPath, readbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
     if (isRecord(readback) && readback.ok === false) {
       const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
