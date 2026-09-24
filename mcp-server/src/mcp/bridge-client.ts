@@ -1209,6 +1209,9 @@ export class EdaBridgeServer {
     if (String(payload.recoveryId ?? '').trim() !== session.recoveryId) {
       throw new Error('recoveryId does not match the active recovery session.');
     }
+    if (session.diagnostic.importContextConflict)
+      throw new Error('PCB import identity disagrees with its execution context; writes remain blocked.');
+    const pendingImportAtReadbackStart = session.diagnostic.pendingNativeConfirmation === true;
     const targetClientId = String(payload.clientId ?? '').trim();
     if (!targetClientId) {
       throw new Error('clientId must identify the fresh Bridge client reported by bridge_clients.');
@@ -1330,6 +1333,13 @@ export class EdaBridgeServer {
       || session.diagnostic.context?.projectUuid !== executionIdentity.projectUuid) {
       throw new Error('Write execution identity changed during recovery readback; retry against the actual page.');
     }
+    if (session.diagnostic.importContextConflict)
+      throw new Error('PCB import identity disagrees with its execution context during recovery readback; writes remain blocked.');
+    if ((session.diagnostic.pendingNativeConfirmation === true) !== pendingImportAtReadbackStart)
+      throw new Error('PCB import confirmation state changed during recovery readback; retry the import confirmation recovery flow. Writes remain blocked.');
+    if (session.diagnostic.pendingNativeConfirmation
+      && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload)))
+      throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
     this.recoverySession = undefined;
     this.recoveryDiagnostics.delete(session.diagnostic.requestId);
     this.pendingImportSockets.delete(session.diagnostic.requestId);

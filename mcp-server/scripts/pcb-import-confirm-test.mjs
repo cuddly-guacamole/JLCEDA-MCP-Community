@@ -191,7 +191,6 @@ try {
     action: 'recover', confirm: true, requestId: conflictDiagnostic.requestId,
   }, 2000), /identity disagrees/);
   await assert.rejects(server.request('/bridge/jlceda/pcb/document', { action: 'save' }, 2000), /writes are blocked/);
-  process.stdout.write('PCB import confirmation Server tests passed\n');
 } finally {
   oldSocket?.close();
   freshSocket?.close();
@@ -200,3 +199,114 @@ try {
   if (originalToken === undefined) delete process.env.JLCEDA_BRIDGE_TOKEN;
   else process.env.JLCEDA_BRIDGE_TOKEN = originalToken;
 }
+
+async function waitForLateImportResult(server, requestId, conflicting) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const snapshot = await server.request('/bridge/admin/clients', {}, 2000);
+    const diagnostic = snapshot.clients.flatMap(client => client.quarantine?.diagnostics ?? [])
+      .find(item => item.requestId === requestId);
+    if (diagnostic?.pendingNativeConfirmation && (!conflicting || diagnostic.importContextConflict)) return diagnostic;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error('Late PCB import result was not recorded');
+}
+
+async function verifyLateImportAfterRecoveryStarted(duringReadback, conflicting = true) {
+  const previousToken = process.env.JLCEDA_BRIDGE_TOKEN;
+  process.env.JLCEDA_BRIDGE_TOKEN = 'import-race-token';
+  const racePort = await reservePort();
+  const raceServer = new EdaBridgeServer(racePort);
+  let source;
+  let sourceReconnect;
+  let target;
+  try {
+    await raceServer.start();
+    source = await registerEda(racePort, 'race-source', 'import-race-token');
+    let importTask;
+    source.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task' || message.path !== '/bridge/jlceda/pcb/document') return;
+      importTask = message;
+      source.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'race-source', requestId: message.requestId,
+        leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { pageKind: 'pcb', pageUuid: 'pcb-one', documentUuid: 'document-one', projectUuid: 'project-one' } }));
+    });
+    await assert.rejects(raceServer.request('/bridge/jlceda/pcb/document', { action: 'import_changes' }, 30), /execution timeout/);
+    const snapshot = await raceServer.request('/bridge/admin/clients', {}, 2000);
+    const requestId = snapshot.clients[0].quarantine.diagnostics[0].requestId;
+    assert.equal(importTask.requestId, requestId);
+    const recovery = await raceServer.request('/bridge/admin/recover-client', { action: 'recover', confirm: true, requestId }, 2000);
+    const lateResult = { type: 'bridge/result', clientId: 'race-source', requestId,
+      leaseTerm: importTask.leaseTerm, result: { ok: true, action: 'import_changes', commitState: 'pending_confirmation',
+        importContext: { pageKind: 'pcb', pageUuid: 'pcb-one', documentUuid: 'document-one',
+          projectUuid: conflicting ? 'other-project' : 'project-one' } } };
+    const readbackPayload = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+      clientId: 'race-target', hostRestartConfirmed: true, readbackPath: '/bridge/jlceda/api/invoke',
+      readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] } };
+    if (!duringReadback) {
+      source.send(JSON.stringify(lateResult));
+      assert.equal((await waitForLateImportResult(raceServer, requestId, conflicting)).context.projectUuid, 'project-one');
+      await assert.rejects(raceServer.request('/bridge/admin/recover-client', readbackPayload, 2000), /identity disagrees/);
+    } else {
+      source.close();
+      await new Promise(resolve => source.once('close', resolve));
+      target = await registerEda(racePort, 'race-target', 'import-race-token');
+      let releaseReadback;
+      let readbackStarted;
+      let holdFirstReadback = true;
+      let netReadbackCount = 0;
+      const readbackDispatched = new Promise(resolve => { readbackStarted = resolve; });
+      target.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        target.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'race-target', requestId: message.requestId,
+          leaseTerm: message.leaseTerm, startedAt: Date.now() }));
+        let result;
+        if (message.path === '/bridge/jlceda/api/invoke') {
+          result = { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ uuid: 'c1', x: 1, y: 2 }],
+            componentPositions: [{ primitiveId: 'c1', designator: 'U1', x: 1, y: 2, rotation: 0 }], componentCount: 1 };
+        } else if (message.path === '/bridge/jlceda/context') {
+          result = { currentDocumentInfo: { uuid: 'document-one', parentProjectUuid: 'project-one' }, currentPcbInfo: { uuid: 'pcb-one' } };
+        } else if (message.path === '/bridge/jlceda/net/query-pcb') {
+          netReadbackCount += 1;
+          result = { ok: true, mode: 'names', offset: 0, names: ['GND'], total: 1, returned: 1, truncated: false };
+        } else throw new Error(`Unexpected recovery readback path: ${message.path}`);
+        const reply = () => target.send(JSON.stringify({ type: 'bridge/result', clientId: 'race-target',
+          requestId: message.requestId, leaseTerm: message.leaseTerm, result }));
+        if (message.path === '/bridge/jlceda/api/invoke' && holdFirstReadback) {
+          holdFirstReadback = false;
+          releaseReadback = reply;
+          readbackStarted();
+        } else reply();
+      });
+      const readback = raceServer.request('/bridge/admin/recover-client', readbackPayload, 5000);
+      await readbackDispatched;
+      sourceReconnect = await registerEda(racePort, 'race-source', 'import-race-token');
+      sourceReconnect.send(JSON.stringify(lateResult));
+      assert.equal((await waitForLateImportResult(raceServer, requestId, conflicting)).context.projectUuid, 'project-one');
+      releaseReadback();
+      await assert.rejects(readback, conflicting ? /identity disagrees/ : /confirmation state changed/);
+      if (!conflicting) {
+        assert.equal(netReadbackCount, 1);
+        const retry = await raceServer.request('/bridge/admin/recover-client', readbackPayload, 5000);
+        assert.equal(retry.readbackVerified, true);
+        assert.equal(retry.writesRemainBlocked, false);
+        assert.equal(netReadbackCount, 2);
+      }
+    }
+    if (conflicting)
+      await assert.rejects(raceServer.request('/bridge/jlceda/pcb/document', { action: 'save' }, 2000), /writes are blocked/);
+  } finally {
+    source?.close();
+    sourceReconnect?.close();
+    target?.close();
+    raceServer.close();
+    if (previousToken === undefined) delete process.env.JLCEDA_BRIDGE_TOKEN;
+    else process.env.JLCEDA_BRIDGE_TOKEN = previousToken;
+  }
+}
+
+await verifyLateImportAfterRecoveryStarted(false);
+await verifyLateImportAfterRecoveryStarted(true);
+await verifyLateImportAfterRecoveryStarted(true, false);
+process.stdout.write('PCB import confirmation Server tests passed\n');
