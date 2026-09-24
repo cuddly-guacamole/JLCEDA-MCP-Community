@@ -1,6 +1,6 @@
 # JLCEDA MCP 社区版
 
-当前发布版本：Bridge `2.3.0`，MCP Server `2.3.0`。本版本使用共享 Bridge 契约统一工具路由、超时策略和线协议校验；Bridge 处理器改为受契约约束的注册表，设置页状态通过 MessageBus 推送并保留持久化快照回退；本机 token 认证保持可选。
+当前发布版本：Bridge `2.3.1`，MCP Server `2.3.1`。本版本增强 Bridge/MCP 任务诊断：以请求 ID 关联工具、Bridge 路由、执行阶段和异常，日志带版本与构建日期水印；EDA 界面显示简略报告，完整日志保存在扩展本地存储中。共享 Bridge 契约、多客户端路由和可选本机 token 认证继续受到支持。
 
 ## 功能与工具
 
@@ -43,10 +43,10 @@
 Codex / Claude / Cursor / 其他 MCP 客户端
                   | STDIO MCP
                   v
-       JLCEDA MCP Server 2.3.0
+       JLCEDA MCP Server 2.3.1
                   | 本机 WebSocket
                   v
-       MCP Bridge 社区版 2.3.0
+       MCP Bridge 社区版 2.3.1
                   | JLCEDA 扩展 API
                   v
            嘉立创 EDA 专业版
@@ -54,15 +54,15 @@ Codex / Claude / Cursor / 其他 MCP 客户端
 
 市场中的 `.eext` 只包含 EDA Bridge；原生 MCP Server 需要从同一个 GitHub Release 另行安装。社区版不依赖旧版 VS Code/Cursor MCP Hub。
 
-## 安装 2.3.0
+## 安装 2.3.1
 
 需要 Node.js 20 或更高版本。
 
-1. 从 [发布页](https://github.com/hs150521/JLCEDA-MCP-Community/releases) 下载并在嘉立创 EDA 扩展管理器中安装 `mcp-bridge-community-2.3.0.eext`。
+1. 从 [发布页](https://github.com/hs150521/JLCEDA-MCP-Community/releases) 下载并在嘉立创 EDA 扩展管理器中安装 `mcp-bridge-community-2.3.1.eext`。
 2. 下载 MCP Server 包并安装：
 
    ```powershell
-   npm install --global .\jlceda-mcp-server-2.3.0.tgz
+   npm install --global .\jlceda-mcp-server-2.3.1.tgz
    Get-Command jlceda-mcp
    ```
 
