@@ -301,7 +301,7 @@
   },
   {
     "name": "component_place",
-    "description": "引导用户按顺序交互放置已确认的器件列表，返回新增图元 ID；重复放置或超时后停止，不自动重试。",
+    "description": "引导用户按顺序交互放置已确认的器件列表；每件需按 Esc 或右键结束当前放置模式才继续。返回新增图元 ID；重复放置或超时后停止，不自动重试。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -357,7 +357,7 @@
   },
   {
     "name": "component_place_auto",
-    "description": "自动将器件放置到原理图的指定坐标。支持 AI 计算智能布局，或使用网格/线性自动布局。放置后用户可手动调整位置。",
+    "description": "自动将器件放置到原理图的指定坐标。支持智能布局或网格/线性布局；已有器件位号变化或无法核对时停止剩余批次并返回已放置明细。",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -485,6 +485,7 @@ async function main() {
 		autoPlacementCalls.push(args);
 		return { primitiveId: `auto-${autoPlacementCalls.length}` };
 	};
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [];
 	const partialCoordinates = await handleComponentPlaceAutoTask({
 		components: [
 			{ uuid: 'x-only', libraryUuid: 'test-library', x: 111 },

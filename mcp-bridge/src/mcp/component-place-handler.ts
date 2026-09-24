@@ -48,8 +48,9 @@ interface ActivePlaceSession {
 	followMouseTipApi: FollowMouseTipApi | null;
 	placeApi: PlaceComponentApi;
 	createdAt: number;
-	cancelledByRightClick: boolean;
+	placementExited: boolean;
 	cancelHandler: ((event: Event) => void) | null;
+	escapeHandler: ((event: Event) => void) | null;
 }
 
 const COMPONENT_PLACE_PROTOCOL = 'component-place/v1';
@@ -176,13 +177,17 @@ async function cleanupPlaceSession(sessionId: string): Promise<void> {
 	}
 
 	activePlaceSessions.delete(sessionId);
-	// 移除鼠标右键取消监听器。
+	// 移除 Esc 和右键退出监听器。
 	if (session.cancelHandler) {
 		const docRef = (globalThis as unknown as { document?: Document }).document;
 		if (docRef) {
-			docRef.removeEventListener('mousedown', session.cancelHandler, { capture: true });
+			docRef.removeEventListener('mouseup', session.cancelHandler, { capture: true });
+			if (session.escapeHandler) {
+				docRef.removeEventListener('keyup', session.escapeHandler, { capture: true });
+			}
 		}
 		session.cancelHandler = null;
+		session.escapeHandler = null;
 	}
 	if (session.followMouseTipApi) {
 		try {
@@ -228,7 +233,7 @@ export async function handleComponentPlaceTask(payload: unknown): Promise<unknow
 	const placement: ComponentPlaceRequest = {
 		protocol: COMPONENT_PLACE_PROTOCOL,
 		title: '原理图器件放置',
-		description: `请按顺序在原理图中放置以下 ${String(components.length)} 个器件。每次点击后按 Esc 结束当前器件放置；超时后先核对图元，勿直接重试。`,
+		description: `请按顺序在原理图中放置以下 ${String(components.length)} 个器件。每次点击后按 Esc 或右键结束当前器件放置；超时后先核对图元，勿直接重试。`,
 		components,
 		timeoutSeconds,
 	};
@@ -261,58 +266,53 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, undefined, false)));
 	const baselineDesignators = await readDesignators(placeApi);
 
-	if (followMouseTipApi) {
-		void Promise.resolve(followMouseTipApi.show.call(followMouseTipApi.context, tipText, timeoutMs)).catch(() => undefined);
+	const sessionId = createPlaceSessionId();
+	const session: ActivePlaceSession = {
+		sessionId,
+		referenceIds,
+		baselineDesignators,
+		tipText,
+		followMouseTipApi,
+		placeApi,
+		createdAt: Date.now(),
+		placementExited: false,
+		cancelHandler: null,
+		escapeHandler: null,
+	};
+	activePlaceSessions.set(sessionId, session);
+
+	// 先监听退出动作，避免用户在 placeComponentWithMouse 返回前就完成点击和 Esc。
+	const docRef = (globalThis as unknown as { document?: Document }).document;
+	if (docRef) {
+		session.cancelHandler = (event: Event): void => {
+			if ((event as MouseEvent).button === 2) {
+				session.placementExited = true;
+			}
+		};
+		session.escapeHandler = (event: Event): void => {
+			if ((event as KeyboardEvent).key === 'Escape') {
+				session.placementExited = true;
+			}
+		};
+		docRef.addEventListener('mouseup', session.cancelHandler, { capture: true });
+		docRef.addEventListener('keyup', session.escapeHandler, { capture: true });
 	}
 
 	try {
+		if (followMouseTipApi) {
+			void Promise.resolve(followMouseTipApi.show.call(followMouseTipApi.context, tipText, timeoutMs)).catch(() => undefined);
+		}
 		const started = await Promise.resolve(placeApi.placeComponentWithMouse.call(
 			placeApi.context,
 			{ uuid: component.uuid, libraryUuid: component.libraryUuid },
 			component.subPartName || undefined,
 		));
 		if (!started) {
-			if (followMouseTipApi) {
-				try {
-					await followMouseTipApi.remove.call(followMouseTipApi.context, tipText);
-				}
-				catch {
-					// 忽略提示移除失败。
-				}
-			}
+			await cleanupPlaceSession(sessionId);
 			return {
 				ok: false,
 				error: 'placeComponentWithMouse 返回 false，交互放置会话未能启动。',
 			};
-		}
-
-		const sessionId = createPlaceSessionId();
-		const session: ActivePlaceSession = {
-			sessionId,
-			referenceIds,
-			baselineDesignators,
-			tipText,
-			followMouseTipApi,
-			placeApi,
-			createdAt: Date.now(),
-			cancelledByRightClick: false,
-			cancelHandler: null,
-		};
-		activePlaceSessions.set(sessionId, session);
-
-		// 注册鼠标右键取消监听器，当用户在 EDA 中右键取消放置时，立即标记会话已取消。
-		const docRef = (globalThis as unknown as { document?: Document }).document;
-		if (docRef) {
-			session.cancelHandler = (event: Event): void => {
-				if ((event as MouseEvent).button !== 2) {
-					return;
-				}
-				const sess = activePlaceSessions.get(sessionId);
-				if (sess) {
-					sess.cancelledByRightClick = true;
-				}
-			};
-			docRef.addEventListener('mousedown', session.cancelHandler, { capture: true });
 		}
 
 		return {
@@ -321,14 +321,7 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 		};
 	}
 	catch (error: unknown) {
-		if (followMouseTipApi) {
-			try {
-				await followMouseTipApi.remove.call(followMouseTipApi.context, tipText);
-			}
-			catch {
-				// 忽略提示移除失败。
-			}
-		}
+		await cleanupPlaceSession(sessionId);
 
 		return {
 			ok: false,
@@ -364,6 +357,15 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context, undefined, false));
 		const primitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
 		if (primitiveIds.length > 0) {
+			if (!session.placementExited) {
+				return {
+					ok: true,
+					placed: false,
+					awaitingExit: true,
+					candidatePrimitiveIds: primitiveIds,
+					userCancelled: false,
+				};
+			}
 			let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
 			let annotationWarning: string | undefined;
 			try {
@@ -390,29 +392,13 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 			};
 		}
 
-		// 用户在点击放置后可能再右键结束悬浮状态，已提交图元优先。
-		if (session.cancelledByRightClick) {
+		if (session.placementExited) {
 			await cleanupPlaceSession(sessionId);
 			return {
 				ok: true,
 				placed: false,
 				userCancelled: true,
 			};
-		}
-
-		// 检测基线图元是否消失（用户右键取消，浮动图元被移除）。
-		if (session.referenceIds.size > 0) {
-			const currentIdSet = new Set<string>(currentIds.map((id: string) => String(id || '').trim()).filter((id: string) => id.length > 0));
-			for (const refId of session.referenceIds) {
-				if (!currentIdSet.has(refId)) {
-					await cleanupPlaceSession(sessionId);
-					return {
-						ok: true,
-						placed: false,
-						userCancelled: true,
-					};
-				}
-			}
 		}
 
 		return {

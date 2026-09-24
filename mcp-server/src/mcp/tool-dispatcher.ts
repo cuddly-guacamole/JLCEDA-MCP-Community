@@ -246,7 +246,9 @@ export class ToolDispatcher {
       let placed = false;
       let userCancelled = false;
       let duplicate = false;
+      let awaitingExit = false;
       let primitiveIds: string[] = [];
+      let candidatePrimitiveIds: string[] = [];
       let designatorChanges: unknown[] = [];
       let annotationWarning = '';
       let errorMessage = '';
@@ -274,7 +276,14 @@ export class ToolDispatcher {
           }
           primitiveIds = Array.isArray(checkResult.primitiveIds)
             ? checkResult.primitiveIds.filter((id): id is string => typeof id === 'string')
-            : [];
+            : primitiveIds;
+          awaitingExit = checkResult.awaitingExit === true;
+          if (awaitingExit && Array.isArray(checkResult.candidatePrimitiveIds)) {
+            candidatePrimitiveIds = [...new Set([
+              ...candidatePrimitiveIds,
+              ...checkResult.candidatePrimitiveIds.filter((id): id is string => typeof id === 'string'),
+            ])];
+          }
           designatorChanges = Array.isArray(checkResult.designatorChanges) ? checkResult.designatorChanges : [];
           annotationWarning = typeof checkResult.annotationWarning === 'string' ? checkResult.annotationWarning : '';
           if (checkResult.duplicate === true) {
@@ -293,7 +302,9 @@ export class ToolDispatcher {
         }
 
         if (!placed && !userCancelled && !duplicate) {
-          errorMessage = `Placement timed out after ${String(timeoutSeconds)} seconds; inspect the schematic before retrying`;
+          errorMessage = awaitingExit
+            ? `Placement was observed but the EDA placement mode was not exited within ${String(timeoutSeconds)} seconds; press Esc and inspect the schematic`
+            : `Placement timed out after ${String(timeoutSeconds)} seconds; inspect the schematic before retrying`;
         }
       } catch (error) {
         errorMessage = error instanceof Error ? error.message : String(error);
@@ -313,7 +324,9 @@ export class ToolDispatcher {
         placed,
         userCancelled,
         duplicate,
+        awaitingExit,
         primitiveIds,
+        ...(awaitingExit ? { candidatePrimitiveIds } : {}),
         designatorChanges,
         ...(annotationWarning ? { annotationWarning } : {}),
         attempts: 1,

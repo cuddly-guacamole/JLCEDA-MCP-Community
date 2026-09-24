@@ -96,6 +96,42 @@ assert.deepEqual(duplicateCalls, [
   '/bridge/jlceda/component/place/close',
 ]);
 
+const batchCalls = [];
+let startedCount = 0;
+let firstCheckCount = 0;
+const batchBridge = {
+  async request(path, payload) {
+    batchCalls.push(path);
+    if (path === '/bridge/jlceda/component/place') {
+      return { placement: { components: [{ uuid: 'first' }, { uuid: 'second' }], timeoutSeconds: 30 } };
+    }
+    if (path.endsWith('/start')) return { ok: true, sessionId: `session-${++startedCount}` };
+    if (path.endsWith('/check') && payload.sessionId === 'session-1') {
+      firstCheckCount += 1;
+      return firstCheckCount === 1
+        ? { ok: true, placed: false, awaitingExit: true, candidatePrimitiveIds: ['floating-id'], userCancelled: false }
+        : { ok: true, placed: true, primitiveIds: ['first-id'], userCancelled: false };
+    }
+    if (path.endsWith('/check')) return { ok: true, placed: true, primitiveIds: ['second-id'], userCancelled: false };
+    if (path.endsWith('/close')) return { ok: true };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const batchResult = await new ToolDispatcher(batchBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(batchResult.structuredContent.ok, true);
+assert.deepEqual(batchResult.structuredContent.results.map((item) => item.primitiveIds), [['first-id'], ['second-id']]);
+assert.equal(batchResult.structuredContent.results[0].candidatePrimitiveIds, undefined);
+assert.deepEqual(batchCalls, [
+  '/bridge/jlceda/component/place',
+  '/bridge/jlceda/component/place/start',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/close',
+  '/bridge/jlceda/component/place/start',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/close',
+]);
+
 const endpoint = formatInternalClientEndpoint(8765);
 assert.equal(endpoint, 'ws://127.0.0.1:8765/mcp-internal');
 assert.equal(endpoint.includes('token='), false);

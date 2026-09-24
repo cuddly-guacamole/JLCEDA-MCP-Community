@@ -371,16 +371,29 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 	);
 
 	const api = resolveComponentCreateApi();
-	let originalDesignators = new Map<string, string>();
+	let originalDesignators: Map<string, string>;
 	let annotationWarning: string | undefined;
 	try {
 		originalDesignators = await readDesignators(api);
 	}
 	catch (error: unknown) {
-		annotationWarning = `无法记录已有器件位号，放置后需手动核对：${toSafeErrorMessage(error)}`;
+		return {
+			ok: false,
+			needsReview: true,
+			placedCount: 0,
+			failedCount: 0,
+			totalCount: components.length,
+			notAttemptedCount: components.length,
+			placedComponents: [],
+			failedComponents: [],
+			designatorChanges: [],
+			annotationWarning: `无法记录已有器件位号，本次未放置：${toSafeErrorMessage(error)}`,
+			message: '未能读取已有器件位号，本次未开始放置。',
+		};
 	}
 	const placedComponents: Array<{ uuid: string; libraryUuid: string; x: number; y: number; primitiveId: string; designator: string }> = [];
 	const failedComponents: Array<{ uuid: string; libraryUuid: string; error: string }> = [];
+	let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
 
 	for (let index = 0; index < components.length; index += 1) {
 		const component = components[index];
@@ -426,10 +439,9 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 				libraryUuid: component.libraryUuid,
 				error: toSafeErrorMessage(error),
 			});
+			continue;
 		}
-	}
-	let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
-	if (!annotationWarning) {
+
 		try {
 			const currentDesignators = await readDesignators(api);
 			designatorChanges = [...originalDesignators]
@@ -437,31 +449,40 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 				.map(([primitiveId, before]) => ({ primitiveId, before, after: currentDesignators.get(primitiveId) }));
 			if (designatorChanges.length > 0) {
 				annotationWarning = 'EDA 在放置时改变了已有器件位号；请核对 designatorChanges 后再继续。';
+				break;
 			}
 		}
 		catch (error: unknown) {
 			annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
+			break;
 		}
 	}
+	const notAttemptedCount = components.length - placedComponents.length - failedComponents.length;
 
-	if (failedComponents.length > 0) {
+	if (failedComponents.length > 0 || annotationWarning) {
 		return {
 			ok: false,
+			needsReview: Boolean(annotationWarning),
 			placedCount: placedComponents.length,
 			failedCount: failedComponents.length,
 			totalCount: components.length,
+			notAttemptedCount,
 			placedComponents,
 			failedComponents,
 			designatorChanges,
 			annotationWarning,
-			message: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
+			message: annotationWarning
+				? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；已有位号需核对。`
+				: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
 		};
 	}
 
 	return {
 		ok: true,
+		needsReview: false,
 		placedCount: placedComponents.length,
 		totalCount: components.length,
+		notAttemptedCount: 0,
 		placedComponents,
 		designatorChanges,
 		annotationWarning,

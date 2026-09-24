@@ -8,7 +8,7 @@
 
 `component_select` 的关键词与精确属性搜索、`design_compare` 的网表/原理图/PCB 比较现在都能通过 Server 的输入校验并进入 Bridge。
 
-开发分支的 `component_place` 会透传新增图元 ID 和已有器件位号变化；重复放置或超时后停止当前批次，不自动重试未知是否已提交的放置操作。
+开发分支的 `component_place` 等待用户按 Esc 或右键退出当前放置模式后才启动下一件，并透传新增图元 ID 和已有器件位号变化；重复放置或超时后停止当前批次，不自动重试未知是否已提交的放置操作。
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由，不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
