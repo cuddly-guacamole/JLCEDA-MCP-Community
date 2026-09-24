@@ -195,25 +195,27 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		}
 		throw error;
 	}
-	if (normalizedPath === PCB_COMPONENT_GET_ALL && pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid && Array.isArray(invokeResult)) {
+	if (normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && Array.isArray(invokeResult)) {
 		const componentPositions = invokeResult.map(pcbComponentPosition);
 		if (componentPositions.some(position => !position)) {
 			return {
 				apiFullName: resolvedPath,
 				ok: false,
-				commitState: 'unknown',
-				retryBlocked: true,
-				pcbUuid: pendingAutoLayoutPcbUuid,
-				verification: 'The PCB component readback omitted an ID or position; retry a complete readback before autoLayout.',
+				...(pendingAutoLayoutPcbUuid ? { commitState: 'unknown', retryBlocked: true, pcbUuid: pendingAutoLayoutPcbUuid } : {}),
+				error: 'The PCB component readback omitted an ID or position.',
 			};
 		}
-		pendingAutoLayoutPcbUuid = undefined;
+		const autoLayoutReadbackPerformed = Boolean(pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid);
+		if (autoLayoutReadbackPerformed)
+			pendingAutoLayoutPcbUuid = undefined;
 		return {
 			apiFullName: resolvedPath,
 			result: componentPositions,
 			componentCount: componentPositions.length,
-			autoLayoutReadbackPerformed: true,
-			verification: 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.',
+			...(autoLayoutReadbackPerformed ? {
+				autoLayoutReadbackPerformed: true,
+				verification: 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.',
+			} : {}),
 		};
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {

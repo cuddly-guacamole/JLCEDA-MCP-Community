@@ -685,6 +685,9 @@ async function main() {
 	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
 	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(completedLayout.result.success, true);
+	const nextLayoutBaseline = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+	assert.equal(nextLayoutBaseline.componentCount, 125);
+	assert.equal(nextLayoutBaseline.result[124].primitiveId, 'R125', 'the complete position snapshot must also be available before a layout attempt');
 	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = originalCurrentPcbInfo;
 	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: false, successNetsCount: 0, duration: 0, failedNets: ['VCC'] });
 	const failedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });
