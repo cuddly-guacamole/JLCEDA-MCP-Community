@@ -17,7 +17,7 @@ function wire(id, net, line) {
 function port(state) {
 	return {
 		getState_PrimitiveId: () => state.id,
-		getState_ComponentType: () => 'netport',
+		getState_ComponentType: () => state.type ?? 'netport',
 		getState_Net: () => state.net,
 		getState_X: () => state.x,
 		getState_Y: () => state.y,
@@ -140,6 +140,50 @@ async function main() {
 	const inPlaceChange = await handleSchematicConnectivityTask({ action: 'wire_create', line: [800, 0, 850, 0], net: 'NET_Z', allowedWireIds: ['wire-in-place'] });
 	assert.equal(inPlaceChange.ok, true);
 	assert.deepEqual(inPlaceChange.changedWireIds, ['wire-in-place']);
+	globalThis.eda.sch_PrimitiveWire.create = originalCreate;
+
+	// A distant NetFlag names an otherwise unnamed connected wire component.
+	wires.splice(0, wires.length, wire('unnamed-a1', '', [0, 0, 50, 0]), wire('unnamed-a2', '', [50, 0, 100, 0]));
+	ports.splice(0, ports.length, { id: 'flag-a', type: 'netflag', net: 'NET_A', x: 0, y: 0 });
+	const portCreatesBeforeConflict = portCreates;
+	const remotePortConflict = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_B', x: 100, y: 0 });
+	assert.equal(remotePortConflict.ok, false);
+	assert.deepEqual(remotePortConflict.conflictingPrimitiveIds, ['unnamed-a2']);
+	assert.equal(portCreates, portCreatesBeforeConflict);
+	const remoteWireConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [100, 0, 150, 0], net: 'NET_B', allowedWireIds: ['unnamed-a2'] });
+	assert.deepEqual(remoteWireConflict.conflictingNetWireIds, ['unnamed-a2']);
+	const sameNetWire = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [100, 0, 150, 0], net: 'NET_A', allowedWireIds: ['unnamed-a2'] });
+	assert.equal(sameNetWire.canCreate, true);
+	ports.push({ id: 'port-b', net: 'NET_B', x: 300, y: 0 });
+	const remoteMoveConflict = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-b', x: 100, y: 0 });
+	assert.equal(remoteMoveConflict.ok, false);
+	assert.deepEqual(remoteMoveConflict.conflictingPrimitiveIds, ['unnamed-a2']);
+	assert.equal(ports.find(item => item.id === 'port-b').x, 300);
+	wires.splice(0, wires.length);
+	ports.splice(0, ports.length, { id: 'flag-b', type: 'netflag', net: 'NET_B', x: 100, y: 0 }, { id: 'port-a', net: 'NET_A', x: 300, y: 0 });
+	const directFlagConflict = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 100, y: 0 });
+	assert.deepEqual(directFlagConflict.conflictingPrimitiveIds, ['flag-b']);
+	const moveOntoFlag = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-a', x: 100, y: 0 });
+	assert.deepEqual(moveOntoFlag.conflictingPrimitiveIds, ['flag-b']);
+
+	// Joining two unnamed wires must see their distant, different NetPorts.
+	wires.splice(0, wires.length, wire('unnamed-a', '', [0, 0, 100, 0]), wire('unnamed-b', '', [200, 0, 300, 0]));
+	ports.splice(0, ports.length, { id: 'port-a', net: 'NET_A', x: 0, y: 0 }, { id: 'port-b', net: 'NET_B', x: 300, y: 0 });
+	const joinLine = [100, 0, 200, 0];
+	const previewConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: joinLine, allowedWireIds: ['unnamed-a', 'unnamed-b'] });
+	assert.equal(previewConflict.canCreate, false);
+	assert.equal(previewConflict.mixedNamedNets, true);
+	assert.deepEqual(previewConflict.touches.map(item => item.effectiveNets), [['NET_A'], ['NET_B']]);
+	const wireCreatesBeforeConflict = wireCreates;
+	const createConflict = await handleSchematicConnectivityTask({ action: 'wire_create', line: joinLine, allowedWireIds: ['unnamed-a', 'unnamed-b'] });
+	assert.equal(createConflict.canCreate, false);
+	assert.equal(wireCreates, wireCreatesBeforeConflict);
+
+	// A crossing without a shared endpoint does not merge two existing nets.
+	wires.splice(0, wires.length, wire('cross-a', 'NET_A', [0, 0, 100, 0]), wire('cross-b', 'NET_B', [50, -50, 50, 50]));
+	ports.splice(0, ports.length);
+	const independentCrossing = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [-50, 0, 0, 0], net: 'NET_A', allowedWireIds: ['cross-a'] });
+	assert.equal(independentCrossing.canCreate, true);
 }
 
 main().catch((error) => {
