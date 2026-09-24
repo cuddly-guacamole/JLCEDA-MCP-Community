@@ -19,6 +19,7 @@ function createToolInputSchema(
       expectedProjectUuid: z.string().min(1).optional(),
       readbackPath: z.enum([
         '/bridge/jlceda/context',
+        '/bridge/jlceda/api/invoke',
         '/bridge/jlceda/schematic/read',
         '/bridge/jlceda/schematic/review',
         '/bridge/jlceda/schematic/layout-check',

@@ -16,6 +16,18 @@ const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
 const PCB_COMPONENT_GET_ALL = 'eda.pcb_primitivecomponent.getall';
 let pendingAutoLayoutPcbUuid: string | undefined;
 
+function pcbComponentPosition(component: unknown): { primitiveId: string; designator: string; x: number; y: number; rotation: number } | undefined {
+	const raw = isPlainObjectRecord(component) ? component : {};
+	const primitiveId = String(getSyncState(component, 'getState_PrimitiveId', raw.primitiveId ?? raw.uuid ?? ''));
+	const designator = String(getSyncState(component, 'getState_Designator', raw.designator ?? ''));
+	const x = Number(getSyncState(component, 'getState_X', raw.x));
+	const y = Number(getSyncState(component, 'getState_Y', raw.y));
+	const rotation = Number(getSyncState(component, 'getState_Rotation', raw.rotation));
+	if (!primitiveId || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(rotation))
+		return undefined;
+	return { primitiveId, designator, x, y, rotation };
+}
+
 async function currentPcbUuid(): Promise<string | undefined> {
 	const pcb = await Promise.resolve(eda.dmt_Pcb.getCurrentPcbInfo());
 	return isPlainObjectRecord(pcb) && typeof pcb.uuid === 'string' ? pcb.uuid : undefined;
@@ -184,12 +196,24 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		throw error;
 	}
 	if (normalizedPath === PCB_COMPONENT_GET_ALL && pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid && Array.isArray(invokeResult)) {
+		const componentPositions = invokeResult.map(pcbComponentPosition);
+		if (componentPositions.some(position => !position)) {
+			return {
+				apiFullName: resolvedPath,
+				ok: false,
+				commitState: 'unknown',
+				retryBlocked: true,
+				pcbUuid: pendingAutoLayoutPcbUuid,
+				verification: 'The PCB component readback omitted an ID or position; retry a complete readback before autoLayout.',
+			};
+		}
 		pendingAutoLayoutPcbUuid = undefined;
 		return {
 			apiFullName: resolvedPath,
-			result: await toSerializableAsync(invokeResult),
+			result: componentPositions,
+			componentCount: componentPositions.length,
 			autoLayoutReadbackPerformed: true,
-			verification: 'Compare these component positions and rotations with the pre-layout snapshot before deciding whether to retry.',
+			verification: 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.',
 		};
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {

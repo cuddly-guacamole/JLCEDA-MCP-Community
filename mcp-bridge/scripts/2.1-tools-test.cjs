@@ -666,7 +666,7 @@ async function main() {
 	assert.equal(blockedLayout.retryBlocked, true);
 	assert.equal(pcbAutoLayoutCalls, 1);
 	globalThis.eda.pcb_PrimitiveComponent = {
-		async getAll() { return [{ uuid: 'R1', x: 10, y: 20, rotation: 90 }]; },
+		async getAll() { return Array.from({ length: 125 }, (_, index) => ({ uuid: `R${index + 1}`, x: 10 + index, y: 20, rotation: 90 })); },
 	};
 	const filteredReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] });
 	assert.equal(filteredReadback.autoLayoutReadbackPerformed, undefined);
@@ -678,6 +678,9 @@ async function main() {
 	activePcbUuid = 'pcb-1';
 	const layoutReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
 	assert.equal(layoutReadback.autoLayoutReadbackPerformed, true);
+	assert.equal(layoutReadback.componentCount, 125);
+	assert.equal(layoutReadback.result.length, 125, 'layout recovery must return every component position');
+	assert.equal(layoutReadback.result[124].primitiveId, 'R125');
 	assert.equal(layoutReadback.result[0].rotation, 90);
 	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
 	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });

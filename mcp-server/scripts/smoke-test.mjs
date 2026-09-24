@@ -97,6 +97,8 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(confirmSchemas.some((schema) => schema.const === true), 'bridge_recover_client must require confirm=true');
     const readbackPayloadSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPayload');
     assert.ok(readbackPayloadSchemas.some((schema) => JSON.stringify(schema.default) === '{}'), 'bridge_recover_client must publish the empty readbackPayload default');
+    const readbackPathSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPath');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/api/invoke')), 'bridge_recover_client must allow current-page API readback');
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {
