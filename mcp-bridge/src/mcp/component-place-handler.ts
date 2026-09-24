@@ -42,6 +42,7 @@ interface FollowMouseTipApi {
 
 interface ActivePlaceSession {
 	sessionId: string;
+	pageUuid: string;
 	referenceIds: Set<string>;
 	baselineDesignators: Map<string, string>;
 	tipText: string;
@@ -58,6 +59,25 @@ const activePlaceSessions = new Map<string, ActivePlaceSession>();
 let placeSessionGeneration = 0;
 let placementModeNeedsExit = false;
 let removeExitGuardListeners: (() => void) | null = null;
+
+async function readCurrentSchematicPageUuid(): Promise<string> {
+	const schematicModule = getEdaRuntime()?.dmt_Schematic;
+	if (!isPlainObjectRecord(schematicModule) || typeof schematicModule.getCurrentSchematicPageInfo !== 'function') {
+		throw new Error('无法读取当前原理图图页身份。');
+	}
+	const page = await Promise.resolve((schematicModule.getCurrentSchematicPageInfo as () => Promise<unknown>).call(schematicModule));
+	const pageUuid = isPlainObjectRecord(page) && typeof page.uuid === 'string' ? page.uuid.trim() : '';
+	if (!pageUuid) {
+		throw new Error('当前未打开原理图图页。');
+	}
+	return pageUuid;
+}
+
+async function assertPlaceSessionPage(pageUuid: string): Promise<void> {
+	if (await readCurrentSchematicPageUuid() !== pageUuid) {
+		throw new Error('原理图图页已切换；请回到原图页核对放置结果，本批次已停止。');
+	}
+}
 
 function requirePlacementModeExit(): void {
 	if (placementModeNeedsExit) {
@@ -308,9 +328,11 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const placeApi = resolvePlaceComponentApi();
 	const followMouseTipApi = resolveFollowMouseTipApi();
 	const tipText = `请在原理图中放置器件：${formatComponentTitle(component)}`;
+	const pageUuid = await readCurrentSchematicPageUuid();
 	// 必须先取基线，再把器件绑定到鼠标。用户可能在 API 返回后立即点击。
 	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, undefined, false)));
 	const baselineDesignators = await readDesignators(placeApi);
+	await assertPlaceSessionPage(pageUuid);
 	if (placeSessionGeneration !== startGeneration || placementModeNeedsExit) {
 		return { ok: false, error: '连接在准备器件放置时中断；请核对当前图页后再重试。' };
 	}
@@ -321,6 +343,7 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const sessionId = createPlaceSessionId();
 	const session: ActivePlaceSession = {
 		sessionId,
+		pageUuid,
 		referenceIds,
 		baselineDesignators,
 		tipText,
@@ -406,7 +429,9 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 	}
 
 	try {
+		await assertPlaceSessionPage(session.pageUuid);
 		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context, undefined, false));
+		await assertPlaceSessionPage(session.pageUuid);
 		const primitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
 		if (primitiveIds.length > 0) {
 			if (!session.placementExited) {
@@ -432,6 +457,7 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 			catch (error: unknown) {
 				annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
 			}
+			await assertPlaceSessionPage(session.pageUuid);
 			await cleanupPlaceSession(sessionId);
 			return {
 				ok: true,

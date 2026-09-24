@@ -25,7 +25,11 @@ function primitive(id, designator, otherProperty = {}) {
 async function main() {
 	// EDA 3.x clears BOM metadata if modify omits otherProperty.
 	let metadata = { Value: '10k', Datasheet: 'https://example.test/r' };
+	let currentPageUuid = 'P1';
 	globalThis.eda = {
+		dmt_Schematic: {
+			async getCurrentSchematicPageInfo() { return { uuid: currentPageUuid }; },
+		},
 		sch_PrimitiveComponent: {
 			async get(id) { return id === 'r1' ? primitive('r1', 'R1', metadata) : undefined; },
 			async modify(id, patch) {
@@ -129,6 +133,24 @@ async function main() {
 	const cancelledCheck = await handleComponentPlaceCheckTask({ sessionId: cancelledStart.sessionId });
 	assert.equal(cancelledCheck.userCancelled, true);
 	assert.equal(cancelledCheck.placed, false);
+
+	// Switching to another open page must not count its existing symbol as a new placement.
+	const getPageOneIds = globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId;
+	const getPageOneComponents = globalThis.eda.sch_PrimitiveComponent.getAll;
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => currentPageUuid === 'P1' ? getPageOneIds() : ['other-page-existing'];
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => currentPageUuid === 'P1' ? getPageOneComponents() : [primitive('other-page-existing', 'U99')];
+	globalThis.eda.sch_PrimitiveComponent.placeComponentWithMouse = async () => true;
+	const pageBoundStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	assert.equal(pageBoundStart.ok, true);
+	currentPageUuid = 'P2';
+	pressEscape();
+	const wrongPageCheck = await handleComponentPlaceCheckTask({ sessionId: pageBoundStart.sessionId });
+	assert.equal(wrongPageCheck.ok, false);
+	assert.match(wrongPageCheck.error, /图页已切换/);
+	await handleComponentPlaceCloseTask({ sessionId: pageBoundStart.sessionId });
+	currentPageUuid = 'P1';
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = getPageOneIds;
+	globalThis.eda.sch_PrimitiveComponent.getAll = getPageOneComponents;
 
 	// A lost connection must retire the old session and block a new placement
 	// until the user exits the native EDA placement mode.
