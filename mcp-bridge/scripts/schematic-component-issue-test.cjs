@@ -109,6 +109,31 @@ async function main() {
 	assert.deepEqual(unknownDelete.notAttemptedIds, ['not-attempted']);
 	assert.deepEqual(attemptedDeletes, ['uncertain']);
 
+	// The next item's pre-read is still post-write for a batch that already deleted an item.
+	let batchReads = 0;
+	const batchRemaining = new Set(['done', 'next', 'later']);
+	const batchDeletes = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() {
+			batchReads += 1;
+			if (batchReads === 4)
+				throw new Error('next-item ID readback failed');
+			return [...batchRemaining];
+		},
+		async delete(id) {
+			batchDeletes.push(id);
+			return batchRemaining.delete(id);
+		},
+	};
+	const unknownNextPreRead = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: [['absent', 'done', 'next', 'later']] });
+	assert.equal(unknownNextPreRead.commitUnknown, true);
+	assert.equal(unknownNextPreRead.readbackRequired, true);
+	assert.deepEqual(unknownNextPreRead.deletedIds, ['done']);
+	assert.deepEqual(unknownNextPreRead.failedIds, ['absent']);
+	assert.deepEqual(unknownNextPreRead.uncertainIds, []);
+	assert.deepEqual(unknownNextPreRead.notAttemptedIds, ['next', 'later']);
+	assert.deepEqual(batchDeletes, ['done']);
+
 	// The object fallback must carry the same uncertainty when its object read fails.
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAllPrimitiveId() { return ['fallback-read']; },

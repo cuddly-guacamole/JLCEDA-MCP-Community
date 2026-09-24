@@ -158,12 +158,34 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		const ids = (typeof invokeArgs[0] === 'string' ? [invokeArgs[0]] : invokeArgs[0]) as string[];
 		const deletedIds: string[] = [];
 		const failedIds: string[] = [];
+		let deleteAttempted = false;
 		for (const [index, id] of ids.entries()) {
-			const before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+			let before: string[];
+			try {
+				before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+			}
+			catch (error: unknown) {
+				if (!deleteAttempted)
+					throw error;
+				return {
+					apiFullName: resolvedPath,
+					ok: false,
+					result: false,
+					reason: 'post_write_readback_failed',
+					error: toSafeErrorMessage(error),
+					deletedIds,
+					failedIds,
+					uncertainIds: [],
+					notAttemptedIds: ids.slice(index),
+					commitUnknown: true,
+					readbackRequired: true,
+				};
+			}
 			if (!before.includes(id)) {
 				failedIds.push(id);
 				continue;
 			}
+			deleteAttempted = true;
 			await Promise.resolve(callable.call(thisArg, id));
 			try {
 				let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
