@@ -70,6 +70,16 @@ async function main() {
 	assert.equal(objectFallback.result, true);
 	assert.deepEqual(objectFallback.deletedIds, ['d']);
 
+	// Known IDs on another schematic page must be verified beyond the active page.
+	const otherPageIds = new Set(['other-page-component']);
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async (_type, allPages) => allPages ? [...remaining, ...otherPageIds] : [...remaining];
+	globalThis.eda.sch_PrimitiveComponent.get = async id => otherPageIds.has(id) ? primitive(id, 'U9') : undefined;
+	globalThis.eda.sch_PrimitiveComponent.delete = async input => otherPageIds.delete(typeof input === 'string' ? input : input.getState_PrimitiveId());
+	const crossPageDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['other-page-component'] });
+	assert.equal(crossPageDelete.result, true);
+	assert.deepEqual(crossPageDelete.deletedIds, ['other-page-component']);
+	assert.deepEqual([...otherPageIds], []);
+
 	// One immediate click may happen before placeComponentWithMouse returns.
 	const ids = ['existing'];
 	globalThis.document = new EventTarget();

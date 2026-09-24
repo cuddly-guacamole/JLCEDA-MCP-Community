@@ -141,18 +141,18 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		const deletedIds: string[] = [];
 		const failedIds: string[] = [];
 		for (const id of ids) {
-			const before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, false));
+			const before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
 			if (!before.includes(id)) {
 				failedIds.push(id);
 				continue;
 			}
 			await Promise.resolve(callable.call(thisArg, id));
-			let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, false));
+			let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
 			if (remaining.includes(id) && typeof module.get === 'function') {
 				const liveObject = await Promise.resolve(module.get.call(thisArg, id));
 				if (liveObject) {
 					await Promise.resolve(callable.call(thisArg, liveObject));
-					remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, false));
+					remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
 				}
 			}
 			(remaining.includes(id) ? failedIds : deletedIds).push(id);
