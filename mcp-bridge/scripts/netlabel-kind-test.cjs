@@ -4,7 +4,7 @@ const process = require('node:process');
 process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', moduleResolution: 'node' });
 require('ts-node/register/transpile-only');
 
-const { BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY, bridgeLogPipeline } = require('../src/logging/log.ts');
+const { BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY, BridgeLogPipeline, bridgeLogPipeline } = require('../src/logging/log.ts');
 const { handleAutoLayoutTask } = require('../src/mcp/auto-layout-handler.ts');
 const { handleAutoRoutingTask } = require('../src/mcp/auto-routing-handler.ts');
 const { handleComponentPlaceAutoTask } = require('../src/mcp/component-place-auto-handler.ts');
@@ -158,6 +158,87 @@ async function main() {
 	await new Promise(resolve => setImmediate(resolve));
 	assert.equal(storedDiagnosticLogs.logs[0].fields.errorStack, 'stack');
 	assert.doesNotMatch(bridgeLogPipeline.getEdaReport(), /stack/);
+	let sharedDiagnosticSnapshot;
+	globalThis.eda.sys_Storage = {
+		getExtensionUserConfig: key => key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY ? sharedDiagnosticSnapshot : undefined,
+		setExtensionUserConfig: (key, value) => {
+			if (key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY) {
+				sharedDiagnosticSnapshot = value;
+			}
+			return true;
+		},
+	};
+	const firstPageLogs = new BridgeLogPipeline();
+	const secondPageLogs = new BridgeLogPipeline();
+	firstPageLogs.append(firstPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'before-clear',
+		summary: 'old',
+		message: 'old',
+	}));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.equal(secondPageLogs.getLogs().length, 1);
+	secondPageLogs.clearLogs();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(firstPageLogs.getLogs(), []);
+	firstPageLogs.append(firstPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'after-clear',
+		summary: 'new',
+		message: 'new',
+	}));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(sharedDiagnosticSnapshot.logs.map(log => log.fields.event), ['after-clear']);
+	secondPageLogs.clearLogs();
+	secondPageLogs.append(secondPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'immediately-after-clear',
+		summary: 'latest',
+		message: 'latest',
+	}));
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(sharedDiagnosticSnapshot.logs.map(log => log.fields.event), ['immediately-after-clear']);
+	let resolveOldWrite;
+	let delayFirstWrite = true;
+	globalThis.eda.sys_Storage = {
+		getExtensionUserConfig: key => key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY ? sharedDiagnosticSnapshot : undefined,
+		setExtensionUserConfig: (key, value) => {
+			if (key === BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY) {
+				sharedDiagnosticSnapshot = value;
+			}
+			if (delayFirstWrite) {
+				delayFirstWrite = false;
+				return new Promise((resolve) => {
+					resolveOldWrite = resolve;
+				});
+			}
+			return true;
+		},
+	};
+	const pendingPageLogs = new BridgeLogPipeline();
+	const clearingPageLogs = new BridgeLogPipeline();
+	pendingPageLogs.append(pendingPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'pending-old',
+		summary: 'pending old',
+		message: 'pending old',
+	}));
+	clearingPageLogs.clearLogs();
+	assert.deepEqual(pendingPageLogs.getLogs(), []);
+	pendingPageLogs.append(pendingPageLogs.createEntry({
+		level: 'info',
+		module: 'test',
+		event: 'pending-new',
+		summary: 'pending new',
+		message: 'pending new',
+	}));
+	resolveOldWrite();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.deepEqual(sharedDiagnosticSnapshot.logs.map(log => log.fields.event), ['pending-new']);
 	globalThis.eda.sys_Storage.setExtensionUserConfig = () => {
 		throw new Error('diagnostic storage unavailable');
 	};

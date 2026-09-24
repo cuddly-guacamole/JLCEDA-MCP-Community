@@ -56,7 +56,7 @@ function truncateLogText(value: unknown): string | undefined {
 	if (text.length === 0) {
 		return undefined;
 	}
-	return text.length > MAX_LOG_TEXT_LENGTH ? `${text.slice(0, MAX_LOG_TEXT_LENGTH)}...` : text;
+	return text.length > MAX_LOG_TEXT_LENGTH ? `${text.slice(0, MAX_LOG_TEXT_LENGTH - 3)}...` : text;
 }
 
 function getTaskTarget(payload: unknown): { edaApi?: string; detail?: string } {
@@ -126,7 +126,7 @@ function writeTaskLog(
 		phase,
 		detail: target.detail,
 		errorCode: errorCode ?? (error instanceof BridgeTaskTimeoutError ? 'BRIDGE_TASK_TIMEOUT' : error ? 'BRIDGE_TASK_FAILED' : undefined),
-		errorName: error instanceof Error ? error.name : error ? typeof error : undefined,
+		errorName: error instanceof Error ? error.name : undefined,
 		errorStack: truncateLogText(error instanceof Error ? error.stack : undefined),
 	}));
 	console.warn(bridgeLogPipeline.format(logEntry));
@@ -372,7 +372,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 						'Bridge 任务返回失败结果',
 						task,
 						'handler-result',
-						new Error(getTaskResultFailureMessage(resultRecord)),
+						getTaskResultFailureMessage(resultRecord),
 						typeof resultRecord.errorCode === 'string' && resultRecord.errorCode.trim().length > 0
 							? resultRecord.errorCode.trim()
 							: 'BRIDGE_TASK_RESULT_FAILED',

@@ -150,6 +150,7 @@ const EDA_DEFAULT_VISIBLE_FIELDS = [
 interface StoredBridgeDiagnosticLogs {
 	schemaVersion: 1;
 	updatedAt: string;
+	clearId?: string;
 	logs: UnifiedLogEntry[];
 }
 
@@ -262,6 +263,7 @@ export class BridgeLogPipeline {
 	private storageWritePending = false;
 	private storageWriteRequested = false;
 	private storageWriteReplaceRequested = false;
+	private clearId = '';
 
 	/**
 	 * 获取统一日志字段定义。
@@ -330,7 +332,13 @@ export class BridgeLogPipeline {
 	 * @returns 原日志实体。
 	 */
 	public append(logEntry: UnifiedLogEntry): UnifiedLogEntry {
-		this.loadStoredLogs();
+		const stored = this.readStoredLogs();
+		if (stored !== undefined) {
+			this.mergeStoredLogs(stored);
+		}
+		else {
+			this.loadStoredLogs();
+		}
 		this.logs.push(logEntry);
 		if (this.logs.length > BRIDGE_LOG_LIMIT) {
 			this.logs.splice(0, this.logs.length - BRIDGE_LOG_LIMIT);
@@ -355,15 +363,12 @@ export class BridgeLogPipeline {
 	public getLogs(): UnifiedLogEntry[] {
 		// Settings and index bundles can stay alive at the same time. Refresh the
 		// shared snapshot on reads so an already-open page sees newer diagnostics.
-		if (!this.storageWritePending) {
-			const storedLogs = this.readStoredLogs();
-			if (storedLogs !== undefined) {
-				this.hasLoadedStoredLogs = true;
-				this.mergeLogs(storedLogs);
-			}
-			else {
-				this.loadStoredLogs();
-			}
+		const stored = this.readStoredLogs();
+		if (stored !== undefined) {
+			this.mergeStoredLogs(stored);
+		}
+		else {
+			this.loadStoredLogs();
 		}
 		return this.logs.slice();
 	}
@@ -372,12 +377,14 @@ export class BridgeLogPipeline {
 	 * 清空本地完整诊断日志。
 	 */
 	public clearLogs(): void {
-		// 先读取其他页面可能刚写入的快照，再执行有意的全量清空。
-		const storedLogs = this.readStoredLogs();
-		if (storedLogs !== undefined) {
-			this.mergeLogs(storedLogs);
-			this.hasLoadedStoredLogs = true;
+		// 清空标识让其他已打开的页面丢弃旧缓存。
+		const stored = this.readStoredLogs();
+		if (stored !== undefined) {
+			this.mergeStoredLogs(stored);
 		}
+		const previousClearTime = Number(this.clearId.split('_')[0]) || 0;
+		this.clearId = `${Math.max(Date.now(), previousClearTime + 1)}_${Math.random().toString(36).slice(2)}`;
+		this.hasLoadedStoredLogs = true;
 		this.logs.splice(0, this.logs.length);
 		this.persistDetailedLogs(true);
 	}
@@ -484,7 +491,7 @@ export class BridgeLogPipeline {
 			.some(fieldKey => String(fields[fieldKey] ?? '').trim().length > 0);
 	}
 
-	private readStoredLogs(): UnifiedLogEntry[] | undefined {
+	private readStoredLogs(): StoredBridgeDiagnosticLogs | undefined {
 		const storage = getExtensionStorage();
 		if (!storage || typeof storage.getExtensionUserConfig !== 'function') {
 			return undefined;
@@ -493,17 +500,35 @@ export class BridgeLogPipeline {
 		try {
 			const raw = storage.getExtensionUserConfig(BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY);
 			if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-				return [];
+				return { schemaVersion: 1, updatedAt: '', logs: [] };
 			}
 			const stored = raw as Partial<StoredBridgeDiagnosticLogs>;
 			if (stored.schemaVersion !== 1 || !Array.isArray(stored.logs)) {
-				return [];
+				return { schemaVersion: 1, updatedAt: '', logs: [] };
 			}
-			return stored.logs.filter(logEntry => this.isUnifiedLogEntry(logEntry));
+			return {
+				schemaVersion: 1,
+				updatedAt: typeof stored.updatedAt === 'string' ? stored.updatedAt : '',
+				clearId: typeof stored.clearId === 'string' ? stored.clearId : undefined,
+				logs: stored.logs.filter(logEntry => this.isUnifiedLogEntry(logEntry)),
+			};
 		}
 		catch {
 			return undefined;
 		}
+	}
+
+	private mergeStoredLogs(stored: StoredBridgeDiagnosticLogs): void {
+		const clearId = stored.clearId ?? '';
+		if (clearId < this.clearId) {
+			return;
+		}
+		if (this.hasLoadedStoredLogs && clearId !== this.clearId) {
+			this.logs.splice(0, this.logs.length);
+		}
+		this.clearId = clearId;
+		this.hasLoadedStoredLogs = true;
+		this.mergeLogs(stored.logs);
 	}
 
 	private mergeLogs(logEntries: UnifiedLogEntry[]): void {
@@ -537,12 +562,11 @@ export class BridgeLogPipeline {
 		if (!storage || typeof storage.getExtensionUserConfig !== 'function') {
 			return;
 		}
-		const storedLogs = this.readStoredLogs();
-		if (storedLogs === undefined) {
+		const stored = this.readStoredLogs();
+		if (stored === undefined) {
 			return;
 		}
-		this.hasLoadedStoredLogs = true;
-		this.mergeLogs(storedLogs);
+		this.mergeStoredLogs(stored);
 	}
 
 	private persistDetailedLogs(replaceStored = false): void {
@@ -560,14 +584,15 @@ export class BridgeLogPipeline {
 		this.storageWritePending = true;
 		if (!replaceStored) {
 			// 每次追加都合并最新持久化快照，避免多个 EDA 页面各自覆盖日志。
-			const storedLogs = this.readStoredLogs();
-			if (storedLogs !== undefined) {
-				this.mergeLogs(storedLogs);
+			const stored = this.readStoredLogs();
+			if (stored !== undefined) {
+				this.mergeStoredLogs(stored);
 			}
 		}
 		const snapshot: StoredBridgeDiagnosticLogs = {
 			schemaVersion: 1,
 			updatedAt: new Date().toISOString(),
+			clearId: this.clearId,
 			logs: this.logs.slice(-BRIDGE_LOG_LIMIT),
 		};
 		let writeResult: unknown;
