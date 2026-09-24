@@ -19,7 +19,9 @@ export class BridgeTaskQuarantine {
 		return this.active;
 	}
 
-	public enter(path: string, settled: Promise<void>): void {
+	public enter(path: string, settled: Promise<void>, mayMutate = true): void {
+		if (!mayMutate)
+			return;
 		const quarantine = { path, startedAt: Date.now(), settled };
 		this.active = quarantine;
 		void settled.then(() => {

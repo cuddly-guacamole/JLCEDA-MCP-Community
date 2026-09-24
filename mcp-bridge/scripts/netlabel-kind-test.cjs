@@ -313,6 +313,9 @@ async function main() {
 	assert.equal(backgroundSettled, true);
 	await new Promise(resolve => setTimeout(resolve, 0));
 	assert.equal(quarantine.getActive(), undefined, 'the bridge client must recover after the original mutation settles');
+	const readOnlyQuarantine = new BridgeTaskQuarantine();
+	readOnlyQuarantine.enter('/bridge/jlceda/schematic/read', new Promise(() => {}), false);
+	assert.equal(readOnlyQuarantine.getActive(), undefined, 'timed-out read-only tasks must not block later EDA writes');
 
 	let resolveNetLabelCreate;
 	const pendingNetLabelCreate = new Promise((resolve) => {
