@@ -60,6 +60,11 @@ let placeSessionGeneration = 0;
 let placementModeNeedsExit = false;
 let removeExitGuardListeners: (() => void) | null = null;
 
+/** EDA 原生交互放置模式退出前禁止新的写任务。 */
+export function isPlacementModeExitRequired(): boolean {
+	return placementModeNeedsExit;
+}
+
 async function readCurrentSchematicPageUuid(): Promise<string> {
 	const schematicModule = getEdaRuntime()?.dmt_Schematic;
 	if (!isPlainObjectRecord(schematicModule) || typeof schematicModule.getCurrentSchematicPageInfo !== 'function') {

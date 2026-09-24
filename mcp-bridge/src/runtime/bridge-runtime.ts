@@ -25,6 +25,7 @@ import { safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
 import { debugLog } from '../utils/debug-log.ts';
 import { getBridgeTaskHandler } from './bridge-handler-registry.ts';
 import { BridgeTransport } from './bridge-transport.ts';
+import { getPlacementModeWriteRejection } from './placement-mode-barrier.ts';
 import { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForResult, resolveBridgeTaskTimeoutMs, startTimedTask } from './task-timeout.ts';
 
 const RECONNECT_INTERVAL_MS = 1200;
@@ -274,7 +275,7 @@ function applyRole(message: BridgeServerRoleMessage): void {
 }
 
 // 调度任务执行并回传结果。
-function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
+export function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
 	const readOnly = isReadOnlyBridgeRequest(task.path, task.payload);
 	if (controlledRecoveryPending && !readOnly) {
@@ -296,6 +297,14 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		});
 		return;
 	}
+	const placementModeRejection = getPlacementModeWriteRejection(task.path, task.payload);
+	if (placementModeRejection) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', placementModeRejection, 'placement-mode');
+		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
+			message: placementModeRejection,
+		});
+		return;
+	}
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
 		if (controlledRecoveryPending && !readOnly) {
@@ -314,6 +323,14 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message,
+			});
+			return;
+		}
+		const placementModeRejection = getPlacementModeWriteRejection(task.path, task.payload);
+		if (placementModeRejection) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', placementModeRejection, 'placement-mode');
+			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
+				message: placementModeRejection,
 			});
 			return;
 		}

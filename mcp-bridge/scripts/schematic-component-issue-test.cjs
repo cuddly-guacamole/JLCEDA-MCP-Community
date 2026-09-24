@@ -13,6 +13,8 @@ const {
 	cleanupAllComponentPlaceSessions,
 } = require('../src/mcp/component-place-handler.ts');
 const { handleApiInvokeTask } = require('../src/mcp/invoke-handler.ts');
+const { enqueueTask } = require('../src/runtime/bridge-runtime.ts');
+const { getPlacementModeWriteRejection } = require('../src/runtime/placement-mode-barrier.ts');
 
 function primitive(id, designator, otherProperty = {}) {
 	return {
@@ -27,6 +29,10 @@ async function main() {
 	let metadata = { Value: '10k', Datasheet: 'https://example.test/r' };
 	let currentPageUuid = 'P1';
 	globalThis.eda = {
+		sys_Storage: {
+			getExtensionUserConfig() { return undefined; },
+			async setExtensionUserConfig() {},
+		},
 		dmt_Schematic: {
 			async getCurrentSchematicPageInfo() { return { uuid: currentPageUuid }; },
 		},
@@ -171,14 +177,49 @@ async function main() {
 	};
 	const lostStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
 	assert.equal(lostStart.ok, true);
+	const taskResults = [];
+	const mockTransport = {
+		completeTask(requestId, _leaseTerm, _result, error) { taskResults.push({ requestId, error }); },
+	};
+	const apiWrite = { apiFullName: 'eda.sch_PrimitiveComponent.modify', args: ['r1', { designator: 'R2' }] };
+	enqueueTask({ requestId: 'queued-before-loss', path: '/bridge/jlceda/api/invoke', payload: apiWrite, leaseTerm: 0 }, mockTransport);
 	await cleanupAllComponentPlaceSessions();
+	await new Promise(resolve => setImmediate(resolve));
+	assert.match(taskResults.find(item => item.requestId === 'queued-before-loss').error.message, /Esc|右键/);
+	enqueueTask({ requestId: 'after-loss', path: '/bridge/jlceda/api/invoke', payload: apiWrite, leaseTerm: 0 }, mockTransport);
+	assert.match(taskResults.find(item => item.requestId === 'after-loss').error.message, /Esc|右键/);
+	enqueueTask({ requestId: 'read-after-loss', path: '/bridge/jlceda/schematic/connectivity', payload: { action: 'wire_preview' }, leaseTerm: 0 }, mockTransport);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.match(taskResults.find(item => item.requestId === 'read-after-loss').error.message, /待命状态/);
 	const lostCheck = await handleComponentPlaceCheckTask({ sessionId: lostStart.sessionId });
 	assert.equal(lostCheck.ok, false);
+	const blockedWrites = [
+		['/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.modify', args: ['r1', { designator: 'R2' }] }],
+		['/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }],
+		['/bridge/jlceda/component/place-auto', { components: [] }],
+		['/bridge/jlceda/component/place/start', { component: { uuid: 'device', libraryUuid: 'library' } }],
+	];
+	for (const [path, payload] of blockedWrites)
+		assert.match(getPlacementModeWriteRejection(path, payload), /Esc|右键/);
+	const allowedReads = [
+		['/bridge/jlceda/context', {}],
+		['/bridge/jlceda/schematic/read', {}],
+		['/bridge/jlceda/schematic/connectivity', { action: 'wire_preview' }],
+		['/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] }],
+		['/bridge/jlceda/component/place/check', { sessionId: lostStart.sessionId }],
+	];
+	for (const [path, payload] of allowedReads)
+		assert.equal(getPlacementModeWriteRejection(path, payload), undefined);
 	const blockedAfterLoss = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
 	assert.equal(blockedAfterLoss.ok, false);
 	assert.match(blockedAfterLoss.error, /Esc|右键/);
 	assert.equal(mousePlaceCalls, 1);
 	rightClick();
+	for (const [path, payload] of blockedWrites)
+		assert.equal(getPlacementModeWriteRejection(path, payload), undefined);
+	enqueueTask({ requestId: 'after-exit', path: '/bridge/jlceda/api/invoke', payload: apiWrite, leaseTerm: 0 }, mockTransport);
+	await new Promise(resolve => setImmediate(resolve));
+	assert.match(taskResults.find(item => item.requestId === 'after-exit').error.message, /待命状态/);
 	const resumed = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
 	assert.equal(resumed.ok, true);
 	assert.equal(mousePlaceCalls, 2);
@@ -188,6 +229,7 @@ async function main() {
 	// A normal close before Esc (for example, after timeout) needs the same guard.
 	const closedBeforeExit = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
 	await handleComponentPlaceCloseTask({ sessionId: closedBeforeExit.sessionId });
+	assert.match(getPlacementModeWriteRejection(blockedWrites[0][0], blockedWrites[0][1]), /Esc|右键/);
 	assert.equal((await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } })).ok, false);
 	assert.equal(mousePlaceCalls, 3);
 	pressEscape();
