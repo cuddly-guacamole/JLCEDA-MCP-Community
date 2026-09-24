@@ -1024,6 +1024,13 @@ export class EdaBridgeServer {
     session.targetClientId = targetClientId;
     session.targetConnectedAt = target.connectedAt;
     const readback = await this.dispatchToEda(readbackPath, readbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+    if (isRecord(readback) && readback.ok === false) {
+      const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
+        || readbackPath === '/bridge/jlceda/schematic/drc-check';
+      if (!expectedNegative || optionalString(readback.error)) {
+        throw new Error(`Recovery readback failed: ${optionalString(readback.error) ?? 'the read-only operation returned ok:false'}`);
+      }
+    }
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
       : await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);

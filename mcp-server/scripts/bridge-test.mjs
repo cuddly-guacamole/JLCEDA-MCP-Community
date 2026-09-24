@@ -480,9 +480,16 @@ try {
     { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'recovery-page' },
   );
   let recoveryReadbackPageUuid = 'recovery-page';
-  attachTaskResponder(freshRecoveryClient.socket, 'recovered-page', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' }, currentSchematicPageInfo: { uuid: recoveryReadbackPageUuid } }
-    : ({ source: 'replacement', path: message.path }));
+  let failRecoveryReadback = false;
+  attachTaskResponder(freshRecoveryClient.socket, 'recovered-page', (message) => {
+    if (message.path === '/bridge/jlceda/context') {
+      return { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' }, currentSchematicPageInfo: { uuid: recoveryReadbackPageUuid } };
+    }
+    if (failRecoveryReadback && message.path === '/bridge/jlceda/api/invoke') {
+      return { ok: false, error: 'component readback failed' };
+    }
+    return { source: 'replacement', path: message.path };
+  });
   assert.deepEqual(
     await recoveryServer.request('/bridge/jlceda/context', {}, 2000),
     { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' }, currentSchematicPageInfo: { uuid: 'recovery-page' } },
@@ -549,6 +556,13 @@ try {
   );
   await assert.rejects(recoveryServer.request('/bridge/test/write-still-blocked', {}, 2000), /writes are blocked pending recovery readback/);
   recoveryReadbackPageUuid = 'recovery-page';
+  failRecoveryReadback = true;
+  await assert.rejects(
+    recoveryServer.request('/bridge/admin/recover-client', recoveryReadbackRequest, 2000),
+    /Recovery readback failed: component readback failed/,
+  );
+  await assert.rejects(recoveryServer.request('/bridge/test/write-after-failed-readback', {}, 2000), /writes are blocked pending recovery readback/);
+  failRecoveryReadback = false;
   const recoveryReadback = await recoveryServer.request('/bridge/admin/recover-client', recoveryReadbackRequest, 2000);
   assert.equal(recoveryReadback.readbackVerified, true);
   assert.equal(recoveryReadback.readback.path, '/bridge/jlceda/api/invoke');
