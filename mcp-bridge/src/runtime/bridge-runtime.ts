@@ -25,7 +25,7 @@ import { safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
 import { debugLog } from '../utils/debug-log.ts';
 import { getBridgeTaskHandler } from './bridge-handler-registry.ts';
 import { BridgeTransport } from './bridge-transport.ts';
-import { BridgeTaskQuarantine, BridgeTaskTimeoutError, resolveBridgeTaskTimeoutMs, startTimedTask } from './task-timeout.ts';
+import { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForResult, resolveBridgeTaskTimeoutMs, startTimedTask } from './task-timeout.ts';
 
 const RECONNECT_INTERVAL_MS = 1200;
 const CONTEXT_SYNC_INTERVAL_MS = 1000;
@@ -39,10 +39,12 @@ let contextSyncTimer: ReturnType<typeof globalThis.setInterval> | undefined;
 let configSubscription: ISYS_MessageBusTask | null = null;
 let taskChain: Promise<void> = Promise.resolve();
 const taskQuarantine = new BridgeTaskQuarantine();
+let runningMutationSettled: Promise<void> | undefined;
 let currentRole: BridgeRole = 'standby';
 let currentLeaseTerm = 0;
 let currentActiveClientId = '';
 let controlledRecoveryPending = false;
+const HOST_RESTART_REQUIRED_MESSAGE = 'PCB autoLayout may still commit. Restart the EDA host before controlled recovery readback.';
 // 每次建立新连接时递增，确保每次调用 eda.sys_WebSocket.register 使用唯一 socketId。
 let socketSequence = 0;
 
@@ -276,15 +278,18 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
 	const readOnly = isReadOnlyBridgeRequest(task.path, task.payload);
 	if (controlledRecoveryPending && !readOnly) {
-		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
+		const message = taskQuarantine.requiresHostRestart() ? HOST_RESTART_REQUIRED_MESSAGE : 'Bridge client is awaiting controlled recovery after a timed-out task settles.';
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'controlled-recovery');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-			message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
+			message,
 		});
 		return;
 	}
 	const activeQuarantine = taskQuarantine.getActive();
 	if (activeQuarantine && !readOnly) {
-		const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+		const message = activeQuarantine.requiresHostRestart
+			? HOST_RESTART_REQUIRED_MESSAGE
+			: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
 		writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 			message,
@@ -294,15 +299,18 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
 		if (controlledRecoveryPending && !readOnly) {
-			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
+			const message = taskQuarantine.requiresHostRestart() ? HOST_RESTART_REQUIRED_MESSAGE : 'Bridge client is awaiting controlled recovery after a timed-out task settles.';
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'controlled-recovery');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
+				message,
 			});
 			return;
 		}
 		const activeQuarantine = taskQuarantine.getActive();
 		if (activeQuarantine && !readOnly) {
-			const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+			const message = activeQuarantine.requiresHostRestart
+				? HOST_RESTART_REQUIRED_MESSAGE
+				: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
 			writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message,
@@ -355,11 +363,23 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			currentTransport.refreshServerActivity();
 			const timeoutMs = resolveBridgeTaskTimeoutMs(task.path, task.payload);
 			const timedTask = startTimedTask(
-				(async () => toSerializableAsync(await handler(task.payload)))(),
+				(async () => {
+					const value = await toSerializableAsync(await handler(task.payload));
+					if (requiresHostRestartForResult(task.path, task.payload, value))
+						taskQuarantine.requireHostRestart(task.path);
+					return value;
+				})(),
 				task.path,
 				timeoutMs,
 			);
 			handlerSettled = timedTask.settled;
+			if (!readOnly) {
+				runningMutationSettled = timedTask.settled;
+				void timedTask.settled.then(() => {
+					if (runningMutationSettled === timedTask.settled)
+						runningMutationSettled = undefined;
+				});
+			}
 			result = await timedTask.result;
 			// 任务完成后再次刷新，确保结果回传前连接不被断开
 			currentTransport.refreshServerActivity();
@@ -498,32 +518,37 @@ function startControlledRecovery(): void {
 		return;
 	}
 	controlledRecoveryPending = true;
+	if (taskQuarantine.requiresHostRestart()) {
+		statusReporter.markFailed(HOST_RESTART_REQUIRED_MESSAGE);
+		return;
+	}
 	statusReporter.markConnecting();
 
-	// An EDA API task cannot be cancelled. Keep the current generation isolated
-	// until it settles, then clean up any interactive state before reconnecting.
-	const settle = taskQuarantine.waitForSettlement() ?? Promise.resolve();
-	void settle.then(
-		() => cleanupAllComponentPlaceSessions(),
-		() => cleanupAllComponentPlaceSessions(),
-	).then(() => {
+	// A Server timeout may arrive before the Bridge timeout. Wait for the
+	// running handler too, so a later unknown result cannot race with reconnect.
+	const settle = taskQuarantine.waitForSettlement() ?? runningMutationSettled ?? Promise.resolve();
+	void (async () => {
+		await settle;
+		if (taskQuarantine.requiresHostRestart()) {
+			statusReporter.markFailed(HOST_RESTART_REQUIRED_MESSAGE);
+			return;
+		}
+		await cleanupAllComponentPlaceSessions();
 		clientId = '';
 		clearReconnectTimer();
 		stopTransport();
 		currentRole = 'standby';
 		currentLeaseTerm = 0;
 		currentActiveClientId = '';
-		return isEditablePage();
-	}).then((editable) => {
-		if (editable) {
-			return ensureConnected();
-		}
-		statusReporter.markNotOnEditablePage();
-		return undefined;
-	}).catch((error: unknown) => {
+		if (await isEditablePage())
+			await ensureConnected();
+		else
+			statusReporter.markNotOnEditablePage();
+	})().catch((error: unknown) => {
 		statusReporter.markFailed(toSafeErrorMessage(error));
 	}).finally(() => {
-		controlledRecoveryPending = false;
+		if (!taskQuarantine.requiresHostRestart())
+			controlledRecoveryPending = false;
 	});
 }
 

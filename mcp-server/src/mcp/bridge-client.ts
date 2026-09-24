@@ -66,6 +66,7 @@ interface RecoverySession {
   requestedAtMs: number;
   sourceConnected: boolean;
   sourceConnectedAt?: number;
+  sourceSocket?: WebSocket;
   targetClientId?: string;
   targetConnectedAt?: number;
 }
@@ -979,6 +980,7 @@ export class EdaBridgeServer {
         requestedAtMs: Date.now(),
         sourceConnected,
         sourceConnectedAt: source?.connectedAt,
+        sourceSocket: source?.socket,
       };
       if (sourceConnected) {
         this.trySend(source!.socket, {
@@ -1022,6 +1024,11 @@ export class EdaBridgeServer {
     if (session.diagnostic.requiredReadback === 'pcb_component_positions'
       && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
+      && session.sourceSocket
+      && this.peers.get(session.diagnostic.clientId)?.socket === session.sourceSocket) {
+      throw new Error('The original PCB autoLayout Bridge client must disconnect before recovery readback. Restart the EDA host first.');
     }
     const target = this.peers.get(targetClientId);
     if (!target || !this.isPeerReady(target))

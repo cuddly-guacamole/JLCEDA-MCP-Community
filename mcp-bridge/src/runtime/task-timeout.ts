@@ -13,14 +13,14 @@ export class BridgeTaskTimeoutError extends Error {
 }
 
 export class BridgeTaskQuarantine {
-	private active: { path: string; startedAt: number; settled: Promise<void> } | undefined;
+	private active: { path: string; startedAt: number; settled: Promise<void>; requiresHostRestart?: boolean } | undefined;
 
-	public getActive(): { path: string; startedAt: number } | undefined {
+	public getActive(): { path: string; startedAt: number; requiresHostRestart?: boolean } | undefined {
 		return this.active;
 	}
 
 	public enter(path: string, settled: Promise<void>, mayMutate = true): void {
-		if (!mayMutate)
+		if (!mayMutate || this.requiresHostRestart())
 			return;
 		const quarantine = { path, startedAt: Date.now(), settled };
 		this.active = quarantine;
@@ -31,9 +31,34 @@ export class BridgeTaskQuarantine {
 		});
 	}
 
+	public requireHostRestart(path: string): void {
+		// The native RPC has returned, but its EDA-side mutation may still commit.
+		// Only unloading this host runtime can release this permanent barrier.
+		this.active = { path, startedAt: Date.now(), settled: new Promise<void>(() => {}), requiresHostRestart: true };
+	}
+
+	public requiresHostRestart(): boolean {
+		return this.active?.requiresHostRestart === true;
+	}
+
 	public waitForSettlement(): Promise<void> | undefined {
 		return this.active?.settled;
 	}
+}
+
+export function requiresHostRestartForResult(path: string, payload: unknown, result: unknown): boolean {
+	if (path !== '/bridge/jlceda/api/invoke'
+		|| !payload || typeof payload !== 'object' || Array.isArray(payload)
+		|| !result || typeof result !== 'object' || Array.isArray(result)) {
+		return false;
+	}
+	const apiFullName = (payload as Record<string, unknown>).apiFullName;
+	const response = result as Record<string, unknown>;
+	return typeof apiFullName === 'string'
+		&& apiFullName.toLowerCase() === 'eda.pcb_document.autolayout'
+		&& response.ok === false
+		&& response.commitState === 'unknown'
+		&& response.retryBlocked === true;
 }
 
 export interface TimedTask<T> {

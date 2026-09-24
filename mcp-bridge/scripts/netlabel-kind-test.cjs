@@ -14,7 +14,7 @@ const { handleNetLabelModifyTask } = require('../src/mcp/netlabel-modify-handler
 const { createNetLabelWithTimeout, detectNetLabelKind, findPin, handleNetLabelPlaceTask } = require('../src/mcp/netlabel-place-handler.ts');
 const { handlePcbDrcCheckTask } = require('../src/mcp/pcb-drc-handler.ts');
 const { shouldLogTransportMessage } = require('../src/runtime/bridge-transport.ts');
-const { BridgeTaskQuarantine, BridgeTaskTimeoutError, resolveBridgeTaskTimeoutMs, startTimedTask } = require('../src/runtime/task-timeout.ts');
+const { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForResult, resolveBridgeTaskTimeoutMs, startTimedTask } = require('../src/runtime/task-timeout.ts');
 const { startConnectionStatusMonitor } = require('../src/state/status-monitor.ts');
 const { readConnectionStatus, saveConnectionStatus } = require('../src/state/status-store.ts');
 
@@ -316,6 +316,31 @@ async function main() {
 	const readOnlyQuarantine = new BridgeTaskQuarantine();
 	readOnlyQuarantine.enter('/bridge/jlceda/schematic/read', new Promise(() => {}), false);
 	assert.equal(readOnlyQuarantine.getActive(), undefined, 'timed-out read-only tasks must not block later EDA writes');
+	const layoutPath = '/bridge/jlceda/api/invoke';
+	const layoutPayload = { apiFullName: 'eda.pcb_Document.autoLayout', args: [] };
+	const unknownLayoutResult = { ok: false, commitState: 'unknown', retryBlocked: true };
+	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, unknownLayoutResult), true);
+	assert.equal(requiresHostRestartForResult(layoutPath, { apiFullName: 'eda.pcb_Document.autoRouting' }, unknownLayoutResult), false);
+	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, { ok: true, commitState: 'complete' }), false);
+	const layoutQuarantine = new BridgeTaskQuarantine();
+	let resolveLateLayoutResult;
+	const lateLayoutResult = new Promise((resolve) => {
+		resolveLateLayoutResult = resolve;
+	}).then((result) => {
+		if (requiresHostRestartForResult(layoutPath, layoutPayload, result))
+			layoutQuarantine.requireHostRestart(layoutPath);
+		return result;
+	});
+	const timedLayoutTask = startTimedTask(lateLayoutResult, layoutPath, 10);
+	await assert.rejects(timedLayoutTask.result, BridgeTaskTimeoutError);
+	layoutQuarantine.enter(layoutPath, timedLayoutTask.settled);
+	resolveLateLayoutResult(unknownLayoutResult);
+	await timedLayoutTask.settled;
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assert.equal(layoutQuarantine.requiresHostRestart(), true, 'a late unknown layout result must keep the host isolated after the timed task settles');
+	assert.equal(layoutQuarantine.getActive().requiresHostRestart, true);
+	layoutQuarantine.enter('/bridge/jlceda/component/place-auto', Promise.resolve());
+	assert.equal(layoutQuarantine.requiresHostRestart(), true, 'another task must not clear the host-restart requirement');
 
 	let resolveNetLabelCreate;
 	const pendingNetLabelCreate = new Promise((resolve) => {

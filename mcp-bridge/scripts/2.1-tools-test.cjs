@@ -34,6 +34,7 @@ const { handleSchematicDocumentTask } = require('../src/mcp/schematic-document-h
 const { handleSchematicDrcCheckTask } = require('../src/mcp/schematic-drc-handler.ts');
 const { handleSchematicPagesManageTask } = require('../src/mcp/schematic-pages-manage-handler.ts');
 const { handleWorkspaceQueryTask } = require('../src/mcp/workspace-query-handler.ts');
+const { BridgeTaskQuarantine, requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
 const { toSerializableAsync } = require('../src/utils.ts');
 const { debugLog } = require('../src/utils/debug-log.ts');
 
@@ -662,6 +663,10 @@ async function main() {
 	const unknownLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(unknownLayout.commitState, 'unknown');
 	assert.equal(unknownLayout.retryBlocked, true);
+	const runtimeLayoutQuarantine = new BridgeTaskQuarantine();
+	const runtimeLayoutPath = '/bridge/jlceda/api/invoke';
+	if (requiresHostRestartForResult(runtimeLayoutPath, { apiFullName: 'eda.pcb_Document.autoLayout', args: [] }, unknownLayout))
+		runtimeLayoutQuarantine.requireHostRestart(runtimeLayoutPath);
 	const blockedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(blockedLayout.retryBlocked, true);
 	assert.equal(pcbAutoLayoutCalls, 1);
@@ -684,6 +689,7 @@ async function main() {
 	const serializedLayoutReadback = await toSerializableAsync(layoutReadback);
 	assert.equal(serializedLayoutReadback.result.length, 125, 'Bridge result serialization must preserve every verified position');
 	assert.equal(layoutReadback.result[0].rotation, 90);
+	assert.equal(runtimeLayoutQuarantine.requiresHostRestart(), true, 'same-page readback must not clear the runtime write barrier before EDA host restart');
 	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
 	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(completedLayout.result.success, true);

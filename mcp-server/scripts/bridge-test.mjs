@@ -749,28 +749,33 @@ try {
   assert.equal(nativeLayoutDiagnostic.requiredReadback, 'pcb_component_positions');
   assert.equal(nativeLayoutDiagnostic.uncertaintyReason, 'native autoLayout timeout');
   await assert.rejects(nativeLayoutServer.request('/bridge/test/write-after-native-layout-timeout', {}, 2000), /writes are blocked pending recovery readback/);
-  nativeLayoutOld.socket.close();
-  await waitUntil(async () => (await nativeLayoutServer.request('/bridge/admin/clients', {}, 2000)).clients[0].ready === false);
   const nativeLayoutRecovery = await nativeLayoutServer.request('/bridge/admin/recover-client', {
     confirm: true, requestId: nativeLayoutDiagnostic.requestId,
   }, 2000);
+  assert.equal(nativeLayoutRecovery.sourceConnected, true);
   nativeLayoutNew = await registerEda(
     `ws://127.0.0.1:${nativeLayoutPort}/bridge/ws${tokenQuery}`,
-    'native-layout-page',
+    'native-layout-new',
     { documentUuid: 'native-layout-document', projectUuid: 'native-layout-project', pageKind: 'pcb', pageUuid: 'native-layout-pcb' },
   );
-  attachTaskResponder(nativeLayoutNew.socket, 'native-layout-page', (message) => message.path === '/bridge/jlceda/context'
+  attachTaskResponder(nativeLayoutNew.socket, 'native-layout-new', (message) => message.path === '/bridge/jlceda/context'
     ? { currentDocumentInfo: { uuid: 'native-layout-document', parentProjectUuid: 'native-layout-project' }, currentProjectInfo: { uuid: 'native-layout-project' }, currentPcbInfo: { uuid: 'native-layout-pcb' } }
     : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ primitiveId: 'native-component-1', designator: 'R1', x: 1, y: 2, rotation: 0 }], componentCount: 1 });
   await assert.rejects(nativeLayoutServer.request('/bridge/admin/recover-client', {
-    action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-page',
+    action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-new',
     readbackPath: '/bridge/jlceda/context',
   }, 2000), /autoLayout requires eda.pcb_PrimitiveComponent.getAll/);
-  const nativeLayoutReadback = await nativeLayoutServer.request('/bridge/admin/recover-client', {
-    action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-page',
+  const nativeLayoutReadbackRequest = {
+    action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-new',
     readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
-  }, 2000);
+  };
+  await assert.rejects(nativeLayoutServer.request('/bridge/admin/recover-client', nativeLayoutReadbackRequest, 2000), /original PCB autoLayout Bridge client must disconnect/);
+  await assert.rejects(nativeLayoutServer.request('/bridge/test/write-while-native-layout-source-connected', {}, 2000), /writes are blocked pending recovery readback/);
+  nativeLayoutOld.socket.close();
+  await waitUntil(async () => (await nativeLayoutServer.request('/bridge/admin/clients', {}, 2000)).clients
+    .find((client) => client.clientId === 'native-layout-page')?.ready === false);
+  const nativeLayoutReadback = await nativeLayoutServer.request('/bridge/admin/recover-client', nativeLayoutReadbackRequest, 2000);
   assert.equal(nativeLayoutReadback.readbackVerified, true);
   assert.equal(nativeLayoutReadback.writesRemainBlocked, false);
   nativeLayoutNew.socket.close();
