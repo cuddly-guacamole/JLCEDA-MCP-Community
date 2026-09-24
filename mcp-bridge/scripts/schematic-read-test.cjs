@@ -37,11 +37,13 @@ async function main() {
 	currentPage = 'P2';
 	assert.equal(await readCount(), 0, 'a newly opened empty page must not include earlier-page components');
 
+	let portX = 0;
+	let pinY = 100;
 	const netPort = {
 		getState_PrimitiveId: () => 'net-port',
 		getState_Designator: () => '',
 		getState_Net: () => 'SIG',
-		getState_X: () => 0,
+		getState_X: () => portX,
 		getState_Y: () => 0,
 	};
 	const device = {
@@ -60,7 +62,7 @@ async function main() {
 			getState_PinName: () => 'IN',
 			getState_PinType: () => 'input',
 			getState_X: () => 100,
-			getState_Y: () => 100,
+			getState_Y: () => pinY,
 			getState_NoConnected: () => false,
 		}];
 	};
@@ -72,6 +74,13 @@ async function main() {
 	assert.equal(result.ok, true);
 	const snapshot = JSON.parse(result.schematicCircuitSnapshot);
 	assert.deepEqual(snapshot.networks.find(network => network.networkName === 'SIG').connectedPinRefs, ['SIG.1', 'U1.1']);
+	portX = 50;
+	const portMidpoint = JSON.parse((await handleSchematicReadTask({})).schematicCircuitSnapshot);
+	assert.deepEqual(portMidpoint.networks.find(network => network.networkName === 'SIG').connectedPinRefs, ['SIG.1', 'U1.1'], 'NetPort on an unnamed wire midpoint must name the connected pin');
+	portX = 0;
+	pinY = 50;
+	const pinMidpoint = JSON.parse((await handleSchematicReadTask({})).schematicCircuitSnapshot);
+	assert.deepEqual(pinMidpoint.networks.find(network => network.networkName === 'SIG').connectedPinRefs, ['SIG.1', 'U1.1'], 'pin on an unnamed wire midpoint must inherit the NetPort name');
 	console.log('schematic_read current-page test passed');
 }
 

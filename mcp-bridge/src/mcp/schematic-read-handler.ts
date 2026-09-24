@@ -18,9 +18,13 @@ function buildPinCoordinateKey(x: number, y: number): string {
 	return `${Math.round(x)}_${Math.round(y)}`;
 }
 
-// 从多段线坐标中提取相邻端点对，向邻接图中添加双向边。
+// 从多段线坐标中提取相邻端点对，并接入位于线段中部的端口和引脚。
 // getState_Line 可以返回平铺坐标、连续点数组，或多段平铺坐标数组。
-function addWireEdgesToAdjacencyGraph(lineData: unknown, graph: Map<string, Set<string>>): void {
+function addWireEdgesToAdjacencyGraph(
+	lineData: unknown,
+	graph: Map<string, Set<string>>,
+	connectionPoints: Array<{ x: number; y: number }>,
+): void {
 	if (!Array.isArray(lineData) || lineData.length === 0) {
 		return;
 	}
@@ -45,10 +49,21 @@ function addWireEdgesToAdjacencyGraph(lineData: unknown, graph: Map<string, Set<
 
 	function addFlatEdges(flatLine: unknown[]): void {
 		for (let i = 0; i + 3 < flatLine.length; i += 2) {
-			addEdge(
-				buildPinCoordinateKey(flatLine[i] as number, flatLine[i + 1] as number),
-				buildPinCoordinateKey(flatLine[i + 2] as number, flatLine[i + 3] as number),
-			);
+			const x1 = Math.round(flatLine[i] as number);
+			const y1 = Math.round(flatLine[i + 1] as number);
+			const x2 = Math.round(flatLine[i + 2] as number);
+			const y2 = Math.round(flatLine[i + 3] as number);
+			const startKey = buildPinCoordinateKey(x1, y1);
+			addEdge(startKey, buildPinCoordinateKey(x2, y2));
+			for (const point of connectionPoints) {
+				const { x, y } = point;
+				if ((x - x1) * (y2 - y1) !== (y - y1) * (x2 - x1)
+					|| x < Math.min(x1, x2) || x > Math.max(x1, x2)
+					|| y < Math.min(y1, y2) || y > Math.max(y1, y2)) {
+					continue;
+				}
+				addEdge(startKey, buildPinCoordinateKey(x, y));
+			}
 		}
 	}
 
@@ -104,6 +119,33 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 	if (!Array.isArray(componentListRaw)) {
 		return { ok: false, error: '器件列表获取失败，sch_PrimitiveComponent.getAll 未返回数组。' };
 	}
+	const pinsByComponentId = new Map<string, unknown[]>();
+	const connectionPoints: Array<{ x: number; y: number }> = [];
+	for (const rawComponent of componentListRaw) {
+		const net = getSyncState<string>(rawComponent, 'getState_Net', '');
+		if (net.length > 0) {
+			connectionPoints.push({
+				x: Math.round(getSyncState<number>(rawComponent, 'getState_X', 0)),
+				y: Math.round(getSyncState<number>(rawComponent, 'getState_Y', 0)),
+			});
+			continue;
+		}
+		const designator = getSyncState<string>(rawComponent, 'getState_Designator', '');
+		if (!designator)
+			continue;
+		const primitiveId = getSyncState<string>(rawComponent, 'getState_PrimitiveId', '');
+		const pinsRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveId)));
+		if (pinsRaw !== undefined && !Array.isArray(pinsRaw))
+			return { ok: false, error: `器件 ${designator} 的引脚列表格式异常。` };
+		const pins = Array.isArray(pinsRaw) ? pinsRaw : [];
+		pinsByComponentId.set(primitiveId, pins);
+		for (const rawPin of pins) {
+			connectionPoints.push({
+				x: Math.round(getSyncState<number>(rawPin, 'getState_X', 0)),
+				y: Math.round(getSyncState<number>(rawPin, 'getState_Y', 0)),
+			});
+		}
+	}
 
 	// ── 第二步：构建坐标→网络名映射（BFS 沿导线传播） ──────────────────────
 	// 种子来源 1：网络标志器件坐标（VCC/GND 等），net name = getState_Net()。
@@ -117,7 +159,7 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 	if (Array.isArray(wireListRaw)) {
 		for (const rawWire of wireListRaw) {
 			const lineData: unknown = getSyncState<unknown>(rawWire, 'getState_Line', null);
-			addWireEdgesToAdjacencyGraph(lineData, wireAdjacencyGraph);
+			addWireEdgesToAdjacencyGraph(lineData, wireAdjacencyGraph, connectionPoints);
 			// 导线自身已有网络名时，将其所有端点作为种子。
 			const wireName = getSyncState<string>(rawWire, 'getState_Net', '');
 			if (wireName.length > 0 && Array.isArray(lineData)) {
@@ -203,13 +245,8 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 
 		// 普通器件：获取所有引脚并查找连接网络名。
 		const primitiveId = getSyncState<string>(rawComponent, 'getState_PrimitiveId', '');
-		const pinsRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveId)));
-		if (pinsRaw !== undefined && !Array.isArray(pinsRaw)) {
-			return { ok: false, error: `器件 ${componentDesignator} 的引脚列表格式异常。` };
-		}
-
 		const pins: PinSemanticInfo[] = [];
-		for (const rawPin of Array.isArray(pinsRaw) ? pinsRaw : []) {
+		for (const rawPin of pinsByComponentId.get(primitiveId) ?? []) {
 			const pinNumber = getSyncState<string>(rawPin, 'getState_PinNumber', '');
 			const pinSignalName = getSyncState<string>(rawPin, 'getState_PinName', '');
 			const pinElectricalType = getSyncState<string>(rawPin, 'getState_PinType', '');
