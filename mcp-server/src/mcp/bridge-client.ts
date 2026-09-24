@@ -54,6 +54,7 @@ interface RecoveryDiagnostic {
   timeoutMs: number;
   timedOutAtMs: number;
   mutating: boolean;
+  requiredReadback?: 'pcb_component_positions';
   uncertaintyReason?: string;
   context?: BridgeClientContext;
 }
@@ -164,6 +165,19 @@ function validateInternalTaskMessage(value: unknown): string | undefined {
 function optionalString(value: unknown): string | undefined {
   const text = typeof value === 'string' ? value.trim() : '';
   return text || undefined;
+}
+
+function isPcbAutoLayoutRequest(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && isRecord(payload)
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_document.autolayout';
+}
+
+function isPcbComponentReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  const args = payload.args;
+  return path === '/bridge/jlceda/api/invoke'
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_primitivecomponent.getall'
+    && (args === undefined || (Array.isArray(args) && args.length === 0));
 }
 
 function serializeBridgeError(error: unknown): unknown {
@@ -913,6 +927,7 @@ export class EdaBridgeServer {
       timeoutMs,
       timedOutAtMs: Date.now(),
       mutating: !isReadOnlyRequest(pending.path ?? '', pending.payload),
+      ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
       uncertaintyReason,
       context: pending.context,
     };
@@ -994,6 +1009,10 @@ export class EdaBridgeServer {
     if (!isReadOnlyRequest(readbackPath, readbackPayload)) {
       throw new Error('readbackPath and readbackPayload must describe a read-only operation; schematic layout mode=fix is not allowed.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
+      && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
+    }
     const target = this.peers.get(targetClientId);
     if (!target || !this.isPeerReady(target))
       throw new Error(`EDA client is not connected and ready: ${targetClientId}`);
@@ -1030,6 +1049,13 @@ export class EdaBridgeServer {
       if (!expectedNegative || optionalString(readback.error)) {
         throw new Error(`Recovery readback failed: ${optionalString(readback.error) ?? 'the read-only operation returned ok:false'}`);
       }
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
+      && (!isRecord(readback)
+        || optionalString(readback.apiFullName)?.toLowerCase() !== 'eda.pcb_primitivecomponent.getall'
+        || !Array.isArray(readback.result)
+        || readback.componentCount !== readback.result.length)) {
+      throw new Error('PCB component position readback did not return a complete component list; writes remain blocked.');
     }
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback

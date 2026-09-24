@@ -606,7 +606,9 @@ try {
   attachTaskResponder(disconnectedRecoveryTarget.socket, 'disconnected-recovery-target', (message) => message.path === '/bridge/jlceda/context'
     ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: 'disconnected-page' } }
     : ({ source: 'disconnected-recovery-target', path: message.path }));
-  const disconnectedRequest = disconnectedRecoveryServer.request('/bridge/jlceda/api/invoke', {}, 100);
+  const disconnectedRequest = disconnectedRecoveryServer.request('/bridge/jlceda/api/invoke', {
+    apiFullName: 'eda.pcb_Document.autoLayout', args: [],
+  }, 100);
   await assert.rejects(disconnectedRequest, /Request execution timeout/);
   await new Promise((resolve) => setTimeout(resolve, 150));
   const disconnectedReadOnlyTimeout = disconnectedRecoveryServer.request('/bridge/jlceda/context', {}, 100);
@@ -617,11 +619,12 @@ try {
     return snapshot.activeClientId === 'disconnected-recovery-target';
   });
   const disconnectedSnapshot = await disconnectedRecoveryServer.request('/bridge/admin/clients', {}, 2000);
-  const disconnectedRequestId = disconnectedSnapshot.clients
+  const disconnectedDiagnostic = disconnectedSnapshot.clients
     .find((client) => client.clientId === 'disconnected-recovery-old')
     .quarantine.diagnostics
-    .find((diagnostic) => diagnostic.mutating)
-    .requestId;
+    .find((diagnostic) => diagnostic.mutating);
+  assert.equal(disconnectedDiagnostic.requiredReadback, 'pcb_component_positions');
+  const disconnectedRequestId = disconnectedDiagnostic.requestId;
   const disconnectedStart = await disconnectedRecoveryServer.request('/bridge/admin/recover-client', { confirm: true, requestId: disconnectedRequestId }, 2000);
   assert.equal(disconnectedStart.sourceConnected, false);
   assert.equal(disconnectedStart.freshBridgeGenerationRequested, false);
@@ -632,6 +635,8 @@ try {
     clientId: 'disconnected-recovery-target',
     expectedDocumentUuid: 'disconnected-document',
     expectedProjectUuid: 'disconnected-project',
+    readbackPath: '/bridge/jlceda/api/invoke',
+    readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
   }, 2000), /not a fresh Bridge generation/);
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-blocked', {}, 2000), /writes are blocked pending recovery readback/);
   disconnectedRecoveryTarget.socket.close();
@@ -642,10 +647,26 @@ try {
     { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
   let pcbReadbackPageUuid = 'different-pcb';
-  attachTaskResponder(disconnectedRecoveryOld.socket, 'disconnected-recovery-old', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: pcbReadbackPageUuid } }
-    : ({ source: 'disconnected-recovery-old-reconnected', path: message.path }));
+  let pcbPositionReadbackValid = true;
+  attachTaskResponder(disconnectedRecoveryOld.socket, 'disconnected-recovery-old', (message) => {
+    if (message.path === '/bridge/jlceda/context') {
+      return { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: pcbReadbackPageUuid } };
+    }
+    if (message.path === '/bridge/jlceda/api/invoke') {
+      return pcbPositionReadbackValid
+        ? { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ primitiveId: 'pcb-component-1', designator: 'U1', x: 100, y: 200, rotation: 0 }], componentCount: 1 }
+        : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [], componentCount: 1 };
+    }
+    return { source: 'disconnected-recovery-old-reconnected', path: message.path };
+  });
   await new Promise((resolve) => setTimeout(resolve, 180));
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
+    action: 'readback',
+    confirm: true,
+    recoveryId: disconnectedStart.recoveryId,
+    clientId: 'disconnected-recovery-old',
+  }, 2000), /autoLayout requires eda.pcb_PrimitiveComponent.getAll/);
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-after-context-only', {}, 2000), /writes are blocked pending recovery readback/);
   const disconnectedReadbackRequest = {
     action: 'readback',
     confirm: true,
@@ -661,9 +682,16 @@ try {
     /Readback pageUuid does not match/,
   );
   pcbReadbackPageUuid = 'disconnected-page';
+  pcbPositionReadbackValid = false;
+  await assert.rejects(
+    disconnectedRecoveryServer.request('/bridge/admin/recover-client', disconnectedReadbackRequest, 2000),
+    /did not return a complete component list/,
+  );
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-after-incomplete-pcb-readback', {}, 2000), /writes are blocked pending recovery readback/);
+  pcbPositionReadbackValid = true;
   const disconnectedReadback = await disconnectedRecoveryServer.request('/bridge/admin/recover-client', disconnectedReadbackRequest, 2000);
   assert.equal(disconnectedReadback.readbackVerified, true);
-  assert.equal(disconnectedReadback.readback.path, '/bridge/jlceda/api/invoke');
+  assert.equal(disconnectedReadback.readback.componentCount, 1);
   disconnectedRecoveryOld.socket.close();
   disconnectedRecoveryOld = undefined;
   disconnectedRecoveryTarget = undefined;
