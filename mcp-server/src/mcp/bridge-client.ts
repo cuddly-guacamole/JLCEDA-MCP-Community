@@ -66,6 +66,7 @@ interface RecoverySession {
   sourceConnected: boolean;
   sourceSocket?: WebSocket;
   preRecoverySockets: Set<WebSocket>;
+  preRecoveryClientIds: Set<string>;
   targetClientId?: string;
   targetSocket?: WebSocket;
 }
@@ -985,6 +986,7 @@ export class EdaBridgeServer {
         sourceConnected,
         sourceSocket: source?.socket,
         preRecoverySockets: new Set([...this.peers.values()].map(peer => peer.socket)),
+        preRecoveryClientIds: new Set([sourceClientId, ...this.peers.keys()]),
       };
       if (sourceConnected) {
         this.trySend(source!.socket, {
@@ -1041,7 +1043,9 @@ export class EdaBridgeServer {
     }
     // A disconnected source may still have a native EDA call in flight; an
     // already-connected standby is not a new host generation.
-    if (session.preRecoverySockets.has(target.socket))
+    // A routine transport reconnect replaces the socket but keeps the same
+    // Bridge runtime clientId. Controlled recovery or a new runtime changes it.
+    if (session.preRecoverySockets.has(target.socket) || session.preRecoveryClientIds.has(target.clientId))
       throw new Error('clientId is not a fresh Bridge generation created after recovery was requested.');
     const expectedDocumentUuid = optionalString(payload.expectedDocumentUuid) ?? session.diagnostic.context?.documentUuid;
     const expectedProjectUuid = optionalString(payload.expectedProjectUuid) ?? session.diagnostic.context?.projectUuid;

@@ -149,6 +149,7 @@ let reconnectTarget;
 let disconnectedRecoveryServer;
 let disconnectedRecoveryOld;
 let disconnectedRecoveryTarget;
+let disconnectedRecoveryFresh;
 let nativeLayoutServer;
 let nativeLayoutOld;
 let nativeLayoutNew;
@@ -772,14 +773,41 @@ try {
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-blocked', {}, 2000), /writes are blocked pending recovery readback/);
   disconnectedRecoveryTarget.socket.close();
   disconnectedRecoveryTarget = undefined;
+  // Ordinary reconnects retain the runtime clientId, even though they use a
+  // new WebSocket. Neither the old source nor the old standby is a new host.
+  disconnectedRecoveryTarget = await registerEda(
+    `ws://127.0.0.1:${disconnectedRecoveryPort}/bridge/ws${tokenQuery}`,
+    'disconnected-recovery-target',
+    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
+  );
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
+    action: 'readback', confirm: true, recoveryId: disconnectedStart.recoveryId,
+    clientId: 'disconnected-recovery-target', readbackPath: '/bridge/jlceda/api/invoke',
+    readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
+  }, 2000), /not a fresh Bridge generation/);
+  disconnectedRecoveryTarget.socket.close();
+  disconnectedRecoveryTarget = undefined;
   disconnectedRecoveryOld = await registerEda(
     `ws://127.0.0.1:${disconnectedRecoveryPort}/bridge/ws${tokenQuery}`,
     'disconnected-recovery-old',
     { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
+    action: 'readback', confirm: true, recoveryId: disconnectedStart.recoveryId,
+    clientId: 'disconnected-recovery-old', readbackPath: '/bridge/jlceda/api/invoke',
+    readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
+  }, 2000), /not a fresh Bridge generation/);
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-after-old-runtime-reconnect', {}, 2000), /writes are blocked pending recovery readback/);
+  disconnectedRecoveryOld.socket.close();
+  disconnectedRecoveryOld = undefined;
+  disconnectedRecoveryFresh = await registerEda(
+    `ws://127.0.0.1:${disconnectedRecoveryPort}/bridge/ws${tokenQuery}`,
+    'disconnected-recovery-fresh',
+    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
+  );
   let pcbReadbackPageUuid = 'different-pcb';
   let pcbPositionReadbackValid = true;
-  attachTaskResponder(disconnectedRecoveryOld.socket, 'disconnected-recovery-old', (message) => {
+  attachTaskResponder(disconnectedRecoveryFresh.socket, 'disconnected-recovery-fresh', (message) => {
     if (message.path === '/bridge/jlceda/context') {
       return { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: pcbReadbackPageUuid } };
     }
@@ -788,21 +816,21 @@ try {
         ? { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ primitiveId: 'pcb-component-1', designator: 'U1', x: 100, y: 200, rotation: 0 }], componentCount: 1 }
         : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [], componentCount: 1 };
     }
-    return { source: 'disconnected-recovery-old-reconnected', path: message.path };
+    return { source: 'disconnected-recovery-fresh', path: message.path };
   });
   await new Promise((resolve) => setTimeout(resolve, 180));
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
     action: 'readback',
     confirm: true,
     recoveryId: disconnectedStart.recoveryId,
-    clientId: 'disconnected-recovery-old',
+    clientId: 'disconnected-recovery-fresh',
   }, 2000), /autoLayout requires eda.pcb_PrimitiveComponent.getAll/);
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-after-context-only', {}, 2000), /writes are blocked pending recovery readback/);
   const disconnectedReadbackRequest = {
     action: 'readback',
     confirm: true,
     recoveryId: disconnectedStart.recoveryId,
-    clientId: 'disconnected-recovery-old',
+    clientId: 'disconnected-recovery-fresh',
     expectedDocumentUuid: 'disconnected-document',
     expectedProjectUuid: 'disconnected-project',
     readbackPath: '/bridge/jlceda/api/invoke',
@@ -823,8 +851,8 @@ try {
   const disconnectedReadback = await disconnectedRecoveryServer.request('/bridge/admin/recover-client', disconnectedReadbackRequest, 2000);
   assert.equal(disconnectedReadback.readbackVerified, true);
   assert.equal(disconnectedReadback.readback.componentCount, 1);
-  disconnectedRecoveryOld.socket.close();
-  disconnectedRecoveryOld = undefined;
+  disconnectedRecoveryFresh.socket.close();
+  disconnectedRecoveryFresh = undefined;
   disconnectedRecoveryTarget = undefined;
   disconnectedRecoveryServer.close();
   disconnectedRecoveryServer = undefined;
@@ -1378,6 +1406,7 @@ try {
   reconnectTarget?.socket.close();
   disconnectedRecoveryOld?.socket.close();
   disconnectedRecoveryTarget?.socket.close();
+  disconnectedRecoveryFresh?.socket.close();
   nativeLayoutOld?.socket.close();
   nativeLayoutNew?.socket.close();
   lateUnknownClient?.socket.close();
