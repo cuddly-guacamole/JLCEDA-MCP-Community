@@ -324,8 +324,9 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 	const foreignWire = wires.find(wire => [...(wireNets.get(wire.id) ?? [])].some(name => name !== net) && wire.segments.some(segment => pointOnSegment({ x, y }, segment)));
 	if (otherPort || foreignWire)
 		return { ok: false, action: 'netport_create', reason: 'target_net_conflict', target: { x, y }, conflictingPrimitiveIds: [otherPort?.id, foreignWire?.id].filter(Boolean) };
+	// The documented component API has no NetPort direction getter; position and net cannot prove a match.
 	if (existingPort)
-		return { ok: true, action: 'netport_create', primitiveId: existingPort.id, net, position: { x, y }, unchanged: true, netlistReadback: await readTargetNetwork(net), semanticScope: 'current_schematic_page_hierarchical_port' };
+		return { ok: false, action: 'netport_create', reason: 'existing_port_direction_unverified', net, requestedDirection: direction, target: { x, y }, conflictingPrimitiveIds: [existingPort.id] };
 	const created = await (api.createNetPort as (direction: 'IN' | 'OUT' | 'BI', net: string, x: number, y: number) => Promise<unknown>).call(api, direction, net, x, y);
 	const returnedId = String(getSyncState(created, 'getState_PrimitiveId', ''));
 	const beforeIds = new Set(before.map(component => component.id));

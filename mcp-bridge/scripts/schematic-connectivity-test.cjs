@@ -114,8 +114,15 @@ async function main() {
 	assert.equal(newPort.netlistReadback.found, true);
 	assert.ok(newPort.netlistReadback.connectedPinRefs.includes('NET_A.1'));
 	assert.equal(newPort.semanticScope, 'current_schematic_page_hierarchical_port');
+	const mismatchedDirection = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', direction: 'OUT', x: 75, y: 0 });
+	assert.equal(mismatchedDirection.ok, false);
+	assert.equal(mismatchedDirection.reason, 'existing_port_direction_unverified');
+	assert.equal(mismatchedDirection.requestedDirection, 'OUT');
+	assert.deepEqual(mismatchedDirection.conflictingPrimitiveIds, ['port-1']);
+	assert.equal(mismatchedDirection.unchanged, undefined);
 	const repeated = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 75, y: 0 });
-	assert.equal(repeated.unchanged, true);
+	assert.equal(repeated.ok, false, 'the documented EDA getters cannot prove the existing port direction even for a repeated request');
+	assert.equal(repeated.reason, 'existing_port_direction_unverified');
 	assert.equal(portCreates, 1);
 
 	ports.push({ id: 'isolated-b', net: 'NET_B', x: 200, y: 0 });
