@@ -158,22 +158,39 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		const ids = (typeof invokeArgs[0] === 'string' ? [invokeArgs[0]] : invokeArgs[0]) as string[];
 		const deletedIds: string[] = [];
 		const failedIds: string[] = [];
-		for (const id of ids) {
+		for (const [index, id] of ids.entries()) {
 			const before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
 			if (!before.includes(id)) {
 				failedIds.push(id);
 				continue;
 			}
 			await Promise.resolve(callable.call(thisArg, id));
-			let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
-			if (remaining.includes(id) && typeof module.get === 'function') {
-				const liveObject = await Promise.resolve(module.get.call(thisArg, id));
-				if (liveObject) {
-					await Promise.resolve(callable.call(thisArg, liveObject));
-					remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+			try {
+				let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+				if (remaining.includes(id) && typeof module.get === 'function') {
+					const liveObject = await Promise.resolve(module.get.call(thisArg, id));
+					if (liveObject) {
+						await Promise.resolve(callable.call(thisArg, liveObject));
+						remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+					}
 				}
+				(remaining.includes(id) ? failedIds : deletedIds).push(id);
 			}
-			(remaining.includes(id) ? failedIds : deletedIds).push(id);
+			catch (error: unknown) {
+				return {
+					apiFullName: resolvedPath,
+					ok: false,
+					result: false,
+					reason: 'post_write_readback_failed',
+					error: toSafeErrorMessage(error),
+					deletedIds,
+					failedIds,
+					uncertainIds: [id],
+					notAttemptedIds: ids.slice(index + 1),
+					commitUnknown: true,
+					readbackRequired: true,
+				};
+			}
 		}
 		return { apiFullName: resolvedPath, result: failedIds.length === 0, deletedIds, failedIds };
 	}

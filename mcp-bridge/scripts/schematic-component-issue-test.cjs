@@ -86,6 +86,71 @@ async function main() {
 	assert.deepEqual(crossPageDelete.deletedIds, ['other-page-component']);
 	assert.deepEqual([...otherPageIds], []);
 
+	// A successful native deletion with a failed readback must quarantine later writes.
+	let postDeleteReads = 0;
+	const attemptedDeletes = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() {
+			postDeleteReads += 1;
+			if (postDeleteReads === 2)
+				throw new Error('post-delete ID readback failed');
+			return ['uncertain', 'not-attempted'];
+		},
+		async delete(id) {
+			attemptedDeletes.push(id);
+			return true;
+		},
+	};
+	const unknownDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: [['uncertain', 'not-attempted']] });
+	assert.equal(unknownDelete.ok, false);
+	assert.equal(unknownDelete.commitUnknown, true);
+	assert.equal(unknownDelete.readbackRequired, true);
+	assert.deepEqual(unknownDelete.uncertainIds, ['uncertain']);
+	assert.deepEqual(unknownDelete.notAttemptedIds, ['not-attempted']);
+	assert.deepEqual(attemptedDeletes, ['uncertain']);
+
+	// The object fallback must carry the same uncertainty when its object read fails.
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return ['fallback-read']; },
+		async get() { throw new Error('object readback failed'); },
+		async delete() { return false; },
+	};
+	const unknownFallbackObject = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['fallback-read'] });
+	assert.equal(unknownFallbackObject.commitUnknown, true);
+	assert.equal(unknownFallbackObject.readbackRequired, true);
+	assert.match(unknownFallbackObject.error, /object readback failed/);
+
+	// Also cover the final ID readback after a successful object fallback deletion.
+	let fallbackReads = 0;
+	const fallbackInputs = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() {
+			fallbackReads += 1;
+			if (fallbackReads === 3)
+				throw new Error('fallback ID readback failed');
+			return ['fallback-final'];
+		},
+		async get(id) { return primitive(id, 'R1'); },
+		async delete(input) {
+			fallbackInputs.push(input);
+			return true;
+		},
+	};
+	const unknownFallbackId = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['fallback-final'] });
+	assert.equal(unknownFallbackId.commitUnknown, true);
+	assert.equal(unknownFallbackId.readbackRequired, true);
+	assert.deepEqual(unknownFallbackId.uncertainIds, ['fallback-final']);
+	assert.equal(fallbackInputs.length, 2);
+
+	// A read failure before any delete keeps its original error semantics.
+	let preflightDeleteCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { throw new Error('pre-delete ID read failed'); },
+		async delete() { preflightDeleteCalls += 1; },
+	};
+	await assert.rejects(handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['preflight'] }), /pre-delete ID read failed/);
+	assert.equal(preflightDeleteCalls, 0);
+
 	// One immediate click may happen before placeComponentWithMouse returns.
 	const ids = ['existing'];
 	globalThis.document = new EventTarget();

@@ -150,7 +150,7 @@ Claude Desktop、Claude Code、Cursor 等客户端应将 `jlceda-mcp` 注册为�
 5. 普通网络标签创建失败时不要改用电源网络标识代替；3.x 请使用支持的导线操作，4.x 请查看 Bridge 调试日志。
 6. 状态异常时先关闭旧版 MCP Hub，再重启 AI 客户端与 EDA Bridge。
 
-`api_invoke` 中的 `eda.sch_PrimitiveComponent.modify` 和 `delete` 做兼容处理：修改时省略 `otherProperty` 会保留原值；传入图元 ID 数组删除时会逐项执行，跨当前原理图的全部图页核对，并返回 `deletedIds`、`failedIds`。
+`api_invoke` 中的 `eda.sch_PrimitiveComponent.modify` 和 `delete` 做兼容处理：修改时省略 `otherProperty` 会保留原值；传入图元 ID 数组删除时会逐项执行，跨当前原理图的全部图页核对，并返回 `deletedIds`、`failedIds`。删除后的图元读回失败会停止后续删除，返回 `commitUnknown: true`、`readbackRequired: true` 及待核对的 ID；此时应先完成受控恢复，不要直接重试。
 ## 常见问题
 
 ### 聊天里看不到工具怎么办？
