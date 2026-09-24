@@ -283,6 +283,22 @@ const pcbNetQuerySchema = z.fromJSONSchema(pcbNetQueryDefinition.inputSchema);
 assert.equal(pcbNetQuerySchema.safeParse({ mode: 'all', timeoutMs: 6000 }).success, true);
 assert.equal(pcbNetQuerySchema.safeParse({ mode: 'exact', query: 'USB_D+', timeoutMs: 6000 }).success, true);
 
+const componentSelectDefinition = definitions.find((definition) => definition.name === 'component_select');
+assert.ok(componentSelectDefinition);
+const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
+assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);
+assert.equal(componentSelectSchema.safeParse({ properties: { supplierId: 'C25804' } }).success, true);
+assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', properties: { supplierId: 'C25804' } }).success, false);
+assert.equal(componentSelectSchema.safeParse({ limit: 2 }).success, false);
+
+const designCompareDefinition = definitions.find((definition) => definition.name === 'design_compare');
+assert.ok(designCompareDefinition);
+const designCompareSchema = z.fromJSONSchema(designCompareDefinition.inputSchema);
+assert.equal(designCompareSchema.safeParse({ domain: 'netlist', sourceA: 'a', sourceB: 'b' }).success, true);
+assert.equal(designCompareSchema.safeParse({ domain: 'schematic', sourceA: { projectUuid: 'project', schematicUuid: 'sch-a' }, sourceB: { projectUuid: 'project', schematicUuid: 'sch-b' } }).success, true);
+assert.equal(designCompareSchema.safeParse({ domain: 'pcb', sourceA: { projectUuid: 'project', pcbUuid: 'pcb-a' }, sourceB: { projectUuid: 'project', pcbUuid: 'pcb-b' } }).success, true);
+assert.equal(designCompareSchema.safeParse({ domain: 'netlist', sourceA: '', sourceB: 'b' }).success, false);
+
 const schematicPagesDefinition = definitions.find((definition) => definition.name === 'schematic_pages_manage');
 assert.ok(schematicPagesDefinition);
 const schematicPagesSchema = z.fromJSONSchema(schematicPagesDefinition.inputSchema);

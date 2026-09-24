@@ -1,6 +1,6 @@
 # JLCEDA MCP 社区版
 
-当前发布版本：Bridge `2.3.1`，MCP Server `2.3.1`。本版本增强 Bridge/MCP 任务诊断：以请求 ID 关联工具、Bridge 路由、执行阶段和异常，日志带版本与构建日期水印；EDA 界面显示简略报告，完整日志保存在扩展本地存储中。共享 Bridge 契约、多客户端路由和可选本机 token 认证继续受到支持。
+当前发布版本：Bridge `2.3.1`，MCP Server `2.3.1`。本版本增强 Bridge/MCP 任务诊断：以请求 ID 关联工具、Bridge 路由、执行阶段和异常，日志带版本与构建日期水印；EDA 界面显示简略报告，完整日志保存在扩展本地存储中。Server 同时修复 `component_select` 和 `design_compare` 的参数校验。共享 Bridge 契约、多客户端路由和可选本机 token 认证继续受到支持。
 
 ## 功能与工具
 
@@ -108,7 +108,7 @@ codex mcp list
 - MCP 写工具可修改当前工程；执行前请保存并核对活动项目和页面。
 - 不要让旧版 MCP Hub 与原生 Server 同时占用端口 8765。
 - 已在嘉立创 EDA 专业版 3.2.181 上测试。
-- 官方 `createNetLabel` 为 Alpha API；在 3.2.181 中普通标签创建可能超时。Bridge 会明确返回失败并释放队列。
+- 官方 `createNetLabel` 从 EDA v4 起提供；在 3.2.181 中普通标签创建可能超时。Bridge 会明确返回失败并隔离后续写操作；若底层调用持续挂起，需重启 EDA 并完成恢复回读。
 
 ## 开发与发布
 
