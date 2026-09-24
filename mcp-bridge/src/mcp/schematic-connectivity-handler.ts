@@ -91,19 +91,6 @@ function pointOnSegment(point: Point, segment: Segment): boolean {
 		&& point.y <= Math.max(segment.start.y, segment.end.y) + COORDINATE_EPSILON;
 }
 
-function segmentsTouch(first: Segment, second: Segment): boolean {
-	const firstStart = orientationSign(first.start, first.end, second.start);
-	const firstEnd = orientationSign(first.start, first.end, second.end);
-	const secondStart = orientationSign(second.start, second.end, first.start);
-	const secondEnd = orientationSign(second.start, second.end, first.end);
-	return (firstStart === 0 && pointOnSegment(second.start, first))
-		|| (firstEnd === 0 && pointOnSegment(second.end, first))
-		|| (secondStart === 0 && pointOnSegment(first.start, second))
-		|| (secondEnd === 0 && pointOnSegment(first.end, second))
-		|| (((firstStart > 0 && firstEnd < 0) || (firstStart < 0 && firstEnd > 0))
-			&& ((secondStart > 0 && secondEnd < 0) || (secondStart < 0 && secondEnd > 0)));
-}
-
 function wireApi(eda: Record<string, unknown>): Record<string, unknown> {
 	const api = eda.sch_PrimitiveWire;
 	if (!isPlainObjectRecord(api) || typeof api.getAll !== 'function')
@@ -238,7 +225,7 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 	const components = await readComponents(componentApi(eda));
 	const wireNets = effectiveWireNets(before, components);
 	const beforeById = new Map(before.map(wire => [wire.id, wireSnapshot(wire)]));
-	const touched = before.filter(wire => wire.segments.some(existing => segments.some(proposed => segmentsTouch(existing, proposed))));
+	const touched = before.filter(wire => wire.segments.some(existing => segments.some(proposed => segmentsConnect(existing, proposed))));
 	const touchedPorts = components.filter(component => (component.type === 'netport' || component.type === 'netflag') && segments.some(segment => pointOnSegment({ x: component.x, y: component.y }, segment)));
 	const conflictingNets = touched.filter(wire => net !== undefined && [...(wireNets.get(wire.id) ?? [])].some(name => name !== net));
 	const conflictingPorts = touchedPorts.filter(component => net !== undefined && component.net.length > 0 && component.net !== net);

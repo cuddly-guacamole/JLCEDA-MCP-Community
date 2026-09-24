@@ -199,7 +199,7 @@
   },
   {
     "name": "schematic_connectivity_action",
-    "description": "安全预览和创建原理图导线，或在当前图页创建、移动 NetPort。NetPort 是层次图端口，可用于同页连接；跨页连接请用跨页连接标识。导线接触现有导线时须先预览并明确列出允许接触的导线 ID；写入后需回读网表确认。",
+    "description": "安全预览和创建原理图导线，或在当前图页创建、移动 NetPort。NetPort 是层次图端口，可用于同页连接；跨页连接请用跨页连接标识。纯十字交叉没有连接点时不算接触；导线电气接触现有导线时须先预览并明确列出允许接触的导线 ID；写入后需回读网表确认。",
     "inputSchema": {
       "type": "object",
       "properties": {

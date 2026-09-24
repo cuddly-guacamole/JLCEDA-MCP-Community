@@ -71,17 +71,17 @@ async function main() {
 		sch_Drc: { async check() { return true; } },
 	};
 
-	const preview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [50, -50, 50, 50], net: 'NET_A' });
+	const preview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [50, -50, 50, 0], net: 'NET_A' });
 	assert.equal(preview.canCreate, false);
 	assert.deepEqual(preview.unapprovedWireIds, ['wire-a']);
 	assert.equal(wireCreates, 0);
 
-	const blocked = await handleSchematicConnectivityTask({ action: 'wire_create', line: [50, -50, 50, 50], net: 'NET_B', allowedWireIds: ['wire-a'] });
+	const blocked = await handleSchematicConnectivityTask({ action: 'wire_create', line: [50, -50, 50, 0], net: 'NET_B', allowedWireIds: ['wire-a'] });
 	assert.equal(blocked.canCreate, false);
 	assert.deepEqual(blocked.conflictingNetWireIds, ['wire-a']);
 	assert.equal(wireCreates, 0);
 
-	const created = await handleSchematicConnectivityTask({ action: 'wire_create', line: [50, -50, 50, 50], net: 'NET_A', allowedWireIds: ['wire-a'] });
+	const created = await handleSchematicConnectivityTask({ action: 'wire_create', line: [50, -50, 50, 0], net: 'NET_A', allowedWireIds: ['wire-a'] });
 	assert.equal(created.ok, true);
 	assert.equal(created.returnedPrimitiveId, 'wire-1');
 	assert.deepEqual(created.changedWireIds, ['wire-1']);
@@ -133,10 +133,10 @@ async function main() {
 	assert.equal(wireCreates, 1);
 
 	wires.push(wire('wire-nested', 'NET_C', [[300, 0], [400, 0]]));
-	const nestedConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [350, -20, 350, 20], net: 'NET_D' });
+	const nestedConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [350, -20, 350, 0], net: 'NET_D' });
 	assert.deepEqual(nestedConflict.conflictingNetWireIds, ['wire-nested']);
 	wires.push(wire('wire-multipart', 'NET_E', [[500, 0, 600, 0], [600, 0, 600, 50]]));
-	const multipartConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [550, -20, 550, 20], net: 'NET_D' });
+	const multipartConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [550, -20, 550, 0], net: 'NET_D' });
 	assert.deepEqual(multipartConflict.conflictingNetWireIds, ['wire-multipart']);
 	const inPlaceLine = [700, 0, 800, 0];
 	const inPlaceWire = wire('wire-in-place', 'NET_Z', inPlaceLine);
@@ -192,6 +192,16 @@ async function main() {
 	ports.splice(0, ports.length);
 	const independentCrossing = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [-50, 0, 0, 0], net: 'NET_A', allowedWireIds: ['cross-a'] });
 	assert.equal(independentCrossing.canCreate, true);
+	wires.splice(0, wires.length, wire('cross-only', 'NET_A', [0, 0, 100, 0]));
+	const crossingLine = [50, -50, 50, 50];
+	const crossingPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: crossingLine, net: 'NET_B' });
+	assert.equal(crossingPreview.canCreate, true);
+	assert.deepEqual(crossingPreview.touches, []);
+	const crossingCreatesBefore = wireCreates;
+	const crossingCreated = await handleSchematicConnectivityTask({ action: 'wire_create', line: crossingLine, net: 'NET_B' });
+	assert.equal(crossingCreated.ok, true);
+	assert.equal(wireCreates, crossingCreatesBefore + 1);
+	assert.deepEqual(crossingCreated.touches, []);
 
 	// EDA may read a grid coordinate back as 324.99999999999994 instead of 325.
 	const nearly325 = 324.99999999999994;
