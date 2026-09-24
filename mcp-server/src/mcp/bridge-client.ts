@@ -54,7 +54,9 @@ interface RecoveryDiagnostic {
   timeoutMs: number;
   timedOutAtMs: number;
   mutating: boolean;
-  requiredReadback?: 'pcb_component_positions';
+  pageBound: boolean;
+  targetProjectUuid?: string;
+  requiredReadback?: 'pcb_component_positions' | 'schematic_project_review';
   pendingNativeConfirmation?: boolean;
   uncertaintyReason?: string;
   context?: BridgeClientContext;
@@ -111,6 +113,35 @@ const RECOVERY_READBACK_TIMEOUT_MS = 15_000;
 const RECOVERY_DIAGNOSTIC_TTL_MS = 15 * 60 * 1000;
 function isReadOnlyRequest(path: string, payload: unknown): boolean {
 	return isReadOnlyBridgeRequest(path, payload);
+}
+
+function isPageBoundWrite(path: string, payload: unknown): boolean {
+  if (path === '/bridge/jlceda/api/invoke' && isRecord(payload) && typeof payload.apiFullName === 'string') {
+    const apiFullName = payload.apiFullName.trim().toLowerCase();
+    if (apiFullName === 'eda.sch_primitivecomponent.delete')
+      return false;
+    return apiFullName.startsWith('eda.sch_') || apiFullName.startsWith('eda.pcb_');
+  }
+  return path.startsWith('/bridge/jlceda/pcb/')
+    || path.startsWith('/bridge/jlceda/schematic/')
+    || path.startsWith('/bridge/jlceda/component/')
+    || path.startsWith('/bridge/jlceda/netlabel/')
+    || path.startsWith('/bridge/jlceda/auto/');
+}
+
+function knownProjectTargetUuid(path: string, payload: unknown): string | undefined {
+  if (path !== '/bridge/jlceda/api/invoke' || !isRecord(payload)
+    || typeof payload.apiFullName !== 'string'
+    || payload.apiFullName.trim().toLowerCase() !== 'eda.dmt_project.modifyprojectfriendlyname'
+    || !Array.isArray(payload.args)) return undefined;
+  return optionalString(payload.args[0]);
+}
+
+function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && isRecord(payload)
+    && typeof payload.apiFullName === 'string'
+    && payload.apiFullName.trim().toLowerCase() === 'eda.sch_primitivecomponent.delete';
 }
 
 function hasMutatingRecoveryDiagnostics(diagnostics: Iterable<RecoveryDiagnostic>): boolean {
@@ -721,11 +752,13 @@ export class EdaBridgeServer {
 
     pending.started = true;
     pending.startedAt = Date.now();
-    if (isPcbAutoLayoutRequest(pending.path ?? '', pending.payload)) {
+    if (!isReadOnlyRequest(pending.path ?? '', pending.payload)) {
       const executionContext = parseClientContext(message.context);
-      pending.context = executionContext?.pageKind === 'pcb' && executionContext.pageUuid
-        ? executionContext
-        : { pageKind: 'pcb' };
+      pending.context = isPcbAutoLayoutRequest(pending.path ?? '', pending.payload)
+        ? executionContext?.pageKind === 'pcb' && executionContext.pageUuid
+          ? executionContext
+          : { pageKind: 'pcb' }
+        : executionContext;
     }
     this.clearPendingTimeout(pending);
     const executionTimeoutMs = pending.executionTimeoutMs ?? 30000;
@@ -981,6 +1014,8 @@ export class EdaBridgeServer {
       return;
     }
     this.enterReconnectBarrier(pending.clientId);
+    const mutating = !isReadOnlyRequest(pending.path ?? '', pending.payload);
+    const targetProjectUuid = mutating ? knownProjectTargetUuid(pending.path ?? '', pending.payload) : undefined;
     const diagnostic: RecoveryDiagnostic = {
       requestId,
       clientId: pending.clientId,
@@ -988,8 +1023,11 @@ export class EdaBridgeServer {
       startedAt: new Date(pending.startedAt ?? Date.now()).toISOString(),
       timeoutMs,
       timedOutAtMs: Date.now(),
-      mutating: !isReadOnlyRequest(pending.path ?? '', pending.payload),
+      mutating,
+      pageBound: mutating && isPageBoundWrite(pending.path ?? '', pending.payload),
+      ...(targetProjectUuid ? { targetProjectUuid } : {}),
       ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
+      ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
       uncertaintyReason,
       context: pending.context,
     };
@@ -1099,6 +1137,10 @@ export class EdaBridgeServer {
       && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'schematic_project_review'
+      && readbackPath !== '/bridge/jlceda/schematic/review') {
+      throw new Error('Cross-page schematic component deletion requires schematic_review of the whole project for recovery readback.');
+    }
     if (session.diagnostic.requiredReadback === 'pcb_component_positions'
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
       throw new Error('Timed-out PCB autoLayout has no verified execution-time PCB page identity; writes remain blocked.');
@@ -1123,20 +1165,26 @@ export class EdaBridgeServer {
     // Bridge runtime clientId. Controlled recovery or a new runtime changes it.
     if (session.preRecoverySockets.has(target.socket) || session.preRecoveryClientIds.has(target.clientId))
       throw new Error('clientId is not a fresh Bridge generation created after recovery was requested.');
-    const expectedDocumentUuid = optionalString(payload.expectedDocumentUuid) ?? session.diagnostic.context?.documentUuid;
-    const expectedProjectUuid = optionalString(payload.expectedProjectUuid) ?? session.diagnostic.context?.projectUuid;
-    const expectedPageUuid = session.diagnostic.context?.pageUuid ?? optionalString(payload.expectedPageUuid);
-    const expectedPageKind = session.diagnostic.context?.pageKind ?? target.context?.pageKind;
-    const autoLayoutExecutionIdentity = session.diagnostic.requiredReadback === 'pcb_component_positions'
-      ? {
-        pageKind: session.diagnostic.context?.pageKind,
-        pageUuid: session.diagnostic.context?.pageUuid,
-        documentUuid: session.diagnostic.context?.documentUuid,
-        projectUuid: session.diagnostic.context?.projectUuid,
-      }
-      : undefined;
+    const executionContext = session.diagnostic.context;
+    if (session.diagnostic.pageBound && (!executionContext?.pageKind || !executionContext.pageUuid))
+      throw new Error('Timed-out write has no verified execution-time page identity; writes remain blocked.');
+    const expectedDocumentUuid = session.diagnostic.pageBound
+      ? executionContext?.documentUuid ?? optionalString(payload.expectedDocumentUuid)
+      : optionalString(payload.expectedDocumentUuid);
+    const expectedProjectUuid = session.diagnostic.targetProjectUuid
+      ?? (session.diagnostic.pageBound || session.diagnostic.requiredReadback === 'schematic_project_review'
+        ? executionContext?.projectUuid : undefined)
+      ?? optionalString(payload.expectedProjectUuid);
+    const expectedPageUuid = session.diagnostic.pageBound ? executionContext?.pageUuid : undefined;
+    const expectedPageKind = session.diagnostic.pageBound ? executionContext?.pageKind : undefined;
+    const executionIdentity = {
+      pageKind: executionContext?.pageKind,
+      pageUuid: executionContext?.pageUuid,
+      documentUuid: executionContext?.documentUuid,
+      projectUuid: executionContext?.projectUuid,
+    };
     if (!expectedDocumentUuid && !expectedProjectUuid)
-      throw new Error('Recovery requires expectedDocumentUuid or expectedProjectUuid when the original client did not report document identity.');
+      throw new Error('Recovery requires a target expectedDocumentUuid or expectedProjectUuid for this write.');
     if (expectedDocumentUuid && target.context?.documentUuid && target.context.documentUuid !== expectedDocumentUuid)
       throw new Error('Fresh Bridge client documentUuid does not match the expected document; writes remain blocked.');
     if (expectedProjectUuid && target.context?.projectUuid && target.context.projectUuid !== expectedProjectUuid)
@@ -1181,12 +1229,11 @@ export class EdaBridgeServer {
       const finalContext = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
       this.assertPcbIdentity(finalContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
     }
-    if (autoLayoutExecutionIdentity
-      && (session.diagnostic.context?.pageKind !== autoLayoutExecutionIdentity.pageKind
-        || session.diagnostic.context?.pageUuid !== autoLayoutExecutionIdentity.pageUuid
-        || session.diagnostic.context?.documentUuid !== autoLayoutExecutionIdentity.documentUuid
-        || session.diagnostic.context?.projectUuid !== autoLayoutExecutionIdentity.projectUuid)) {
-      throw new Error('PCB autoLayout execution identity changed during recovery readback; retry against the actual PCB page.');
+    if (session.diagnostic.context?.pageKind !== executionIdentity.pageKind
+      || session.diagnostic.context?.pageUuid !== executionIdentity.pageUuid
+      || session.diagnostic.context?.documentUuid !== executionIdentity.documentUuid
+      || session.diagnostic.context?.projectUuid !== executionIdentity.projectUuid) {
+      throw new Error('Write execution identity changed during recovery readback; retry against the actual page.');
     }
     this.recoverySession = undefined;
     this.recoveryDiagnostics.delete(session.diagnostic.requestId);
@@ -1332,7 +1379,7 @@ export class EdaBridgeServer {
         executionTimeoutMs: timeoutMs,
         started: false,
         clientId: peer.clientId,
-        context: peer.context,
+        context: isReadOnlyRequest(path, payload) ? peer.context : undefined,
         leaseTerm: this.leaseTerm,
         mcpSocket,
         internalRequestId,

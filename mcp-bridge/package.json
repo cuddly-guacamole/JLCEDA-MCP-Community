@@ -15,7 +15,7 @@
 		"verify:api-doc": "node scripts/verify-api-doc.cjs",
 		"lint": "eslint",
 		"fix": "eslint --fix",
-		"build": "npm run test:netlabel && npm run test:connectivity && npm run test:contract && npm run test:2.1 && npm run test:schematic-read && npm run test:schematic-components && npm run test:pcb-import && npm run typecheck && npm run verify:api-doc && npm run compile && npm run verify:runtime && ts-node --project tsconfig.build.json ./build/packaged.ts",
+		"build": "npm run test:netlabel && npm run test:connectivity && npm run test:contract && npm run test:2.1 && npm run test:schematic-read && npm run test:schematic-components && npm run test:pcb-import && npm run test:queue-barrier && npm run typecheck && npm run verify:api-doc && npm run compile && npm run verify:runtime && ts-node --project tsconfig.build.json ./build/packaged.ts",
 		"verify:runtime": "node scripts/verify-runtime-entry.mjs",
 		"test:contract": "node scripts/bridge-contract-test.cjs",
 		"test:netlabel": "node scripts/netlabel-kind-test.cjs",
@@ -23,7 +23,8 @@
 		"test:2.1": "node scripts/2.1-tools-test.cjs",
 		"test:schematic-read": "node scripts/schematic-read-test.cjs",
 		"test:schematic-components": "node scripts/schematic-component-issue-test.cjs",
-		"test:pcb-import": "node scripts/pcb-import-confirm-test.cjs"
+		"test:pcb-import": "node scripts/pcb-import-confirm-test.cjs",
+		"test:queue-barrier": "node scripts/bridge-commit-unknown-queue-test.cjs"
 	},
 	"devDependencies": {
 		"@antfu/eslint-config": "^5.4.1",

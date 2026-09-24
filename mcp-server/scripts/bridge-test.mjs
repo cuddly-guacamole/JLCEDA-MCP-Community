@@ -505,7 +505,7 @@ try {
   stuck = await registerEda(
     `ws://127.0.0.1:${recoveryPort}/bridge/ws${tokenQuery}`,
     'stuck-page',
-    { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'recovery-page' },
+    { documentUuid: 'stale-recovery-document', projectUuid: 'stale-recovery-project', pageKind: 'schematic', pageUuid: 'stale-recovery-page' },
   );
   let receivedStuckTask = false;
   stuck.socket.on('message', (data) => {
@@ -518,6 +518,7 @@ try {
         requestId: message.requestId,
         leaseTerm: message.leaseTerm,
         startedAt: Date.now(),
+        context: { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'recovery-page' },
       }));
       setTimeout(() => {
         if (stuck.socket.readyState === WebSocket.OPEN) {
@@ -564,6 +565,8 @@ try {
   assert.equal(recoveryStart.diagnostic.mutating, true);
   assert.equal(recoveryStart.diagnostic.path, '/bridge/jlceda/schematic/layout-check');
   assert.equal(recoveryStart.diagnostic.timeoutMs, 50);
+  assert.equal(recoveryStart.diagnostic.context.pageUuid, 'recovery-page', 'write timeout must use the execution page rather than the heartbeat page');
+  assert.equal(recoveryStart.diagnostic.context.documentUuid, 'recovery-document');
   const recoveryMessage = await recoveryMessagePromise;
   assert.equal(recoveryMessage.recoveryId, recoveryStart.recoveryId);
   const earlyRecoveryTarget = await registerEda(
@@ -1091,11 +1094,22 @@ try {
   unverifiedWriteActive = await registerEda(
     `ws://127.0.0.1:${unverifiedWritePort}/bridge/ws${tokenQuery}`,
     'unverified-write-active',
-    { documentUuid: 'unverified-document', projectUuid: 'unverified-project', pageKind: 'schematic', pageUuid: 'unverified-page' },
+    { documentUuid: 'stale-unverified-document', projectUuid: 'stale-unverified-project', pageKind: 'schematic', pageUuid: 'stale-unverified-page' },
   );
-  attachTaskResponder(unverifiedWriteActive.socket, 'unverified-write-active', () => ({
-    ok: false, action: 'wire_create', committed: false, commitUnknown: true,
-  }));
+  unverifiedWriteActive.socket.on('message', data => {
+    const message = JSON.parse(data.toString());
+    if (message.type !== 'bridge/task') return;
+    unverifiedWriteActive.socket.send(JSON.stringify({
+      type: 'bridge/task-started', clientId: 'unverified-write-active',
+      requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+      context: { documentUuid: 'unverified-document', projectUuid: 'unverified-project', pageKind: 'schematic', pageUuid: 'unverified-page' },
+    }));
+    unverifiedWriteActive.socket.send(JSON.stringify({
+      type: 'bridge/result', clientId: 'unverified-write-active',
+      requestId: message.requestId, leaseTerm: message.leaseTerm,
+      result: { ok: false, action: 'wire_create', committed: false, commitUnknown: true },
+    }));
+  });
   unverifiedWriteStandby = await registerEda(
     `ws://127.0.0.1:${unverifiedWritePort}/bridge/ws${tokenQuery}`,
     'unverified-write-standby',
@@ -1113,6 +1127,8 @@ try {
   assert.equal(unverifiedDiagnostic.path, '/bridge/jlceda/schematic/connectivity');
   assert.equal(unverifiedDiagnostic.mutating, true);
   assert.equal(unverifiedDiagnostic.uncertaintyReason, 'write result could not be verified');
+  assert.equal(unverifiedDiagnostic.context.pageUuid, 'unverified-page', 'unknown write must use the execution page rather than the heartbeat page');
+  assert.equal(unverifiedDiagnostic.context.documentUuid, 'unverified-document');
   await unverifiedWriteServer.request('/bridge/admin/select-client', { clientId: 'unverified-write-standby' }, 2000);
   assert.deepEqual(await unverifiedWriteServer.request('/bridge/jlceda/context', {}, 2000), {
     source: 'unverified-write-standby', path: '/bridge/jlceda/context',
@@ -1126,6 +1142,156 @@ try {
   unverifiedWriteStandby = undefined;
   unverifiedWriteServer.close();
   unverifiedWriteServer = undefined;
+
+  const projectWritePort = await reservePort();
+  const projectWriteServer = new EdaBridgeServer(projectWritePort);
+  let projectWriteOld;
+  let projectWriteFresh;
+  try {
+    await projectWriteServer.start();
+    const projectUrl = `ws://127.0.0.1:${projectWritePort}/bridge/ws${tokenQuery}`;
+    projectWriteOld = await registerEda(projectUrl, 'project-write-old', {
+      projectUuid: 'stale-project', pageKind: 'schematic', pageUuid: 'stale-page',
+    });
+    projectWriteOld.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      projectWriteOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'project-write-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'project-write-page-a-document', projectUuid: 'current-project', pageKind: 'schematic', pageUuid: 'project-write-page-a' },
+      }));
+      projectWriteOld.socket.send(JSON.stringify({
+        type: 'bridge/result', clientId: 'project-write-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { commitUnknown: true },
+      }));
+    });
+    const projectWriteResult = await projectWriteServer.request('/bridge/jlceda/api/invoke', {
+      apiFullName: 'eda.dmt_Project.modifyProjectFriendlyName', args: ['actual-project', 'renamed'],
+    }, 2000);
+    assert.equal(projectWriteResult.commitUnknown, true);
+    const projectDiagnostic = (await projectWriteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(projectDiagnostic.pageBound, false);
+    assert.equal(projectDiagnostic.targetProjectUuid, 'actual-project');
+    assert.equal(projectDiagnostic.context.projectUuid, 'current-project');
+    assert.equal(projectDiagnostic.context.pageUuid, 'project-write-page-a');
+    const projectRecovery = await projectWriteServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: projectDiagnostic.requestId,
+    }, 2000);
+    projectWriteOld.socket.close();
+    await waitUntil(async () => (await projectWriteServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'project-write-old')?.ready === false);
+    projectWriteFresh = await registerEda(projectUrl, 'project-write-fresh', {
+      documentUuid: 'project-write-page-b-document', projectUuid: 'actual-project', pageKind: 'schematic', pageUuid: 'project-write-page-b',
+    });
+    attachTaskResponder(projectWriteFresh.socket, 'project-write-fresh', () => ({
+      currentDocumentInfo: { uuid: 'project-write-page-b-document', parentProjectUuid: 'actual-project' },
+      currentProjectInfo: { uuid: 'actual-project' },
+      currentSchematicPageInfo: { uuid: 'project-write-page-b' },
+    }));
+    const projectReadback = await projectWriteServer.request('/bridge/admin/recover-client', {
+      action: 'readback', confirm: true, recoveryId: projectRecovery.recoveryId,
+      clientId: 'project-write-fresh', readbackPath: '/bridge/jlceda/context',
+    }, 2000);
+    assert.equal(projectReadback.readbackVerified, true);
+  } finally {
+    projectWriteOld?.socket.close();
+    projectWriteFresh?.socket.close();
+    projectWriteServer.close();
+  }
+
+  const legacyWritePort = await reservePort();
+  const legacyWriteServer = new EdaBridgeServer(legacyWritePort);
+  let legacyWriteOld;
+  let legacyWriteFresh;
+  try {
+    await legacyWriteServer.start();
+    const legacyUrl = `ws://127.0.0.1:${legacyWritePort}/bridge/ws${tokenQuery}`;
+    legacyWriteOld = await registerEda(legacyUrl, 'legacy-write-old', {
+      documentUuid: 'legacy-document', projectUuid: 'legacy-project', pageKind: 'schematic', pageUuid: 'legacy-page',
+    });
+    attachTaskResponder(legacyWriteOld.socket, 'legacy-write-old', () => ({ commitUnknown: true }));
+    await legacyWriteServer.request('/bridge/jlceda/schematic/connectivity', {
+      action: 'wire_create', line: [0, 0, 10, 0],
+    }, 2000);
+    const legacyDiagnostic = (await legacyWriteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(legacyDiagnostic.pageBound, true);
+    assert.equal(legacyDiagnostic.context, undefined, 'old task-started without context must not reuse heartbeat identity');
+    const legacyRecovery = await legacyWriteServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: legacyDiagnostic.requestId,
+    }, 2000);
+    legacyWriteOld.socket.close();
+    await waitUntil(async () => (await legacyWriteServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'legacy-write-old')?.ready === false);
+    legacyWriteFresh = await registerEda(legacyUrl, 'legacy-write-fresh', {
+      documentUuid: 'legacy-document', projectUuid: 'legacy-project', pageKind: 'schematic', pageUuid: 'legacy-page',
+    });
+    await assert.rejects(legacyWriteServer.request('/bridge/admin/recover-client', {
+      action: 'readback', confirm: true, recoveryId: legacyRecovery.recoveryId,
+      clientId: 'legacy-write-fresh', expectedDocumentUuid: 'legacy-document', expectedPageUuid: 'legacy-page',
+    }, 2000), /no verified execution-time page identity/);
+  } finally {
+    legacyWriteOld?.socket.close();
+    legacyWriteFresh?.socket.close();
+    legacyWriteServer.close();
+  }
+
+  const crossPageDeletePort = await reservePort();
+  const crossPageDeleteServer = new EdaBridgeServer(crossPageDeletePort);
+  let crossPageDeleteOld;
+  let crossPageDeleteFresh;
+  try {
+    await crossPageDeleteServer.start();
+    const crossPageUrl = `ws://127.0.0.1:${crossPageDeletePort}/bridge/ws${tokenQuery}`;
+    crossPageDeleteOld = await registerEda(crossPageUrl, 'cross-page-delete-old', {
+      documentUuid: 'page-a-document', projectUuid: 'cross-page-project', pageKind: 'schematic', pageUuid: 'page-a',
+    });
+    crossPageDeleteOld.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      crossPageDeleteOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'cross-page-delete-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'page-a-document', projectUuid: 'cross-page-project', pageKind: 'schematic', pageUuid: 'page-a' },
+      }));
+      crossPageDeleteOld.socket.send(JSON.stringify({
+        type: 'bridge/result', clientId: 'cross-page-delete-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { commitUnknown: true, uncertainIds: ['component-on-page-b'] },
+      }));
+    });
+    await crossPageDeleteServer.request('/bridge/jlceda/api/invoke', {
+      apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['component-on-page-b'],
+    }, 2000);
+    const crossPageDiagnostic = (await crossPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(crossPageDiagnostic.pageBound, false);
+    assert.equal(crossPageDiagnostic.requiredReadback, 'schematic_project_review');
+    const crossPageRecovery = await crossPageDeleteServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: crossPageDiagnostic.requestId,
+    }, 2000);
+    crossPageDeleteOld.socket.close();
+    await waitUntil(async () => (await crossPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'cross-page-delete-old')?.ready === false);
+    crossPageDeleteFresh = await registerEda(crossPageUrl, 'cross-page-delete-fresh', {
+      documentUuid: 'page-b-document', projectUuid: 'cross-page-project', pageKind: 'schematic', pageUuid: 'page-b',
+    });
+    attachTaskResponder(crossPageDeleteFresh.socket, 'cross-page-delete-fresh', message => message.path === '/bridge/jlceda/schematic/review'
+      ? { ok: true, netlistText: 'whole-project-netlist' }
+      : { currentDocumentInfo: { uuid: 'page-b-document', parentProjectUuid: 'cross-page-project' }, currentProjectInfo: { uuid: 'cross-page-project' }, currentSchematicPageInfo: { uuid: 'page-b' } });
+    const crossPageReadback = {
+      action: 'readback', confirm: true, recoveryId: crossPageRecovery.recoveryId,
+      clientId: 'cross-page-delete-fresh', readbackPath: '/bridge/jlceda/schematic/review',
+    };
+    await assert.rejects(crossPageDeleteServer.request('/bridge/admin/recover-client', {
+      ...crossPageReadback, readbackPath: '/bridge/jlceda/context',
+    }, 2000), /requires schematic_review of the whole project/);
+    assert.equal((await crossPageDeleteServer.request('/bridge/admin/recover-client', crossPageReadback, 2000)).readbackVerified, true);
+  } finally {
+    crossPageDeleteOld?.socket.close();
+    crossPageDeleteFresh?.socket.close();
+    crossPageDeleteServer.close();
+  }
 
   const disconnectPort = await reservePort();
   disconnectServer = new EdaBridgeServer(disconnectPort);
