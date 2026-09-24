@@ -122,7 +122,7 @@ Claude Desktop、Claude Code、Cursor 等客户端应将 `jlceda-mcp` 注册为�
 - MCP 工具能够修改当前工程。操作前请保存工程，并审查 AI 提议的写操作。
 - `api_invoke` 是可选的 API 透传能力，只应在信任的 MCP 客户端中启用。
 - 已在嘉立创 EDA 专业版 3.2.181 上测试；其他 3.x 版本需自行验证。
-- `createNetLabel` 从 EDA v4 起提供；3.2.181 中普通网络标签创建可能超时。Bridge 会明确报告失败并隔离后续写操作；若底层调用持续挂起，需重启 EDA 并完成恢复回读。
+- `createNetLabel` 从 EDA v4 起提供。Bridge 在 3.x 上对普通网络标签立即返回 `EDA_VERSION_UNSUPPORTED` 和 `commitStatus: not_started`，避免进入超时隔离；电源和地网络标识仍可使用。若更新版 EDA 的底层调用超时，仍需恢复回读后才能继续写入。
 - 扩展只在原理图或 PCB 页面建立 Bridge 连接。
 
 ## 状态说明
@@ -140,7 +140,7 @@ Claude Desktop、Claude Code、Cursor 等客户端应将 `jlceda-mcp` 注册为�
 2. `component_place` 会启动 EDA 内的交互放置；`component_place_auto` 才会按坐标直接创建。
 3. 多个 EDA 页面同时连接时，应先枚举客户端并明确选择目标页面。
 4. 修改端口或 token 后，必须同步更新 MCP Server 环境变量与 Bridge 地址。
-5. 普通网络标签创建失败时不要改用电源网络标识代替；请查看 Bridge 调试日志。
+5. 普通网络标签创建失败时不要改用电源网络标识代替；3.x 请使用支持的导线操作，4.x 请查看 Bridge 调试日志。
 6. 状态异常时先关闭旧版 MCP Hub，再重启 AI 客户端与 EDA Bridge。
 ## 常见问题
 
@@ -155,6 +155,10 @@ EDA 页面可能未桥接成功，请回到连接设置页确认连接状态是�
 ### 保存地址后仍无法连接？
 
 请确认原生 MCP Server 已安装并由 AI 客户端启动，且端口、token 与 Bridge 地址一致。
+
+### 扩展已启用，但提示“未授予外部交互权限”？
+
+在嘉立创 EDA 专业版 V3 中打开“高级 → 扩展管理器 → 已安装”，点击“MCP Bridge 社区版”，启用“外部交互”权限，再重启 EDA。扩展的“已启用”状态不会自动授予这项权限。操作入口见[嘉立创官方指南](https://prodocs.lceda.cn/cn/api/user-guide/using-extension.html)。
 
 ## 许可证
 

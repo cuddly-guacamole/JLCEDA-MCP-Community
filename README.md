@@ -59,6 +59,7 @@ Codex / Claude / Cursor / 其他 MCP 客户端
 需要 Node.js 20 或更高版本。
 
 1. 从 [发布页](https://github.com/hs150521/JLCEDA-MCP-Community/releases) 下载并在嘉立创 EDA 扩展管理器中安装 `mcp-bridge-community-2.3.1.eext`。
+   安装后在“已安装”的扩展详情中确认已允许“外部交互”，否则 Bridge 无法连接本机 MCP Server。
 2. 下载 MCP Server 包并安装：
 
    ```powershell
@@ -108,7 +109,7 @@ codex mcp list
 - MCP 写工具可修改当前工程；执行前请保存并核对活动项目和页面。
 - 不要让旧版 MCP Hub 与原生 Server 同时占用端口 8765。
 - 已在嘉立创 EDA 专业版 3.2.181 上测试。
-- 官方 `createNetLabel` 从 EDA v4 起提供；在 3.2.181 中普通标签创建可能超时。Bridge 会明确返回失败并隔离后续写操作；若底层调用持续挂起，需重启 EDA 并完成恢复回读。
+- 官方 `createNetLabel` 从 EDA v4 起提供。Bridge 在 3.x 上对普通网络标签直接返回 `EDA_VERSION_UNSUPPORTED`，不会启动可能挂起的 EDA 调用；电源和地网络标识仍可使用。
 
 ## 开发与发布
 

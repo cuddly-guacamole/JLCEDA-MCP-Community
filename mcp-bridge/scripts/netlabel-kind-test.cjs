@@ -394,6 +394,25 @@ async function main() {
 	});
 	assert.equal(placed.ok, true);
 	assert.deepEqual(createNetLabelCalls, [[320, 240, 'UART_TX']]);
+	globalThis.eda.sys_Environment = { getEditorCurrentVersion: () => '3.2.181' };
+	let unsupportedNetLabelCalls = 0;
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => {
+		unsupportedNetLabelCalls += 1;
+		throw new Error('EDA v3 must not call createNetLabel');
+	};
+	const v3Placement = await handleNetLabelPlaceTask({
+		placements: [
+			{ componentId: 'component-1', pinIdentifier: '1', netName: 'UART_TX' },
+			{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+		],
+	});
+	assert.equal(v3Placement.ok, false);
+	assert.equal(v3Placement.partial, true);
+	assert.equal(v3Placement.results[0].errorCode, 'EDA_VERSION_UNSUPPORTED');
+	assert.equal(v3Placement.results[0].commitStatus, 'not_started');
+	assert.equal(v3Placement.results[1].success, true);
+	assert.equal(unsupportedNetLabelCalls, 0, 'EDA v3 must fail ordinary labels before calling the API');
+	delete globalThis.eda.sys_Environment;
 
 	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => {
 		throw new BridgeTaskTimeoutError('/bridge/jlceda/netlabel/place', 5_000, Promise.resolve());

@@ -92,8 +92,8 @@ function propagateNetworkNamesViaBFS(
 
 // 扫描原理图并输出电路语义 JSON 字符串。
 async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok: false; error: string }> {
-	// ── 第一步：获取所有器件实例 ──────────────────────────────────────────
-	const componentListRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAll(undefined, true)));
+	// ── 第一步：仅获取当前图页的器件实例 ──────────────────────────────────
+	const componentListRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAll(undefined, false)));
 	if (!Array.isArray(componentListRaw)) {
 		return { ok: false, error: '器件列表获取失败，sch_PrimitiveComponent.getAll 未返回数组。' };
 	}

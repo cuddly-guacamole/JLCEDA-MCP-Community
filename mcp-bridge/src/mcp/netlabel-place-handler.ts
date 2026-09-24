@@ -230,6 +230,17 @@ export function detectNetLabelKind(netName: string): NetLabelKind {
 	return 'NetLabel';
 }
 
+function getEditorVersionBeforeNetLabelSupport(): string | undefined {
+	try {
+		const version = eda.sys_Environment.getEditorCurrentVersion();
+		const match = /^v?(\d+)(?:\.|$)/i.exec(version.trim());
+		return match && Number(match[1]) < 4 ? version : undefined;
+	}
+	catch {
+		return undefined;
+	}
+}
+
 /**
  * 处理网络标签放置任务。
  * @param payload 任务参数。
@@ -257,7 +268,7 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 
 	const componentApi = resolveComponentApi();
 	const netFlagApi = resolveNetFlagApi();
-	const netLabelApi = resolveNetLabelApi();
+	const unsupportedEditorVersion = getEditorVersionBeforeNetLabelSupport();
 
 	const results = [];
 	let successCount = 0;
@@ -265,6 +276,21 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 
 	for (let i = 0; i < placements.length; i += 1) {
 		const placement = placements[i];
+		const netLabelKind = detectNetLabelKind(placement.netName);
+		if (netLabelKind === 'NetLabel' && unsupportedEditorVersion) {
+			results.push({
+				index: i,
+				componentId: placement.componentId,
+				pinIdentifier: placement.pinIdentifier,
+				netName: placement.netName,
+				success: false,
+				errorCode: 'EDA_VERSION_UNSUPPORTED',
+				commitStatus: 'not_started',
+				error: `当前 EDA ${unsupportedEditorVersion} 不支持普通网络标签创建；createNetLabel 从 EDA v4 起提供。`,
+			});
+			failureCount += 1;
+			continue;
+		}
 
 		try {
 			// 获取器件的所有引脚
@@ -300,35 +326,37 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 				continue;
 			}
 
-			// 检测网络类型（所有网络都使用网络符号）
-			const netLabelKind = detectNetLabelKind(placement.netName);
-
-			// 计算标签位置（加上偏移量）
+			// 计算标签位置（直接使用引脚坐标）
 			const offset = calculateLabelOffset();
 			const labelX = pin.x + offset.x;
 			const labelY = pin.y + offset.y;
 
-			const result = netLabelKind === 'NetLabel'
-				? await createNetLabelWithTimeout(
-						Promise.resolve(netLabelApi.createNetLabel.call(
-							netLabelApi.context,
-							labelX,
-							labelY,
-							placement.netName,
-						)),
+			let result: unknown;
+			if (netLabelKind === 'NetLabel') {
+				const netLabelApi = resolveNetLabelApi();
+				result = await createNetLabelWithTimeout(
+					Promise.resolve(netLabelApi.createNetLabel.call(
+						netLabelApi.context,
+						labelX,
+						labelY,
 						placement.netName,
-					)
-				: await Promise.resolve(
-						netFlagApi.createNetFlag.call(
-							netFlagApi.context,
-							netLabelKind,
-							placement.netName,
-							labelX,
-							labelY,
-							0,
-							false,
-						),
-					);
+					)),
+					placement.netName,
+				);
+			}
+			else {
+				result = await Promise.resolve(
+					netFlagApi.createNetFlag.call(
+						netFlagApi.context,
+						netLabelKind,
+						placement.netName,
+						labelX,
+						labelY,
+						0,
+						false,
+					),
+				);
+			}
 
 			if (result) {
 				results.push({

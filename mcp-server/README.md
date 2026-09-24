@@ -95,6 +95,7 @@ ws://127.0.0.1:8765/bridge/ws?token=YOUR_RANDOM_TOKEN
 - Server 仅绑定 `127.0.0.1`，不会主动监听局域网接口。
 - Token 属于本地 Bridge 凭据，不应提交到仓库或出现在截图、日志和 Issue 中。
 - 工具可修改当前 EDA 工程；使用写工具前请保存工程并检查目标页面。
+- `netlabel_place` 的普通信号标签需要 EDA v4；在 3.x 中该操作会立即返回未开始，电源和地网络标识仍可使用。
 - API 透传工具是可选功能，仅应在受信任的 MCP 客户端中启用。
 
 完整安装、多客户端选择和故障排查说明见[原生 MCP 安装说明](https://github.com/hs150521/JLCEDA-MCP-Community/blob/main/docs/native-mcp-setup.md)。
