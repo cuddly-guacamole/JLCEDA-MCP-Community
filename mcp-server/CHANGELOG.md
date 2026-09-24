@@ -10,6 +10,7 @@
 - 已开始的写任务若因 EDA 客户端或 MCP 调用方失联而中断，保留未确认修改诊断；重连隔离时间届满仍需恢复回读才能再次写入。
 - 恢复隔离期间允许 `getAllPrimitiveId` / `getAll` 以严格的 `args:[null,false]` 查询当前页器件，并可用于受控恢复回读；无参数调用继续兼容，其余 `api_invoke` 仍按写入隔离。
 - PCB 恢复期间可用无参数的 `eda.pcb_PrimitiveComponent.getAll` 回读器件位置；带筛选参数的调用继续受隔离。
+- `bridge_recover_client` 使用原始超时诊断的图页 UUID 校验新客户端与实际 `/context` 回读；同一文档中的其他原理图页或 PCB 不再能解除当前图页的写入阻断。
 
 ## [2.3.1] - 2026-09-24
 

@@ -132,6 +132,7 @@ let red;
 let queued;
 let stuck;
 let replacement;
+let wrongRecoveryPage;
 let disconnectActive;
 let disconnectReplacement;
 let disconnectReconnected;
@@ -435,7 +436,7 @@ try {
     { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'recovery-page' },
   );
   attachTaskResponder(replacement.socket, 'replacement-page', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' } }
+    ? { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' }, currentSchematicPageInfo: { uuid: 'recovery-page' } }
     : ({ source: 'replacement', path: message.path }));
   const stuckRequest = recoveryServer.request('/bridge/jlceda/schematic/layout-check', { mode: 'fix', confirm: true }, 100);
   await waitUntil(() => receivedStuckTask);
@@ -461,17 +462,30 @@ try {
   assert.equal(recoveryMessage.recoveryId, recoveryStart.recoveryId);
   stuck.socket.close();
   stuck = undefined;
+  wrongRecoveryPage = await registerEda(
+    `ws://127.0.0.1:${recoveryPort}/bridge/ws${tokenQuery}`,
+    'wrong-recovery-page',
+    { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'another-page' },
+  );
+  await assert.rejects(recoveryServer.request('/bridge/admin/recover-client', {
+    action: 'readback',
+    confirm: true,
+    recoveryId: recoveryStart.recoveryId,
+    clientId: 'wrong-recovery-page',
+    expectedPageUuid: 'another-page',
+  }, 2000), /pageUuid does not match/);
   const freshRecoveryClient = await registerEda(
     `ws://127.0.0.1:${recoveryPort}/bridge/ws${tokenQuery}`,
     'recovered-page',
     { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'recovery-page' },
   );
+  let recoveryReadbackPageUuid = 'recovery-page';
   attachTaskResponder(freshRecoveryClient.socket, 'recovered-page', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' } }
+    ? { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' }, currentSchematicPageInfo: { uuid: recoveryReadbackPageUuid } }
     : ({ source: 'replacement', path: message.path }));
   assert.deepEqual(
     await recoveryServer.request('/bridge/jlceda/context', {}, 2000),
-    { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' } },
+    { currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' }, currentProjectInfo: { uuid: 'recovery-project' }, currentSchematicPageInfo: { uuid: 'recovery-page' } },
   );
   await assert.rejects(
     recoveryServer.request('/bridge/test/write-blocked', {}, 2000),
@@ -518,7 +532,7 @@ try {
     }, 2000),
     /read-only operation/,
   );
-  const recoveryReadback = await recoveryServer.request('/bridge/admin/recover-client', {
+  const recoveryReadbackRequest = {
     action: 'readback',
     confirm: true,
     recoveryId: recoveryStart.recoveryId,
@@ -527,7 +541,15 @@ try {
     expectedProjectUuid: 'recovery-project',
     readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] },
-  }, 2000);
+  };
+  recoveryReadbackPageUuid = 'another-page';
+  await assert.rejects(
+    recoveryServer.request('/bridge/admin/recover-client', recoveryReadbackRequest, 2000),
+    /Readback pageUuid does not match/,
+  );
+  await assert.rejects(recoveryServer.request('/bridge/test/write-still-blocked', {}, 2000), /writes are blocked pending recovery readback/);
+  recoveryReadbackPageUuid = 'recovery-page';
+  const recoveryReadback = await recoveryServer.request('/bridge/admin/recover-client', recoveryReadbackRequest, 2000);
   assert.equal(recoveryReadback.readbackVerified, true);
   assert.equal(recoveryReadback.readback.path, '/bridge/jlceda/api/invoke');
   assert.deepEqual(
@@ -535,6 +557,8 @@ try {
     { source: 'replacement', path: '/bridge/test/recovery-write-after-readback' },
   );
   freshRecoveryClient.socket.close();
+  wrongRecoveryPage.socket.close();
+  wrongRecoveryPage = undefined;
   replacement.socket.close();
   replacement = undefined;
   recoveryServer.close();
@@ -566,7 +590,7 @@ try {
     { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
   attachTaskResponder(disconnectedRecoveryTarget.socket, 'disconnected-recovery-target', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' } }
+    ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: 'disconnected-page' } }
     : ({ source: 'disconnected-recovery-target', path: message.path }));
   const disconnectedRequest = disconnectedRecoveryServer.request('/bridge/jlceda/api/invoke', {}, 100);
   await assert.rejects(disconnectedRequest, /Request execution timeout/);
@@ -603,11 +627,12 @@ try {
     'disconnected-recovery-old',
     { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
+  let pcbReadbackPageUuid = 'different-pcb';
   attachTaskResponder(disconnectedRecoveryOld.socket, 'disconnected-recovery-old', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' } }
+    ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: pcbReadbackPageUuid } }
     : ({ source: 'disconnected-recovery-old-reconnected', path: message.path }));
   await new Promise((resolve) => setTimeout(resolve, 180));
-  const disconnectedReadback = await disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
+  const disconnectedReadbackRequest = {
     action: 'readback',
     confirm: true,
     recoveryId: disconnectedStart.recoveryId,
@@ -616,7 +641,13 @@ try {
     expectedProjectUuid: 'disconnected-project',
     readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
-  }, 2000);
+  };
+  await assert.rejects(
+    disconnectedRecoveryServer.request('/bridge/admin/recover-client', disconnectedReadbackRequest, 2000),
+    /Readback pageUuid does not match/,
+  );
+  pcbReadbackPageUuid = 'disconnected-page';
+  const disconnectedReadback = await disconnectedRecoveryServer.request('/bridge/admin/recover-client', disconnectedReadbackRequest, 2000);
   assert.equal(disconnectedReadback.readbackVerified, true);
   assert.equal(disconnectedReadback.readback.path, '/bridge/jlceda/api/invoke');
   disconnectedRecoveryOld.socket.close();
@@ -966,6 +997,7 @@ try {
   queued?.socket.close();
   stuck?.socket.close();
   replacement?.socket.close();
+  wrongRecoveryPage?.socket.close();
   disconnectActive?.socket.close();
   disconnectReplacement?.socket.close();
   disconnectReconnected?.socket.close();

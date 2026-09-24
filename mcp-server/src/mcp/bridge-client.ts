@@ -215,15 +215,23 @@ function parseClientContext(value: unknown): BridgeClientContext | undefined {
   };
 }
 
-function extractReadbackIdentity(value: unknown): { documentUuid?: string; projectUuid?: string } {
+function extractReadbackIdentity(value: unknown, pageKind?: BridgeClientContext['pageKind']): { documentUuid?: string; projectUuid?: string; pageUuid?: string } {
   if (!isRecord(value)) {
     return {};
   }
   const document = isRecord(value.currentDocumentInfo) ? value.currentDocumentInfo : isRecord(value.currentDocument) ? value.currentDocument : undefined;
   const project = isRecord(value.currentProjectInfo) ? value.currentProjectInfo : isRecord(value.project) ? value.project : undefined;
+  const schematicPage = isRecord(value.currentSchematicPageInfo) ? value.currentSchematicPageInfo : undefined;
+  const pcb = isRecord(value.currentPcbInfo) ? value.currentPcbInfo : undefined;
+  const pageUuid = pageKind === 'schematic'
+    ? optionalString(schematicPage?.uuid)
+    : pageKind === 'pcb'
+      ? optionalString(pcb?.uuid)
+      : optionalString(schematicPage?.uuid) ?? optionalString(pcb?.uuid);
   return {
     documentUuid: optionalString(document?.uuid),
     projectUuid: optionalString(document?.parentProjectUuid) ?? optionalString(project?.uuid),
+    pageUuid,
   };
 }
 
@@ -1002,12 +1010,16 @@ export class EdaBridgeServer {
     }
     const expectedDocumentUuid = optionalString(payload.expectedDocumentUuid) ?? session.diagnostic.context?.documentUuid;
     const expectedProjectUuid = optionalString(payload.expectedProjectUuid) ?? session.diagnostic.context?.projectUuid;
+    const expectedPageUuid = session.diagnostic.context?.pageUuid ?? optionalString(payload.expectedPageUuid);
+    const expectedPageKind = session.diagnostic.context?.pageKind ?? target.context?.pageKind;
     if (!expectedDocumentUuid && !expectedProjectUuid)
       throw new Error('Recovery requires expectedDocumentUuid or expectedProjectUuid when the original client did not report document identity.');
     if (expectedDocumentUuid && target.context?.documentUuid && target.context.documentUuid !== expectedDocumentUuid)
       throw new Error('Fresh Bridge client documentUuid does not match the expected document; writes remain blocked.');
     if (expectedProjectUuid && target.context?.projectUuid && target.context.projectUuid !== expectedProjectUuid)
       throw new Error('Fresh Bridge client projectUuid does not match the expected project; writes remain blocked.');
+    if (expectedPageUuid && target.context?.pageUuid !== expectedPageUuid)
+      throw new Error('Fresh Bridge client pageUuid does not match the timed-out page; writes remain blocked.');
     this.selectClient(targetClientId, true, true);
     session.targetClientId = targetClientId;
     session.targetConnectedAt = target.connectedAt;
@@ -1015,12 +1027,15 @@ export class EdaBridgeServer {
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
       : await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
-    const identity = extractReadbackIdentity(identityReadback);
+    const identity = extractReadbackIdentity(identityReadback, expectedPageKind);
     if (expectedDocumentUuid && identity.documentUuid !== expectedDocumentUuid) {
       throw new Error('Readback documentUuid does not match expectedDocumentUuid; writes remain blocked.');
     }
     if (expectedProjectUuid && identity.projectUuid !== expectedProjectUuid) {
       throw new Error('Readback projectUuid does not match expectedProjectUuid; writes remain blocked.');
+    }
+    if (expectedPageUuid && identity.pageUuid !== expectedPageUuid) {
+      throw new Error('Readback pageUuid does not match the timed-out page; writes remain blocked.');
     }
     this.recoverySession = undefined;
     this.recoveryDiagnostics.delete(session.diagnostic.requestId);

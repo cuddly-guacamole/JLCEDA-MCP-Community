@@ -32,7 +32,7 @@
   },
   {
     "name": "bridge_recover_client",
-    "description": "对 EDA 写操作超时或执行中失联后的 Bridge 执行受控恢复。原调用若一直挂起，需重启 EDA 宿主以终止旧调用。然后从 bridge_clients 取得未确认 requestId，以 action=recover 和 confirm=true 建立恢复会话，再使用新 clientId、预期文档身份和当前页只读回读完成 action=readback。回读完成前写入持续阻断。",
+    "description": "对 EDA 写操作超时或执行中失联后的 Bridge 执行受控恢复。原调用若一直挂起，需重启 EDA 宿主以终止旧调用。然后从 bridge_clients 取得未确认 requestId，以 action=recover 和 confirm=true 建立恢复会话，再使用新 clientId、原始文档与图页身份、当前页只读回读完成 action=readback。回读完成前写入持续阻断。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -43,8 +43,9 @@
         "clientId": { "type": "string", "minLength": 1, "description": "readback 时 bridge_clients 返回的全新 Bridge clientId。" },
         "expectedDocumentUuid": { "type": "string", "minLength": 1 },
         "expectedProjectUuid": { "type": "string", "minLength": 1 },
+        "expectedPageUuid": { "type": "string", "minLength": 1, "description": "原始诊断未记录图页 UUID 时可补充；已记录时以诊断中的 pageUuid 为准。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "原理图当前页器件 ID 可用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[]}；带参数的 api_invoke 不接受为恢复回读。" }
+        "readbackPayload": { "type": "object", "default": {}, "description": "原理图当前页器件 ID 可用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；仅允许明确列出的只读 API 参数。" }
       },
       "required": ["confirm"],
       "allOf": [
