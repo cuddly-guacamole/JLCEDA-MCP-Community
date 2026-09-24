@@ -1,8 +1,10 @@
 # MCP Bridge 社区版
 
-## 2.3.0
+## 2.3.1
 
 本版本以共享 `contracts/bridge-contract.json` 集中维护 Bridge 工具路由、内部交互路由、超时策略和消息字段契约。处理器注册表在加载时校验每个处理器都已声明；设置页优先使用 MessageBus 接收状态更新，当 MessageBus 不可用时使用持久化最新快照轮询回退。`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
+
+Bridge 会记录任务开始、完成、返回失败、异常和超时的结构化日志，包含工具名、路由、可用的 EDA API 名称、请求 ID、执行阶段以及版本与构建日期水印。菜单“查看调试日志”展示最近 100 条简略报告并隐藏异常堆栈；扩展本地存储保留最近 200 条完整日志。清空日志后，其他已打开页面的后续读取不会恢复旧记录。
 
 ## 2.1 PCB 工具
 
@@ -88,14 +90,14 @@ Server，通过本机 WebSocket 与嘉立创 EDA 专业版连接，不再依赖 
 
 ### 1. EDA Bridge
 
-在嘉立创 EDA 专业版扩展管理器中安装“MCP Bridge 社区版”，重启 EDA，然后打开原理图或 PCB 页面。
+从同一 Release 下载并在嘉立创 EDA 专业版扩展管理器中安装 `mcp-bridge-community-2.3.1.eext`，重启 EDA，然后打开原理图或 PCB 页面。
 
 ### 2. 原生 MCP Server
 
-从同一 Release 下载匹配的 `jlceda-mcp-server-2.3.0.tgz`，执行：
+从同一 Release 下载匹配的 `jlceda-mcp-server-2.3.1.tgz`，执行：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.0.tgz
+npm install --global .\jlceda-mcp-server-2.3.1.tgz
 ```
 
 安装后的命令为 `jlceda-mcp`。源码构建及其他客户端配置见[原生 MCP 安装说明](https://github.com/hs150521/JLCEDA-MCP-Community/blob/main/docs/native-mcp-setup.md)。

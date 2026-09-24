@@ -1,8 +1,10 @@
 # JLCEDA MCP Server
 
-## 2.3.0
+## 2.3.1
 
 本版本使用共享 Bridge 路由清单，增加内部请求超时、重复 `requestId` 检查、消息大小限制和有限挂起请求队列。`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
+
+工具分发异常和 Bridge 上报的结构化诊断日志会输出到 Server 的 stderr。分发异常记录工具、Bridge 路由、可用的错误码与异常堆栈，并附带版本及构建日期水印；构建日期在打包时固定。
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由，不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
@@ -44,10 +46,10 @@ Server 提供 PCB DRC、网络查询、库搜索、制造查询和受保护的�
 
 ## 安装
 
-从 GitHub 发布页下载 `jlceda-mcp-server-2.3.0.tgz`：
+从 GitHub 发布页下载 `jlceda-mcp-server-2.3.1.tgz`：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.0.tgz
+npm install --global .\jlceda-mcp-server-2.3.1.tgz
 Get-Command jlceda-mcp
 ```
 

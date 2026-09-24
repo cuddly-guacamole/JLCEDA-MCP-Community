@@ -8,14 +8,14 @@
 
 需要 Node.js 20 或更高版本，以及嘉立创 EDA 专业版。
 
-1. 从 GitHub Release 下载并安装 `jlceda-mcp-server-2.3.0.tgz`：
+1. 从 GitHub Release 下载并安装 `jlceda-mcp-server-2.3.1.tgz`：
 
    ```powershell
-   npm install --global .\jlceda-mcp-server-2.3.0.tgz
+   npm install --global .\jlceda-mcp-server-2.3.1.tgz
    Get-Command jlceda-mcp
    ```
 
-2. 在嘉立创 EDA 扩展管理器中安装本项目发布的 `mcp-bridge-community-2.2.0.eext`。
+2. 在嘉立创 EDA 扩展管理器中安装本项目发布的 `mcp-bridge-community-2.3.1.eext`。
 
 3. 打开 Bridge 设置页，确认地址为 `ws://127.0.0.1:8765/bridge/ws`。如果服务器使用 `JLCEDA_BRIDGE_TOKEN`，在地址后追加同一个 token：`ws://127.0.0.1:8765/bridge/ws?token=YOUR_RANDOM_TOKEN`。
 
@@ -55,6 +55,10 @@ codex mcp list
 3. Bridge 设置页应显示“已连接”。
 4. 多个 EDA 页面同时打开时，先调用 `bridge_clients` 查看客户端列表，再用 `bridge_select_client` 选择目标页面。
 5. 发送测试请求，例如“读取当前原理图的电路信息”。
+
+## 查看诊断日志
+
+任务失败时，可在嘉立创 EDA 扩展菜单中选择“查看调试日志”。弹窗展示最近 100 条简略报告，包括版本、构建日期、工具、路由和请求 ID，不显示异常堆栈。选择“清空调试日志”可清除调试日志及本地诊断记录。
 
 ## 常见问题
 

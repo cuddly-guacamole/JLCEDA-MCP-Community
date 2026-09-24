@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const process = require('node:process');
+const { version: extensionVersion } = require('../extension.json');
 
 process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', moduleResolution: 'node' });
 require('ts-node/register/transpile-only');
@@ -32,9 +33,9 @@ const diagnosticLog = bridgeLogPipeline.createEntry({
 	errorStack: 'stack',
 });
 assert.equal(BRIDGE_DIAGNOSTIC_LOG_STORAGE_KEY, 'mcp_bridge_diagnostic_logs');
-assert.equal(diagnosticLog.fields.version, '2.3.0');
+assert.equal(diagnosticLog.fields.version, extensionVersion);
 assert.equal(diagnosticLog.fields.buildDate, 'dev');
-assert.equal(diagnosticLog.fields.buildWatermark, 'v2.3.0 | dev');
+assert.equal(diagnosticLog.fields.buildWatermark, `v${extensionVersion} | dev`);
 assert.equal(diagnosticLog.fields.toolName, 'api_invoke');
 assert.equal(diagnosticLog.fields.edaApi, 'eda.sch_PrimitiveComponent.create');
 assert.equal(diagnosticLog.fields.requestId, 'test-request');

@@ -1,13 +1,13 @@
 # 原生 MCP 安装
 
-本文适用于社区的 native-mcp-v2 分支。
+本文适用于社区版当前发布版本。
 
 ## 1. 安装 Server
 
-需要 Node.js 20 或更高版本。从对应的 GitHub Release 下载 jlceda-mcp-server-2.3.0.tgz，然后执行：
+需要 Node.js 20 或更高版本。从对应的 GitHub Release 下载 jlceda-mcp-server-2.3.1.tgz，然后执行：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.0.tgz
+npm install --global .\jlceda-mcp-server-2.3.1.tgz
 Get-Command jlceda-mcp
 ```
 
