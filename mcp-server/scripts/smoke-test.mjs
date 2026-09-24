@@ -101,6 +101,10 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/api/invoke')), 'bridge_recover_client must allow current-page API readback');
     const expectedPageSchemas = findPropertySchemas(recoverTool.inputSchema, 'expectedPageUuid');
     assert.ok(expectedPageSchemas.some((schema) => schema.type === 'string'), 'bridge_recover_client must publish the optional page UUID');
+    const actionSchemas = findPropertySchemas(recoverTool.inputSchema, 'action');
+    assert.ok(actionSchemas.some((schema) => schema.const === 'resolve_import'), 'bridge_recover_client must advertise explicit PCB import resolution');
+    const resolutionSchemas = findPropertySchemas(recoverTool.inputSchema, 'resolution');
+    assert.ok(resolutionSchemas.some((schema) => schema.enum?.includes('applied') && schema.enum?.includes('cancelled')), 'bridge_recover_client must advertise both native dialog outcomes');
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {

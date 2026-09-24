@@ -334,7 +334,12 @@
 			"toolName": "pcb_document_action",
 			"path": "/bridge/jlceda/pcb/document",
 			"owner": "bridge",
-			"timeoutPolicy": "extended-read"
+			"timeoutPolicy": "extended-read",
+			"readOnlyIf": {
+				"field": "action",
+				"defaultValue": "status",
+				"equals": ["status", "canvas_origin", "filter_configuration", "selection", "mouse_position", "primitive_type_by_id", "primitive_by_id", "primitives_by_id", "primitives_bbox", "primitive_at_point", "primitives_in_region", "convert_canvas_to_data", "convert_data_to_canvas"]
+			}
 		},
 		{
 			"toolName": "schematic_document_action",
@@ -425,6 +430,12 @@
 		}
 	],
 	"internalOperations": [
+		{
+			"path": "/bridge/jlceda/pcb/import-resolve",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnly": true
+		},
 		{
 			"path": "/bridge/jlceda/component/place/start",
 			"owner": "bridge",

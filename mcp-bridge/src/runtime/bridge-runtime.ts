@@ -25,6 +25,7 @@ import { safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
 import { debugLog } from '../utils/debug-log.ts';
 import { getBridgeTaskHandler } from './bridge-handler-registry.ts';
 import { BridgeTransport } from './bridge-transport.ts';
+import { getPcbImportWriteRejection, hasPendingPcbImport, markPcbImportPending } from './pcb-import-confirm-barrier.ts';
 import { getPlacementModeWriteRejection } from './placement-mode-barrier.ts';
 import { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForResult, resolveBridgeTaskTimeoutMs, startTimedTask } from './task-timeout.ts';
 
@@ -278,6 +279,12 @@ function applyRole(message: BridgeServerRoleMessage): void {
 export function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
 	const readOnly = isReadOnlyBridgeRequest(task.path, task.payload);
+	const importRejection = !readOnly && getPcbImportWriteRejection();
+	if (importRejection) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', importRejection, 'pcb-import-confirmation');
+		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message: importRejection });
+		return;
+	}
 	if (controlledRecoveryPending && !readOnly) {
 		const message = taskQuarantine.requiresHostRestart() ? HOST_RESTART_REQUIRED_MESSAGE : 'Bridge client is awaiting controlled recovery after a timed-out task settles.';
 		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'controlled-recovery');
@@ -307,6 +314,12 @@ export function enqueueTask(task: { requestId: string; path: string; payload: un
 	}
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
+		const queuedImportRejection = !readOnly && getPcbImportWriteRejection();
+		if (queuedImportRejection) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', queuedImportRejection, 'pcb-import-confirmation');
+			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message: queuedImportRejection });
+			return;
+		}
 		if (controlledRecoveryPending && !readOnly) {
 			const message = taskQuarantine.requiresHostRestart() ? HOST_RESTART_REQUIRED_MESSAGE : 'Bridge client is awaiting controlled recovery after a timed-out task settles.';
 			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'controlled-recovery');
@@ -382,6 +395,13 @@ export function enqueueTask(task: { requestId: string; path: string; payload: un
 			const timedTask = startTimedTask(
 				(async () => {
 					const value = await toSerializableAsync(await handler(task.payload));
+					if (task.path === '/bridge/jlceda/pcb/document'
+						&& task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload)
+						&& (task.payload as Record<string, unknown>).action === 'import_changes'
+						&& value && typeof value === 'object' && !Array.isArray(value)
+						&& (value as Record<string, unknown>).commitState === 'pending_confirmation') {
+						markPcbImportPending(task.requestId);
+					}
 					if (requiresHostRestartForResult(task.path, task.payload, value))
 						taskQuarantine.requireHostRestart(task.path);
 					return value;
@@ -535,6 +555,10 @@ function startControlledRecovery(): void {
 		return;
 	}
 	controlledRecoveryPending = true;
+	if (hasPendingPcbImport()) {
+		statusReporter.markFailed('PCB import confirmation is pending. Restart the EDA host before controlled recovery readback.');
+		return;
+	}
 	if (taskQuarantine.requiresHostRestart()) {
 		statusReporter.markFailed(HOST_RESTART_REQUIRED_MESSAGE);
 		return;
@@ -546,7 +570,7 @@ function startControlledRecovery(): void {
 	const settle = taskQuarantine.waitForSettlement() ?? runningMutationSettled ?? Promise.resolve();
 	void (async () => {
 		await settle;
-		if (taskQuarantine.requiresHostRestart()) {
+		if (taskQuarantine.requiresHostRestart() || hasPendingPcbImport()) {
 			statusReporter.markFailed(HOST_RESTART_REQUIRED_MESSAGE);
 			return;
 		}
@@ -564,7 +588,7 @@ function startControlledRecovery(): void {
 	})().catch((error: unknown) => {
 		statusReporter.markFailed(toSafeErrorMessage(error));
 	}).finally(() => {
-		if (!taskQuarantine.requiresHostRestart())
+		if (!taskQuarantine.requiresHostRestart() && !hasPendingPcbImport())
 			controlledRecoveryPending = false;
 	});
 }

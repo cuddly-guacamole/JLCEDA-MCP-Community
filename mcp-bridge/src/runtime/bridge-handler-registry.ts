@@ -42,6 +42,7 @@ import { handleSchematicPagesManageTask } from '../mcp/schematic-pages-manage-ha
 import { handleSchematicReadTask } from '../mcp/schematic-read-handler.ts';
 import { handleSchematicReviewTask } from '../mcp/schematic-review-handler.ts';
 import { handleWorkspaceQueryTask } from '../mcp/workspace-query-handler.ts';
+import { handlePcbImportResolveTask } from './pcb-import-confirm-barrier.ts';
 
 export type BridgeTaskHandler = (payload: unknown) => Promise<unknown>;
 
@@ -63,6 +64,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/netlabel/place': handleNetLabelPlaceTask,
 	'/bridge/jlceda/pcb/drc-check': handlePcbDrcCheckTask,
 	'/bridge/jlceda/pcb/document': handlePcbDocumentTask,
+	'/bridge/jlceda/pcb/import-resolve': handlePcbImportResolveTask,
 	'/bridge/jlceda/schematic/drc-check': handleSchematicDrcCheckTask,
 	'/bridge/jlceda/schematic/document': handleSchematicDocumentTask,
 	'/bridge/jlceda/schematic/pages-manage': handleSchematicPagesManageTask,

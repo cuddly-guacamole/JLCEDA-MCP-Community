@@ -820,6 +820,7 @@ async function main() {
 	const pendingPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
 	assert.equal(pendingPcbImport.imported, true);
 	assert.equal(pendingPcbImport.commitState, 'pending_confirmation');
+	assert.equal(pendingPcbImport.importContext.pageUuid, 'pcb-1');
 	assert.equal(pendingPcbImport.requiresNativeConfirmation, true);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_json', fileName: 'route.json', dataBase64: 'e30=' })).bytes, 2);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_ses', fileName: 'route.ses', dataBase64: 'e30=' })).imported, true);
@@ -877,6 +878,17 @@ async function main() {
 	assert.equal(largePcbNetList.total, 130);
 	assert.equal(largePcbNetList.returned, 130);
 	assert.equal(largePcbNetList.nets.length, 130);
+	globalThis.eda.pcb_Net.getAllNets = async () => [{ name: 'USB_D+' }, { name: 'GND' }];
+	globalThis.eda.pcb_Net.getAllNetsName = async () => Array.from({ length: 1001 }, (_, index) => `NET_${index}`);
+	const finalNetPage = await handlePcbNetQueryTask({ mode: 'names', offset: 1000, limit: 1000 });
+	assert.equal(finalNetPage.total, 1001);
+	assert.equal(finalNetPage.offset, 1000);
+	assert.deepEqual(finalNetPage.names, ['NET_1000']);
+	assert.equal(finalNetPage.truncated, false);
+	await assert.rejects(() => handlePcbNetQueryTask({ mode: 'names', offset: -1 }), /non-negative integer/);
+	delete globalThis.eda.pcb_Net.getAllNetsName;
+	globalThis.eda.pcb_Net.getAllNets = async () => [{ net: 'NET_A' }, { net: 'NET_B' }];
+	assert.deepEqual((await handlePcbNetQueryTask({ mode: 'names', offset: 1, limit: 1 })).names, ['NET_B']);
 	globalThis.eda.pcb_Net.getAllNets = async () => [{ name: 'USB_D+' }, { name: 'GND' }];
 	await assert.rejects(() => handleManufactureExportTask({ domain: 'pcb', kind: 'netlist', netlistType: 'Ngspice' }), /netlistType must be one of: Allegro, PADS, Protel2, JLCEDA/);
 	await assert.rejects(() => handleManufactureExportTask({ domain: 'schematic', kind: 'simulation_netlist', netlistType: 'Allegro' }), /netlistType must be one of: Ngspice/);

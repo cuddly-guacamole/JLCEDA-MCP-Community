@@ -2,6 +2,7 @@
 
 ## [2.3.2] - 2026-09-25
 
+- PCB `import_changes` 返回待确认时建立全局写入屏障；用户明确确认已在原生对话框应用或取消后，`bridge_recover_client action=resolve_import` 校验导入时的 PCB 身份并完整读回器件与分页网络，才解除屏障。无法确认时保留重启宿主的受控恢复路径。
 - `netlabel_place` 工具说明标明普通网络标签需要 EDA v4；EDA 3.x 将直接返回未开始，避免调用不可用的 API。
 - `pcb_document_action` 与代理指引标明 PCB 变更导入的原生确认阶段，以及 PCB BETA 自动布局/布线的结果验证步骤。
 - 交互式 `component_place` 等待用户退出当前放置模式，只返回退出后仍存在的新增图元 ID；重复图元或超时后停止批次，不自动重试可能已提交的放置。

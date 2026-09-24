@@ -25,6 +25,10 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', {}), 300
 assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', { timeoutMs: 4999 }), /5000/);
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/select', { timeoutMs: 1 }), 25000);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
+for (const action of [undefined, 'status', 'selection', 'primitive_by_id', 'primitives_in_region', 'convert_canvas_to_data'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', action === undefined ? {} : { action }), true);
+for (const action of ['save', 'clear_routing', 'import_changes', 'navigate_to_coordinates'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', { action }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'check' }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'fix' }), false);
 const connectivityPath = '/bridge/jlceda/schematic/connectivity';

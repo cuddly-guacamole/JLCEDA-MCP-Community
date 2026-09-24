@@ -18,6 +18,8 @@ function createToolInputSchema(
       expectedDocumentUuid: z.string().min(1).optional(),
       expectedProjectUuid: z.string().min(1).optional(),
       expectedPageUuid: z.string().min(1).optional(),
+      resolution: z.enum(['applied', 'cancelled']).optional(),
+      hostRestartConfirmed: z.literal(true).optional(),
       readbackPath: z.enum([
         '/bridge/jlceda/context',
         '/bridge/jlceda/api/invoke',
@@ -36,7 +38,13 @@ function createToolInputSchema(
       recoveryId: z.string().min(1),
       clientId: z.string().min(1),
     }).strict();
-    return z.union([recover, readback]);
+    const resolveImport = z.object({
+      ...common,
+      action: z.literal('resolve_import'),
+      requestId: z.string().min(1),
+      resolution: z.enum(['applied', 'cancelled']),
+    }).strict();
+    return z.union([recover, readback, resolveImport]);
   }
   return z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
 }

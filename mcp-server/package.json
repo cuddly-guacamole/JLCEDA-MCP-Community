@@ -16,7 +16,8 @@
     "clean": "rimraf dist",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:bridge": "node scripts/bridge-test.mjs",
-    "test": "npm run test:routing && npm run build && npm run test:smoke && npm run test:bridge && npm run test:dispatcher",
+    "test:pcb-import": "node scripts/pcb-import-confirm-test.mjs",
+    "test": "npm run test:routing && npm run build && npm run test:smoke && npm run test:bridge && npm run test:pcb-import && npm run test:dispatcher",
     "test:routing": "node scripts/verify-tool-routing.mjs",
     "test:dispatcher": "node scripts/tool-dispatcher-test.mjs"
   },

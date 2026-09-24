@@ -55,6 +55,7 @@ interface RecoveryDiagnostic {
   timedOutAtMs: number;
   mutating: boolean;
   requiredReadback?: 'pcb_component_positions';
+  pendingNativeConfirmation?: boolean;
   uncertaintyReason?: string;
   context?: BridgeClientContext;
 }
@@ -174,6 +175,14 @@ function isPcbAutoLayoutRequest(path: string, payload: unknown): boolean {
     && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_document.autolayout';
 }
 
+function isPendingPcbImportResult(path: string | undefined, payload: unknown, result: unknown): boolean {
+  return path === '/bridge/jlceda/pcb/document'
+    && isRecord(payload)
+    && payload.action === 'import_changes'
+    && isRecord(result)
+    && result.commitState === 'pending_confirmation';
+}
+
 function isPcbComponentReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
   const args = payload.args;
   return path === '/bridge/jlceda/api/invoke'
@@ -258,6 +267,8 @@ export class EdaBridgeServer {
   private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly reconnectBarriers = new Map<string, { path: string; until: number }>();
   private readonly recoveryDiagnostics = new Map<string, RecoveryDiagnostic>();
+  private readonly pendingImportSockets = new Map<string, WebSocket>();
+  private readonly resolvingImports = new Set<string>();
   private recoverySession: RecoverySession | undefined;
   private readonly instanceId = randomUUID();
   private requestIdCounter = 0;
@@ -639,7 +650,15 @@ export class EdaBridgeServer {
         || (isRecord(message.error) && message.error.code === 'BRIDGE_TASK_TIMEOUT');
       const commitUnknown = isRecord(message.result)
         && (message.result.commitState === 'unknown' || message.result.commitUnknown === true);
-      if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown) {
+      const pendingImport = diagnostic?.clientId === peer.clientId
+        && isPendingPcbImportResult(diagnostic.path, { action: 'import_changes' }, message.result);
+      if (pendingImport) {
+        diagnostic.pendingNativeConfirmation = true;
+        diagnostic.uncertaintyReason = 'native PCB import confirmation pending';
+        diagnostic.context = isRecord(message.result) ? parseClientContext(message.result.importContext) : undefined;
+        this.pendingImportSockets.set(requestId, peer.socket);
+      }
+      else if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown) {
         this.recoveryDiagnostics.delete(requestId);
       }
       return;
@@ -661,6 +680,13 @@ export class EdaBridgeServer {
       && isRecord(message.result)
       && message.result.commitUnknown === true) {
       this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'write result could not be verified');
+    }
+    else if (isPendingPcbImportResult(pending.path, pending.payload, message.result)) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native PCB import confirmation pending');
+      const diagnostic = this.recoveryDiagnostics.get(requestId)!;
+      diagnostic.pendingNativeConfirmation = true;
+      diagnostic.context = isRecord(message.result) ? parseClientContext(message.result.importContext) : undefined;
+      this.pendingImportSockets.set(requestId, peer.socket);
     }
     if (isRecord(message.error) && typeof message.error.message === 'string') {
       const code = typeof message.error.code === 'string' ? message.error.code : undefined;
@@ -957,8 +983,12 @@ export class EdaBridgeServer {
       throw new Error('bridge_recover_client requires confirm=true.');
     }
     const action = payload.action === undefined ? 'recover' : String(payload.action);
-    if (action !== 'recover' && action !== 'readback') {
-      throw new Error('bridge_recover_client action must be recover or readback.');
+    if (action !== 'recover' && action !== 'readback' && action !== 'resolve_import') {
+      throw new Error('bridge_recover_client action must be recover, readback, or resolve_import.');
+    }
+
+    if (action === 'resolve_import') {
+      return await this.resolvePendingPcbImport(payload, timeoutMs);
     }
 
     if (action === 'recover') {
@@ -975,6 +1005,9 @@ export class EdaBridgeServer {
       const sourceClientId = diagnostic.clientId;
       if (!diagnostic.mutating) {
         throw new Error('The active timed-out task was read-only and does not require controlled mutation recovery.');
+      }
+      if (this.resolvingImports.has(requestId)) {
+        throw new Error('PCB import resolution is already in progress.');
       }
       const source = this.peers.get(sourceClientId);
       const sourceConnected = Boolean(source && this.isPeerReady(source));
@@ -1031,6 +1064,10 @@ export class EdaBridgeServer {
       && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
     }
+    if (session.diagnostic.pendingNativeConfirmation
+      && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload))) {
+      throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
+    }
     if (session.sourceSocket
       && this.peers.get(session.diagnostic.clientId)?.socket === session.sourceSocket) {
       throw new Error('The original Bridge client must disconnect before recovery readback. Wait for its EDA call to settle, or restart the EDA host if it remains hung.');
@@ -1077,6 +1114,8 @@ export class EdaBridgeServer {
         || readback.componentCount !== readback.result.length)) {
       throw new Error('PCB component position readback did not return a complete component list; writes remain blocked.');
     }
+    if (session.diagnostic.pendingNativeConfirmation)
+      this.validateCompletePcbComponents(readback);
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
       : await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
@@ -1090,8 +1129,16 @@ export class EdaBridgeServer {
     if (expectedPageUuid && identity.pageUuid !== expectedPageUuid) {
       throw new Error('Readback pageUuid does not match the timed-out page; writes remain blocked.');
     }
+    if (session.diagnostic.pendingNativeConfirmation) {
+      if (!expectedPageUuid || expectedPageKind !== 'pcb')
+        throw new Error('Pending PCB import recovery requires the original PCB page identity; writes remain blocked.');
+      await this.readCompletePcbNets(targetClientId, timeoutMs);
+      const finalContext = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+      this.assertPcbIdentity(finalContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+    }
     this.recoverySession = undefined;
     this.recoveryDiagnostics.delete(session.diagnostic.requestId);
+    this.pendingImportSockets.delete(session.diagnostic.requestId);
     return {
       ok: true,
       action,
@@ -1103,6 +1150,98 @@ export class EdaBridgeServer {
       identityReadback,
       warningAcknowledged: true,
     };
+  }
+
+  private assertPcbIdentity(value: unknown, documentUuid: string | undefined, projectUuid: string | undefined, pageUuid: string): void {
+    const identity = extractReadbackIdentity(value, 'pcb');
+    if ((documentUuid && identity.documentUuid !== documentUuid)
+      || (projectUuid && identity.projectUuid !== projectUuid)
+      || identity.pageUuid !== pageUuid) {
+      throw new Error('PCB document or page identity changed during import readback; writes remain blocked.');
+    }
+  }
+
+  private validateCompletePcbComponents(value: unknown): number {
+    if (!isRecord(value)
+      || optionalString(value.apiFullName)?.toLowerCase() !== 'eda.pcb_primitivecomponent.getall'
+      || !Array.isArray(value.result)
+      || value.componentCount !== value.result.length) {
+      throw new Error('PCB import component readback did not return a complete component list; writes remain blocked.');
+    }
+    return value.result.length;
+  }
+
+  private async readCompletePcbNets(clientId: string, timeoutMs: number): Promise<number> {
+    let total: number | undefined;
+    let offset = 0;
+    const names = new Set<string>();
+    do {
+      const value = await this.dispatchToEda('/bridge/jlceda/net/query-pcb', { mode: 'names', limit: 1000, offset }, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, clientId);
+      if (!isRecord(value) || value.ok !== true || value.mode !== 'names'
+        || !Number.isSafeInteger(value.total) || Number(value.total) < 0
+        || value.offset !== offset || !Array.isArray(value.names)
+        || value.returned !== value.names.length || (total !== undefined && value.total !== total)
+        || value.names.some(name => typeof name !== 'string' || names.has(name))) {
+        throw new Error('PCB import net readback was incomplete; writes remain blocked.');
+      }
+      total = Number(value.total);
+      for (const name of value.names) names.add(name as string);
+      offset += value.names.length;
+      if (offset > total || value.truncated !== (offset < total) || (offset < total && value.names.length === 0))
+        throw new Error('PCB import net readback was incomplete; writes remain blocked.');
+    } while (offset < total);
+    return total;
+  }
+
+  private async resolvePendingPcbImport(payload: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
+    const requestId = optionalString(payload.requestId);
+    const resolution = payload.resolution;
+    if (!requestId || (resolution !== 'applied' && resolution !== 'cancelled'))
+      throw new Error('resolve_import requires requestId and resolution=applied or cancelled after the native EDA dialog was closed.');
+    const diagnostic = this.recoveryDiagnostics.get(requestId);
+    if (!diagnostic?.pendingNativeConfirmation)
+      throw new Error(`No pending PCB import confirmation exists for requestId: ${requestId}`);
+    if (this.recoverySession || this.resolvingImports.has(requestId))
+      throw new Error('A Bridge recovery or PCB import resolution is already in progress.');
+    const peer = this.peers.get(diagnostic.clientId);
+    if (!peer || !this.isPeerReady(peer) || peer.socket !== this.pendingImportSockets.get(requestId)
+      || this.activeClientId !== peer.clientId)
+      throw new Error('The original active Bridge connection is unavailable; restart the EDA host and use controlled recovery.');
+    const expectedPageUuid = diagnostic.context?.pageUuid;
+    const expectedDocumentUuid = diagnostic.context?.documentUuid;
+    const expectedProjectUuid = diagnostic.context?.projectUuid;
+    if (diagnostic.context?.pageKind !== 'pcb' || !expectedPageUuid || (!expectedDocumentUuid && !expectedProjectUuid))
+      throw new Error('The original PCB identity is incomplete; restart the EDA host and use controlled recovery.');
+    this.resolvingImports.add(requestId);
+    try {
+      const read = (path: string, body: Record<string, unknown>) => this.dispatchToEda(path, body, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, peer.clientId);
+      const firstContext = await read('/bridge/jlceda/context', {});
+      this.assertPcbIdentity(firstContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+      const components = await read('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+      const componentCount = this.validateCompletePcbComponents(components);
+      const netCount = await this.readCompletePcbNets(peer.clientId, timeoutMs);
+      const finalContext = await read('/bridge/jlceda/context', {});
+      this.assertPcbIdentity(finalContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+      if (this.peers.get(peer.clientId)?.socket !== peer.socket || this.recoveryDiagnostics.get(requestId) !== diagnostic || this.recoverySession)
+        throw new Error('Bridge connection or recovery state changed during import readback; writes remain blocked.');
+      const acknowledgement = await read('/bridge/jlceda/pcb/import-resolve', { confirm: true, requestId, resolution, expectedPageUuid });
+      if (!isRecord(acknowledgement) || acknowledgement.ok !== true || acknowledgement.pageUuid !== expectedPageUuid)
+        throw new Error('Bridge did not acknowledge PCB import resolution; writes remain blocked.');
+      this.recoveryDiagnostics.delete(requestId);
+      this.pendingImportSockets.delete(requestId);
+      return {
+        ok: true,
+        action: 'resolve_import',
+        resolution,
+        readbackVerified: true,
+        componentCount,
+        netCount,
+        identityReadback: finalContext,
+        writesRemainBlocked: hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values()),
+      };
+    } finally {
+      this.resolvingImports.delete(requestId);
+    }
   }
 
   private async dispatchToEda(path: string, payload: unknown, timeoutMs: number, mcpSocket?: WebSocket, recoveryReadback = false, targetClientId?: string, internalRequestId?: string): Promise<unknown> {

@@ -32,11 +32,11 @@
   },
   {
     "name": "bridge_recover_client",
-    "description": "对 EDA 写操作超时、执行中失联或返回提交未确认状态后的 Bridge 执行受控恢复。先从 bridge_clients 取得未确认 requestId，以 action=recover 和 confirm=true 建立恢复会话。原调用若一直挂起或 PCB autoLayout 提交状态未知，此后重启原 EDA 宿主以终止旧调用；等待原 Bridge 断开和恢复会话后的新连接及全新 clientId 就绪，再用原始文档与图页身份、当前页只读回读完成 action=readback。原客户端和建立恢复会话时已连接的其他客户端普通重连沿用旧 clientId，不能用于本次回读；PCB autoLayout 必须以无参数 eda.pcb_PrimitiveComponent.getAll 回读全部器件位置；回读完成前写入持续阻断。",
+    "description": "处理 EDA 写操作超时、执行中失联、提交未确认状态及 PCB 导入待确认状态。普通未确认写入先从 bridge_clients 取得 requestId，以 action=recover、confirm=true 建立恢复会话；旧调用仍挂起或 PCB autoLayout 状态未知时再重启原 EDA 宿主，等待原 Bridge 断开及恢复会话后的全新 clientId，就原文档和图页只读回读并以 action=readback 完成。原客户端和先前已连接客户端的普通重连不能用于回读；PCB autoLayout 必须完整读回器件位置。import_changes 返回 pending_confirmation 后全局阻止写入；用户在原生对话框应用或取消后，以 action=resolve_import、confirm=true、resolution=applied/cancelled 显式确认，Server 核对同一 PCB 并完整读回器件和网络后解除。无法确认弹框已关闭时，先 action=recover，再重启原 EDA 宿主，以全新连接 action=readback，另需 hostRestartConfirmed=true。隔离期间只读查询可用。",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "action": { "type": "string", "enum": ["recover", "readback"], "default": "recover" },
+        "action": { "type": "string", "enum": ["recover", "readback", "resolve_import"], "default": "recover" },
         "confirm": { "const": true, "description": "必须显式确认恢复和可能已完成的修改。" },
         "requestId": { "type": "string", "minLength": 1, "description": "bridge_clients 返回的具体超时、失联或提交未确认写操作 requestId。" },
         "recoveryId": { "type": "string", "minLength": 1 },
@@ -44,13 +44,16 @@
         "expectedDocumentUuid": { "type": "string", "minLength": 1 },
         "expectedProjectUuid": { "type": "string", "minLength": 1 },
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "原始诊断未记录图页 UUID 时可补充；已记录时以诊断中的 pageUuid 为准。" },
+        "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
+        "hostRestartConfirmed": { "const": true, "description": "待确认 PCB 导入进入 recover/readback 流程时，确认原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
         "readbackPayload": { "type": "object", "default": {}, "description": "原理图当前页器件 ID 可用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 恢复必须用 {\"apiFullName\":\"eda.pcb_PrimitiveComponent.getAll\",\"args\":[]}；仅允许明确列出的只读 API 参数。" }
       },
       "required": ["confirm"],
       "allOf": [
         { "if": { "properties": { "action": { "const": "recover" } } }, "then": { "required": ["requestId"] } },
-        { "if": { "properties": { "action": { "const": "readback" } }, "required": ["action"] }, "then": { "required": ["recoveryId", "clientId"] } }
+        { "if": { "properties": { "action": { "const": "readback" } }, "required": ["action"] }, "then": { "required": ["recoveryId", "clientId"] } },
+        { "if": { "properties": { "action": { "const": "resolve_import" } }, "required": ["action"] }, "then": { "required": ["requestId", "resolution"] } }
       ],
       "additionalProperties": false
     }
@@ -714,13 +717,14 @@
   },
   {
     "name": "pcb_net_query",
-    "description": "Read PCB network details from the active PCB document, optionally filtered by a network name or property.",
+    "description": "Read PCB network details from the active PCB document, optionally filtered by a network name or property. Use offset and limit to page through all/names results.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "query": { "type": "string", "default": "" },
         "mode": { "type": "string", "enum": ["all", "names", "exact"], "default": "all", "description": "all returns details, names returns only names, exact uses the official getNet API." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 },
+        "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "For all/names modes, start reading at this zero-based item index." },
         "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000 },
         "analysis": {
           "type": "object",
@@ -742,6 +746,7 @@
             "query": { "type": "string", "default": "" },
             "mode": { "enum": ["all", "names"] },
             "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 },
+            "offset": { "type": "integer", "minimum": 0, "default": 0 },
             "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000 }
           },
           "additionalProperties": false
