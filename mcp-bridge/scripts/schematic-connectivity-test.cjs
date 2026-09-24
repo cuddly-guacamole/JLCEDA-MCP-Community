@@ -39,10 +39,22 @@ function port(state) {
 	};
 }
 
+function attribute(id, parentId, key, value, x, y) {
+	return {
+		getState_PrimitiveId: () => id,
+		getState_ParentPrimitiveId: () => parentId,
+		getState_Key: () => key,
+		getState_Value: () => value,
+		getState_X: () => x,
+		getState_Y: () => y,
+	};
+}
+
 async function main() {
 	const wires = [wire('wire-a', 'NET_A', [0, 0, 100, 0])];
 	const ports = [{ id: 'port-a', net: 'NET_A', x: 0, y: 0 }];
 	let wireReads = 0;
+	const attributes = [];
 	let wireCreates = 0;
 	let portCreates = 0;
 	let createdPortReadbackDeltaY = 0;
@@ -71,6 +83,9 @@ async function main() {
 				ports.push(state);
 				return port(state);
 			},
+		},
+		sch_PrimitiveAttribute: {
+			async getAll() { return attributes; },
 		},
 		sch_Drc: { async check() { return true; } },
 	};
@@ -189,6 +204,61 @@ async function main() {
 	assert.deepEqual(directFlagConflict.conflictingPrimitiveIds, ['flag-b']);
 	const moveOntoFlag = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-a', x: 100, y: 0 });
 	assert.deepEqual(moveOntoFlag.conflictingPrimitiveIds, ['flag-b']);
+
+	// Pro NetLabels are NET attributes of wires; the displayed text may be away
+	// from the electrical contact, and the wire's cached net getter may be empty.
+	wires.splice(0, wires.length, wire('labeled-wire', '', [0, 0, 100, 0]));
+	ports.splice(0, ports.length);
+	attributes.splice(0, attributes.length);
+	attributes.push(attribute('label-a', 'labeled-wire', 'NET', 'NET_A', 500, 500));
+	attributes.push(attribute('component-net', 'component-id', 'NET', 'NET_B', 50, 0));
+	attributes.push(attribute('designator', 'labeled-wire', 'Designator', 'NET_B', 50, 0));
+	const labeledWireLine = [100, 0, 150, 0];
+	const labelConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_B', allowedWireIds: ['labeled-wire'] });
+	assert.equal(labelConflict.canCreate, false);
+	assert.deepEqual(labelConflict.conflictingNetWireIds, ['labeled-wire']);
+	assert.deepEqual(labelConflict.touches[0].effectiveNets, ['NET_A']);
+	const createsBeforeLabelConflict = wireCreates;
+	const blockedByLabel = await handleSchematicConnectivityTask({ action: 'wire_create', line: labeledWireLine, net: 'NET_B', allowedWireIds: ['labeled-wire'] });
+	assert.equal(blockedByLabel.canCreate, false);
+	assert.equal(wireCreates, createsBeforeLabelConflict);
+	const sameLabelNet = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_A', allowedWireIds: ['labeled-wire'] });
+	assert.equal(sameLabelNet.canCreate, true);
+	wires[0] = wire('labeled-wire', 'NET_STALE', [0, 0, 100, 0]);
+	const refreshedLabelNet = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_A', allowedWireIds: ['labeled-wire'] });
+	assert.equal(refreshedLabelNet.canCreate, true, 'the NET attribute takes precedence over a lagging wire net getter');
+	attributes[0] = attribute('label-a', 'labeled-wire', 'NET', '', 500, 500);
+	const clearedLabelNet = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_B', allowedWireIds: ['labeled-wire'] });
+	assert.equal(clearedLabelNet.canCreate, true, 'an empty NET attribute must override a stale wire net getter');
+	attributes[0] = attribute('label-a', 'labeled-wire', 'NET', 'NET_A', 500, 500);
+	wires.splice(0, wires.length, wire('labeled-wire', '', [0, 0, 50, 0]), wire('cached-wire', 'NET_STALE', [50, 0, 100, 0]));
+	const connectedLabelNet = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_A', allowedWireIds: ['cached-wire'] });
+	assert.equal(connectedLabelNet.canCreate, true, 'a NET label overrides stale net getters throughout the connected wire group');
+	assert.deepEqual(connectedLabelNet.touches[0].effectiveNets, ['NET_A']);
+	const portCreatesBeforeLabelConflict = portCreates;
+	const portBlockedByLabel = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_B', x: 50, y: 0 });
+	assert.equal(portBlockedByLabel.reason, 'target_net_conflict');
+	assert.deepEqual(portBlockedByLabel.conflictingPrimitiveIds, ['labeled-wire']);
+	assert.equal(portCreates, portCreatesBeforeLabelConflict);
+	ports.push({ id: 'moving-port', net: 'NET_B', x: 200, y: 0 });
+	const moveBlockedByLabel = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'moving-port', x: 50, y: 0 });
+	assert.equal(moveBlockedByLabel.reason, 'target_net_conflict');
+	assert.deepEqual(moveBlockedByLabel.conflictingPrimitiveIds, ['labeled-wire']);
+	assert.equal(ports[0].x, 200);
+	wires.splice(0, wires.length);
+	attributes.splice(0, attributes.length, attribute('independent-label', '', 'NET', 'NET_A', 25, 0));
+	const independentLabelPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [0, 0, 50, 0], net: 'NET_B' });
+	assert.equal(independentLabelPreview.canCreate, false);
+	assert.deepEqual(independentLabelPreview.conflictingNetLabelIds, ['independent-label']);
+	const independentLabelCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [0, 0, 50, 0], net: 'NET_B' });
+	assert.equal(independentLabelCreate.canCreate, false);
+	assert.equal(wireCreates, createsBeforeLabelConflict);
+	const portAtIndependentLabel = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_B', x: 25, y: 0 });
+	assert.deepEqual(portAtIndependentLabel.conflictingPrimitiveIds, ['independent-label']);
+	const moveAtIndependentLabel = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'moving-port', x: 25, y: 0 });
+	assert.deepEqual(moveAtIndependentLabel.conflictingPrimitiveIds, ['independent-label']);
+	assert.equal(ports[0].x, 200);
+	attributes.splice(0, attributes.length);
 
 	// Joining two unnamed wires must see their distant, different NetPorts.
 	wires.splice(0, wires.length, wire('unnamed-a', '', [0, 0, 100, 0]), wire('unnamed-b', '', [200, 0, 300, 0]));

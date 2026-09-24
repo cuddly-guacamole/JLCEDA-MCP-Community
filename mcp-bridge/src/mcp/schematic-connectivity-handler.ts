@@ -24,6 +24,14 @@ interface ComponentState {
 	primitive: Record<string, unknown>;
 }
 
+interface WireNetLabel {
+	id: string;
+	parentWireId: string;
+	net: string;
+	x: number | null;
+	y: number | null;
+}
+
 function requiredNumber(value: unknown, name: string): number {
 	if (typeof value !== 'number' || !Number.isFinite(value))
 		throw new TypeError(`${name} must be a finite number.`);
@@ -141,6 +149,32 @@ async function readComponents(api: Record<string, unknown>): Promise<ComponentSt
 	}));
 }
 
+async function readWireNetLabels(eda: Record<string, unknown>): Promise<WireNetLabel[]> {
+	const api = eda.sch_PrimitiveAttribute;
+	if (!isPlainObjectRecord(api) || typeof api.getAll !== 'function')
+		throw new TypeError('EDA sch_PrimitiveAttribute.getAll API is unavailable.');
+	const result = await (api.getAll as () => Promise<unknown>).call(api);
+	if (!Array.isArray(result))
+		throw new TypeError('EDA sch_PrimitiveAttribute.getAll did not return an array.');
+	// Pro stores wire labels as NET attributes. Their display coordinates can be
+	// away from the wire, so use the parent ID for those labels.
+	return result.filter(isPlainObjectRecord).filter(primitive => String(getSyncState(primitive, 'getState_Key', '')) === 'NET').map((primitive) => {
+		const x = getSyncState<unknown>(primitive, 'getState_X', null);
+		const y = getSyncState<unknown>(primitive, 'getState_Y', null);
+		return {
+			id: String(getSyncState(primitive, 'getState_PrimitiveId', '')),
+			parentWireId: String(getSyncState(primitive, 'getState_ParentPrimitiveId', '')),
+			net: String(getSyncState(primitive, 'getState_Value', '')).trim(),
+			x: typeof x === 'number' && Number.isFinite(x) ? x : null,
+			y: typeof y === 'number' && Number.isFinite(y) ? y : null,
+		};
+	});
+}
+
+function unparentedLabels(labels: WireNetLabel[]): Array<WireNetLabel & Point> {
+	return labels.filter((label): label is WireNetLabel & Point => !label.parentWireId && label.net.length > 0 && label.x !== null && label.y !== null);
+}
+
 function wireSnapshot(wire: WireState): string {
 	return JSON.stringify({ line: wire.line, net: wire.net });
 }
@@ -160,7 +194,7 @@ function segmentsConnect(first: Segment, second: Segment): boolean {
 		|| pointOnSegment(second.end, first);
 }
 
-function effectiveWireNets(wires: WireState[], components: ComponentState[]): Map<string, Set<string>> {
+function effectiveWireNets(wires: WireState[], components: ComponentState[], labels: WireNetLabel[]): Map<string, Set<string>> {
 	const parent = wires.map((_, index) => index);
 	const root = (index: number): number => {
 		while (parent[index] !== index) {
@@ -184,8 +218,38 @@ function effectiveWireNets(wires: WireState[], components: ComponentState[]): Ma
 		names.add(name);
 		namesByRoot.set(group, names);
 	};
-	for (let index = 0; index < wires.length; index++)
-		addName(index, wires[index].net);
+	const labelsByWireId = new Map<string, Set<string>>();
+	for (const label of labels) {
+		if (!label.parentWireId)
+			continue;
+		const names = labelsByWireId.get(label.parentWireId) ?? new Set<string>();
+		names.add(label.net);
+		labelsByWireId.set(label.parentWireId, names);
+	}
+	for (const label of unparentedLabels(labels)) {
+		for (const wire of wires) {
+			if (!wire.segments.some(segment => pointOnSegment(label, segment)))
+				continue;
+			const names = labelsByWireId.get(wire.id) ?? new Set<string>();
+			names.add(label.net);
+			labelsByWireId.set(wire.id, names);
+		}
+	}
+	const labeledGroups = new Set<number>();
+	for (let index = 0; index < wires.length; index++) {
+		const labelNames = labelsByWireId.get(wires[index].id);
+		if (!labelNames)
+			continue;
+		labeledGroups.add(root(index));
+		for (const name of labelNames)
+			addName(index, name);
+	}
+	// A NET attribute names the entire connected group. The cached net getter
+	// on another wire in that group can also lag behind an attribute change.
+	for (let index = 0; index < wires.length; index++) {
+		if (!labeledGroups.has(root(index)))
+			addName(index, wires[index].net);
+	}
 	for (const component of components) {
 		if ((component.type !== 'netport' && component.type !== 'netflag') || !component.net)
 			continue;
@@ -226,19 +290,23 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 	const api = wireApi(eda);
 	const before = await readWires(api);
 	const components = await readComponents(componentApi(eda));
-	const wireNets = effectiveWireNets(before, components);
+	const labels = await readWireNetLabels(eda);
+	const wireNets = effectiveWireNets(before, components, labels);
 	const beforeById = new Map(before.map(wire => [wire.id, wireSnapshot(wire)]));
 	const touched = before.filter(wire => wire.segments.some(existing => segments.some(proposed => segmentsConnect(existing, proposed))));
 	const touchedPorts = components.filter(component => (component.type === 'netport' || component.type === 'netflag') && segments.some(segment => pointOnSegment({ x: component.x, y: component.y }, segment)));
+	const touchedLabels = unparentedLabels(labels).filter(label => segments.some(segment => pointOnSegment(label, segment)));
 	const conflictingNets = touched.filter(wire => net !== undefined && [...(wireNets.get(wire.id) ?? [])].some(name => name !== net));
 	const conflictingPorts = touchedPorts.filter(component => net !== undefined && component.net.length > 0 && component.net !== net);
-	const touchedNetNames = new Set([...touched.flatMap(wire => [...(wireNets.get(wire.id) ?? [])]), ...touchedPorts.map(component => component.net)].filter(name => name.length > 0));
+	const conflictingLabels = touchedLabels.filter(label => net !== undefined && label.net !== net);
+	const touchedNetNames = new Set([...touched.flatMap(wire => [...(wireNets.get(wire.id) ?? [])]), ...touchedPorts.map(component => component.net), ...touchedLabels.map(label => label.net)].filter(name => name.length > 0));
 	const unapproved = touched.filter(wire => !allowed.has(wire.id));
 	const touches = touched.map(wire => ({ primitiveId: wire.id, net: wire.net, effectiveNets: [...(wireNets.get(wire.id) ?? [])], allowed: allowed.has(wire.id) }));
 	const portTouches = touchedPorts.map(component => ({ primitiveId: component.id, net: component.net }));
-	const canCreate = conflictingNets.length === 0 && conflictingPorts.length === 0 && touchedNetNames.size <= 1 && unapproved.length === 0;
+	const labelTouches = touchedLabels.map(label => ({ primitiveId: label.id, net: label.net }));
+	const canCreate = conflictingNets.length === 0 && conflictingPorts.length === 0 && conflictingLabels.length === 0 && touchedNetNames.size <= 1 && unapproved.length === 0;
 	if (action === 'wire_preview' || !canCreate)
-		return { ok: canCreate, action, canCreate, touches, portTouches, conflictingNetWireIds: conflictingNets.map(wire => wire.id), conflictingNetPortIds: conflictingPorts.map(component => component.id), mixedNamedNets: touchedNetNames.size > 1, unapprovedWireIds: unapproved.map(wire => wire.id) };
+		return { ok: canCreate, action, canCreate, touches, portTouches, labelTouches, conflictingNetWireIds: conflictingNets.map(wire => wire.id), conflictingNetPortIds: conflictingPorts.map(component => component.id), conflictingNetLabelIds: conflictingLabels.map(label => label.id), mixedNamedNets: touchedNetNames.size > 1, unapprovedWireIds: unapproved.map(wire => wire.id) };
 	if (typeof api.create !== 'function')
 		throw new TypeError('EDA sch_PrimitiveWire.create API is unavailable.');
 	const result = await (api.create as (line: number[], net?: string) => Promise<unknown>).call(api, normalizedLine, net);
@@ -264,6 +332,7 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		unexpectedRemovedWireIds,
 		touches,
 		portTouches,
+		labelTouches,
 		readbackRequired: true,
 	};
 }
@@ -284,10 +353,12 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		return { ok: true, action: 'netport_move', id, net: current.net, from: { x: current.x, y: current.y }, to: target, unchanged: true, netlistReadback: await readTargetNetwork(current.net), semanticScope: 'current_schematic_page_hierarchical_port' };
 	const otherPort = components.find(component => component.id !== id && (component.type === 'netport' || component.type === 'netflag') && samePoint(component, target) && component.net !== current.net);
 	const wires = await readWires(wireApi(eda));
-	const wireNets = effectiveWireNets(wires, components);
+	const labels = await readWireNetLabels(eda);
+	const wireNets = effectiveWireNets(wires, components, labels);
+	const otherLabel = unparentedLabels(labels).find(label => samePoint(label, target) && label.net !== current.net);
 	const foreignWire = wires.find(wire => [...(wireNets.get(wire.id) ?? [])].some(name => name !== current.net) && wire.segments.some(segment => pointOnSegment({ x, y }, segment)));
-	if (otherPort || foreignWire)
-		return { ok: false, action: 'netport_move', reason: 'target_net_conflict', id, target: { x, y }, conflictingPrimitiveIds: [otherPort?.id, foreignWire?.id].filter(Boolean) };
+	if (otherPort || otherLabel || foreignWire)
+		return { ok: false, action: 'netport_move', reason: 'target_net_conflict', id, target: { x, y }, conflictingPrimitiveIds: [otherPort?.id, otherLabel?.id, foreignWire?.id].filter(Boolean) };
 	const primitive = typeof current.primitive.toAsync === 'function'
 		? (current.primitive.toAsync as () => unknown).call(current.primitive)
 		: current.primitive;
@@ -347,12 +418,14 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 		throw new TypeError('EDA sch_PrimitiveComponent.createNetPort API is unavailable.');
 	const before = await readComponents(api);
 	const wires = await readWires(wireApi(eda));
-	const wireNets = effectiveWireNets(wires, before);
+	const labels = await readWireNetLabels(eda);
+	const wireNets = effectiveWireNets(wires, before, labels);
 	const otherPort = before.find(component => (component.type === 'netport' || component.type === 'netflag') && samePoint(component, target) && component.net !== net);
 	const existingPort = before.find(component => component.type === 'netport' && samePoint(component, target) && component.net === net);
+	const otherLabel = unparentedLabels(labels).find(label => samePoint(label, target) && label.net !== net);
 	const foreignWire = wires.find(wire => [...(wireNets.get(wire.id) ?? [])].some(name => name !== net) && wire.segments.some(segment => pointOnSegment({ x, y }, segment)));
-	if (otherPort || foreignWire)
-		return { ok: false, action: 'netport_create', reason: 'target_net_conflict', target: { x, y }, conflictingPrimitiveIds: [otherPort?.id, foreignWire?.id].filter(Boolean) };
+	if (otherPort || otherLabel || foreignWire)
+		return { ok: false, action: 'netport_create', reason: 'target_net_conflict', target: { x, y }, conflictingPrimitiveIds: [otherPort?.id, otherLabel?.id, foreignWire?.id].filter(Boolean) };
 	// The documented component API has no NetPort direction getter; position and net cannot prove a match.
 	if (existingPort)
 		return { ok: false, action: 'netport_create', reason: 'existing_port_direction_unverified', net, requestedDirection: direction, target: { x, y }, conflictingPrimitiveIds: [existingPort.id] };
