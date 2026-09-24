@@ -197,6 +197,31 @@
     }
   },
   {
+    "name": "schematic_connectivity_action",
+    "description": "安全预览和创建原理图导线，或在当前图页创建、移动 NetPort。NetPort 是层次图端口，可用于同页连接；跨页连接请用跨页连接标识。导线接触现有导线时须先预览并明确列出允许接触的导线 ID；写入后需回读网表确认。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["wire_preview", "wire_create", "netport_create", "netport_move"] },
+        "line": { "type": "array", "items": { "type": "number" }, "minItems": 4, "description": "导线坐标，平铺为 [x1, y1, x2, y2, ...]。" },
+        "net": { "type": "string", "minLength": 1, "description": "可选的目标网络名。" },
+        "direction": { "type": "string", "enum": ["IN", "OUT", "BI"], "default": "BI", "description": "NetPort 方向。" },
+        "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "明确允许新导线接触的现有导线图元 ID。" },
+        "id": { "type": "string", "minLength": 1, "description": "待移动 NetPort 的图元 ID。" },
+        "x": { "type": "number", "description": "NetPort 目标 X 坐标。" },
+        "y": { "type": "number", "description": "NetPort 目标 Y 坐标。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "wire_preview" }, "line": { "type": "array", "items": { "type": "number" }, "minItems": 4 }, "net": { "type": "string", "minLength": 1 }, "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "line"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "wire_create" }, "line": { "type": "array", "items": { "type": "number" }, "minItems": 4 }, "net": { "type": "string", "minLength": 1 }, "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "line"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "netport_create" }, "net": { "type": "string", "minLength": 1 }, "direction": { "type": "string", "enum": ["IN", "OUT", "BI"], "default": "BI" }, "x": { "type": "number" }, "y": { "type": "number" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "net", "x", "y"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "netport_move" }, "id": { "type": "string", "minLength": 1 }, "x": { "type": "number" }, "y": { "type": "number" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "id", "x", "y"], "additionalProperties": false }
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "schematic_review",
     "description": "读取全工程所有原理图页面的网表文件。",
     "inputSchema": {

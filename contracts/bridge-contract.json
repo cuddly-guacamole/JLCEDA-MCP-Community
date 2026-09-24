@@ -206,6 +206,12 @@
 			}
 		},
 		{
+			"toolName": "schematic_connectivity_action",
+			"path": "/bridge/jlceda/schematic/connectivity",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read"
+		},
+		{
 			"toolName": "schematic_review",
 			"path": "/bridge/jlceda/schematic/review",
 			"owner": "bridge",

@@ -393,6 +393,16 @@ const schematicDocumentSchema = z.fromJSONSchema(schematicDocumentDefinition.inp
 assert.equal(schematicDocumentSchema.safeParse({ action: 'primitive_at_point', x: 1, y: 2, ids: ['unexpected'] }).success, false);
 assert.equal(schematicDocumentSchema.safeParse({ action: 'primitives_by_id', ids: ['primitive-1'], limit: 1 }).success, false);
 
+const connectivityDefinition = definitions.find((definition) => definition.name === 'schematic_connectivity_action');
+assert.ok(connectivityDefinition);
+const connectivitySchema = z.fromJSONSchema(connectivityDefinition.inputSchema);
+assert.equal(connectivitySchema.safeParse({ action: 'wire_preview', line: [0, 0, 100, 0] }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'wire_create', line: [0, 0, 100, 0], allowedWireIds: ['wire-1'] }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'netport_create', net: 'SIGNAL', x: 10, y: 20 }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'netport_move', id: 'port-1', x: 10, y: 20 }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'netport_move', id: 'port-1', x: 10 }).success, false);
+assert.equal(connectivitySchema.safeParse({ action: 'wire_create', line: [0, 0, 100, 0], id: 'port-1' }).success, false);
+
 const pcbDocumentDefinition = definitions.find((definition) => definition.name === 'pcb_document_action');
 assert.ok(pcbDocumentDefinition);
 const pcbDocumentSchema = z.fromJSONSchema(pcbDocumentDefinition.inputSchema);
