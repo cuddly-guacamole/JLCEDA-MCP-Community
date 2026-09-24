@@ -255,9 +255,11 @@ function clearContextSyncTimer(): void {
 // 断开当前连接。
 function stopTransport(): void {
 	connecting = false;
-	if (transport) {
-		transport.close();
-		transport = undefined;
+	const currentTransport = transport;
+	transport = undefined;
+	if (currentTransport) {
+		void cleanupAllComponentPlaceSessions();
+		currentTransport.close();
 	}
 }
 
@@ -449,9 +451,11 @@ async function ensureConnected(): Promise<void> {
 			startControlledRecovery();
 		},
 		onLost: (message) => {
-			if (transport === instance) {
-				transport = undefined;
+			if (transport !== instance) {
+				return;
 			}
+			void cleanupAllComponentPlaceSessions();
+			transport = undefined;
 			connecting = false;
 			if (!started) {
 				return;

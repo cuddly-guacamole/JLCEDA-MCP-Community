@@ -55,6 +55,41 @@ interface ActivePlaceSession {
 
 const COMPONENT_PLACE_PROTOCOL = 'component-place/v1';
 const activePlaceSessions = new Map<string, ActivePlaceSession>();
+let placeSessionGeneration = 0;
+let placementModeNeedsExit = false;
+let removeExitGuardListeners: (() => void) | null = null;
+
+function requirePlacementModeExit(): void {
+	if (placementModeNeedsExit) {
+		return;
+	}
+	placementModeNeedsExit = true;
+	const docRef = (globalThis as unknown as { document?: Document }).document;
+	if (!docRef) {
+		return;
+	}
+	const clearGuard = (): void => {
+		placementModeNeedsExit = false;
+		removeExitGuardListeners?.();
+		removeExitGuardListeners = null;
+	};
+	const onMouseUp = (event: Event): void => {
+		if ((event as MouseEvent).button === 2) {
+			clearGuard();
+		}
+	};
+	const onKeyUp = (event: Event): void => {
+		if ((event as KeyboardEvent).key === 'Escape') {
+			clearGuard();
+		}
+	};
+	docRef.addEventListener('mouseup', onMouseUp, { capture: true });
+	docRef.addEventListener('keyup', onKeyUp, { capture: true });
+	removeExitGuardListeners = () => {
+		docRef.removeEventListener('mouseup', onMouseUp, { capture: true });
+		docRef.removeEventListener('keyup', onKeyUp, { capture: true });
+	};
+}
 
 function createPlaceSessionId(): string {
 	return `component_place_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -199,8 +234,12 @@ async function cleanupPlaceSession(sessionId: string): Promise<void> {
 	}
 }
 
-/** Clear interactive placement listeners when a Bridge generation is recovered. */
+/** Clear interactive placement sessions when a Bridge connection is lost or replaced. */
 export async function cleanupAllComponentPlaceSessions(): Promise<void> {
+	placeSessionGeneration += 1;
+	if ([...activePlaceSessions.values()].some(session => !session.placementExited)) {
+		requirePlacementModeExit();
+	}
 	for (const sessionId of [...activePlaceSessions.keys()]) {
 		await cleanupPlaceSession(sessionId);
 	}
@@ -254,6 +293,13 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	if (!isPlainObjectRecord(payload)) {
 		throw new TypeError('component/place/start 任务参数必须为对象。');
 	}
+	if (placementModeNeedsExit) {
+		return { ok: false, error: '上一次连接中断后，可能仍处于 EDA 器件放置模式；请先按 Esc 或右键退出，再重新放置。' };
+	}
+	if (activePlaceSessions.size > 0) {
+		return { ok: false, error: '已有器件放置会话正在进行；请先结束当前放置。' };
+	}
+	const startGeneration = placeSessionGeneration;
 
 	const component = normalizeComponentPlaceItem(payload.component, 0);
 
@@ -265,6 +311,12 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	// 必须先取基线，再把器件绑定到鼠标。用户可能在 API 返回后立即点击。
 	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, undefined, false)));
 	const baselineDesignators = await readDesignators(placeApi);
+	if (placeSessionGeneration !== startGeneration || placementModeNeedsExit) {
+		return { ok: false, error: '连接在准备器件放置时中断；请核对当前图页后再重试。' };
+	}
+	if (activePlaceSessions.size > 0) {
+		return { ok: false, error: '已有器件放置会话正在进行；请先结束当前放置。' };
+	}
 
 	const sessionId = createPlaceSessionId();
 	const session: ActivePlaceSession = {
@@ -430,6 +482,10 @@ export async function handleComponentPlaceCloseTask(payload: unknown): Promise<u
 		throw new Error('component/place/close 缺少 sessionId 参数。');
 	}
 
+	const session = activePlaceSessions.get(sessionId);
+	if (session && !session.placementExited) {
+		requirePlacementModeExit();
+	}
 	await cleanupPlaceSession(sessionId);
 	return {
 		ok: true,

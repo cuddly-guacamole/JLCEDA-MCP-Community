@@ -9,6 +9,8 @@ const {
 	handleComponentPlaceTask,
 	handleComponentPlaceStartTask,
 	handleComponentPlaceCheckTask,
+	handleComponentPlaceCloseTask,
+	cleanupAllComponentPlaceSessions,
 } = require('../src/mcp/component-place-handler.ts');
 const { handleApiInvokeTask } = require('../src/mcp/invoke-handler.ts');
 
@@ -127,6 +129,54 @@ async function main() {
 	const cancelledCheck = await handleComponentPlaceCheckTask({ sessionId: cancelledStart.sessionId });
 	assert.equal(cancelledCheck.userCancelled, true);
 	assert.equal(cancelledCheck.placed, false);
+
+	// A lost connection must retire the old session and block a new placement
+	// until the user exits the native EDA placement mode.
+	let mousePlaceCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent.placeComponentWithMouse = async () => {
+		mousePlaceCalls += 1;
+		return true;
+	};
+	const lostStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	assert.equal(lostStart.ok, true);
+	await cleanupAllComponentPlaceSessions();
+	const lostCheck = await handleComponentPlaceCheckTask({ sessionId: lostStart.sessionId });
+	assert.equal(lostCheck.ok, false);
+	const blockedAfterLoss = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	assert.equal(blockedAfterLoss.ok, false);
+	assert.match(blockedAfterLoss.error, /Esc|右键/);
+	assert.equal(mousePlaceCalls, 1);
+	rightClick();
+	const resumed = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	assert.equal(resumed.ok, true);
+	assert.equal(mousePlaceCalls, 2);
+	pressEscape();
+	assert.equal((await handleComponentPlaceCheckTask({ sessionId: resumed.sessionId })).userCancelled, true);
+
+	// A normal close before Esc (for example, after timeout) needs the same guard.
+	const closedBeforeExit = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	await handleComponentPlaceCloseTask({ sessionId: closedBeforeExit.sessionId });
+	assert.equal((await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } })).ok, false);
+	assert.equal(mousePlaceCalls, 3);
+	pressEscape();
+
+	// A disconnect during baseline read must prevent its pending start from
+	// entering mouse placement even though no session existed at disconnect.
+	let releaseBaseline;
+	let baselineStarted;
+	const baselineEntered = new Promise((resolve) => {
+		baselineStarted = resolve;
+	});
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = () => new Promise((resolve) => {
+		releaseBaseline = () => resolve([...ids]);
+		baselineStarted();
+	});
+	const pendingStart = handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	await baselineEntered;
+	await cleanupAllComponentPlaceSessions();
+	releaseBaseline();
+	assert.equal((await pendingStart).ok, false);
+	assert.equal(mousePlaceCalls, 3);
 
 	// A host annotation pass may rename existing symbols during coordinate placement.
 	let existingDesignator = 'U4';
