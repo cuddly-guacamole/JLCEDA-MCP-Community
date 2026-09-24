@@ -430,6 +430,11 @@ try {
     assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);
   }
   assert.equal(isReadOnlyBridgeRequest(connectivityPath, {}), false);
+  const invokePath = '/bridge/jlceda/api/invoke';
+  assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'eda.pcb_primitivecomponent.getall', args: [] }), true);
+  assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: ' EDA.SCH_PRIMITIVECOMPONENT.GETALL ', args: [null, false] }), true);
+  assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.GETALL', args: [null, true] }), false);
+  assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.CREATE', args: [] }), false);
   const connectivityPort = await reservePort();
   connectivityServer = new EdaBridgeServer(connectivityPort);
   await connectivityServer.start();

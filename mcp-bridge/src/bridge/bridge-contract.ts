@@ -55,12 +55,12 @@ export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean
 	if (operation?.readOnlyIfNoArgsApiFullNames || operation?.readOnlyIfCurrentPageArgsApiFullNames) {
 		if (!isRecord(payload))
 			return false;
-		const apiFullName = payload.apiFullName as string;
+		const apiFullName = String(payload.apiFullName ?? '').trim().toLowerCase();
 		const args = payload.args;
 		const noArgs = !Array.isArray(args) || args.length === 0;
 		const currentPageArgs = Array.isArray(args) && args.length === 2 && args[0] === null && args[1] === false;
-		return (noArgs && (operation.readOnlyIfNoArgsApiFullNames?.includes(apiFullName) ?? false))
-			|| (currentPageArgs && (operation.readOnlyIfCurrentPageArgsApiFullNames?.includes(apiFullName) ?? false));
+		return (noArgs && (operation.readOnlyIfNoArgsApiFullNames?.some(name => name.toLowerCase() === apiFullName) ?? false))
+			|| (currentPageArgs && (operation.readOnlyIfCurrentPageArgsApiFullNames?.some(name => name.toLowerCase() === apiFullName) ?? false));
 	}
 	if (operation?.readOnlyIf) {
 		const condition = operation.readOnlyIf;
