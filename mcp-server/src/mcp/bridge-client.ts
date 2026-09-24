@@ -631,10 +631,13 @@ export class EdaBridgeServer {
     const requestId = String(message.requestId ?? '');
     const pending = this.pendingRequests.get(requestId);
     if (!pending || pending.clientId !== peer.clientId || pending.edaSocket !== peer.socket || pending.leaseTerm !== Number(message.leaseTerm)) {
-      // A timed-out EDA Promise can still send its result later. Seeing that
-      // result is the only safe indication that the background mutation settled.
+      // A Bridge task timeout or an unknown commit state does not mean the
+      // underlying EDA Promise settled. Keep the write quarantine in that case.
       const diagnostic = this.recoveryDiagnostics.get(requestId);
-      if (diagnostic?.clientId === peer.clientId) {
+      const bridgeTimedOut = getBridgeTaskTimeoutMs(message.error) !== undefined
+        || (isRecord(message.error) && message.error.code === 'BRIDGE_TASK_TIMEOUT');
+      const commitUnknown = isRecord(message.result) && message.result.commitState === 'unknown';
+      if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown) {
         this.recoveryDiagnostics.delete(requestId);
       }
       return;
@@ -644,6 +647,13 @@ export class EdaBridgeServer {
     const bridgeTimeoutMs = getBridgeTaskTimeoutMs(message.error);
     if (bridgeTimeoutMs !== undefined) {
       this.recordTimedOutRequest(requestId, pending, bridgeTimeoutMs);
+    }
+    else if (isPcbAutoLayoutRequest(pending.path ?? '', pending.payload)
+      && isRecord(message.result)
+      && message.result.ok === false
+      && message.result.commitState === 'unknown'
+      && message.result.retryBlocked === true) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native autoLayout timeout');
     }
     if (isRecord(message.error) && typeof message.error.message === 'string') {
       const code = typeof message.error.code === 'string' ? message.error.code : undefined;

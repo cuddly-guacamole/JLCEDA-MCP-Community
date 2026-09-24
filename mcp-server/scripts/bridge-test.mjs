@@ -146,6 +146,11 @@ let reconnectTarget;
 let disconnectedRecoveryServer;
 let disconnectedRecoveryOld;
 let disconnectedRecoveryTarget;
+let nativeLayoutServer;
+let nativeLayoutOld;
+let nativeLayoutNew;
+let lateUnknownServer;
+let lateUnknownClient;
 
 try {
   await mainServer.start();
@@ -586,9 +591,13 @@ try {
     'disconnected-recovery-old',
     { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
+  let disconnectedLayoutTask;
   disconnectedRecoveryOld.socket.on('message', (data) => {
     const message = JSON.parse(data.toString());
     if (message.type === 'bridge/task') {
+      if (message.payload?.apiFullName === 'eda.pcb_Document.autoLayout') {
+        disconnectedLayoutTask = message;
+      }
       disconnectedRecoveryOld.socket.send(JSON.stringify({
         type: 'bridge/task-started',
         clientId: 'disconnected-recovery-old',
@@ -611,6 +620,23 @@ try {
   }, 100);
   await assert.rejects(disconnectedRequest, /Request execution timeout/);
   await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.ok(disconnectedLayoutTask);
+  const lateTimeoutProcessed = waitForMessage(disconnectedRecoveryOld.socket, (message) => message.type === 'bridge/heartbeat-ack');
+  disconnectedRecoveryOld.socket.send(JSON.stringify({
+    type: 'bridge/result',
+    clientId: 'disconnected-recovery-old',
+    requestId: disconnectedLayoutTask.requestId,
+    leaseTerm: disconnectedLayoutTask.leaseTerm,
+    error: { code: 'BRIDGE_TASK_TIMEOUT', message: 'Bridge task timed out after 100ms: /bridge/jlceda/api/invoke', timeoutMs: 100 },
+  }));
+  disconnectedRecoveryOld.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'disconnected-recovery-old', sentAt: Date.now() }));
+  await lateTimeoutProcessed;
+  const lateTimeoutSnapshot = await disconnectedRecoveryServer.request('/bridge/admin/clients', {}, 2000);
+  assert.ok(lateTimeoutSnapshot.clients
+    .find((client) => client.clientId === 'disconnected-recovery-old')
+    .quarantine.diagnostics.some((diagnostic) => diagnostic.requestId === disconnectedLayoutTask.requestId),
+  'late BRIDGE_TASK_TIMEOUT must preserve the pending write diagnostic');
+  await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-after-late-timeout', {}, 2000), /writes are blocked pending recovery readback/);
   const disconnectedReadOnlyTimeout = disconnectedRecoveryServer.request('/bridge/jlceda/context', {}, 100);
   await assert.rejects(disconnectedReadOnlyTimeout, /Request execution timeout/);
   disconnectedRecoveryOld.socket.close();
@@ -697,6 +723,99 @@ try {
   disconnectedRecoveryTarget = undefined;
   disconnectedRecoveryServer.close();
   disconnectedRecoveryServer = undefined;
+
+  const nativeLayoutPort = await reservePort();
+  nativeLayoutServer = new EdaBridgeServer(nativeLayoutPort);
+  await nativeLayoutServer.start();
+  nativeLayoutOld = await registerEda(
+    `ws://127.0.0.1:${nativeLayoutPort}/bridge/ws${tokenQuery}`,
+    'native-layout-page',
+    { documentUuid: 'native-layout-document', projectUuid: 'native-layout-project', pageKind: 'pcb', pageUuid: 'native-layout-pcb' },
+  );
+  attachTaskResponder(nativeLayoutOld.socket, 'native-layout-page', () => ({
+    apiFullName: 'eda.pcb_Document.autoLayout',
+    ok: false,
+    commitState: 'unknown',
+    retryBlocked: true,
+    pcbUuid: 'native-layout-pcb',
+    error: 'RPC Call autoLayout Timed Out',
+  }));
+  const nativeLayoutResult = await nativeLayoutServer.request('/bridge/jlceda/api/invoke', {
+    apiFullName: 'eda.pcb_Document.autoLayout', args: [],
+  }, 2000);
+  assert.equal(nativeLayoutResult.commitState, 'unknown');
+  const nativeLayoutSnapshot = await nativeLayoutServer.request('/bridge/admin/clients', {}, 2000);
+  const nativeLayoutDiagnostic = nativeLayoutSnapshot.clients[0].quarantine.diagnostics[0];
+  assert.equal(nativeLayoutDiagnostic.requiredReadback, 'pcb_component_positions');
+  assert.equal(nativeLayoutDiagnostic.uncertaintyReason, 'native autoLayout timeout');
+  await assert.rejects(nativeLayoutServer.request('/bridge/test/write-after-native-layout-timeout', {}, 2000), /writes are blocked pending recovery readback/);
+  nativeLayoutOld.socket.close();
+  await waitUntil(async () => (await nativeLayoutServer.request('/bridge/admin/clients', {}, 2000)).clients[0].ready === false);
+  const nativeLayoutRecovery = await nativeLayoutServer.request('/bridge/admin/recover-client', {
+    confirm: true, requestId: nativeLayoutDiagnostic.requestId,
+  }, 2000);
+  nativeLayoutNew = await registerEda(
+    `ws://127.0.0.1:${nativeLayoutPort}/bridge/ws${tokenQuery}`,
+    'native-layout-page',
+    { documentUuid: 'native-layout-document', projectUuid: 'native-layout-project', pageKind: 'pcb', pageUuid: 'native-layout-pcb' },
+  );
+  attachTaskResponder(nativeLayoutNew.socket, 'native-layout-page', (message) => message.path === '/bridge/jlceda/context'
+    ? { currentDocumentInfo: { uuid: 'native-layout-document', parentProjectUuid: 'native-layout-project' }, currentProjectInfo: { uuid: 'native-layout-project' }, currentPcbInfo: { uuid: 'native-layout-pcb' } }
+    : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ primitiveId: 'native-component-1', designator: 'R1', x: 1, y: 2, rotation: 0 }], componentCount: 1 });
+  await assert.rejects(nativeLayoutServer.request('/bridge/admin/recover-client', {
+    action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-page',
+    readbackPath: '/bridge/jlceda/context',
+  }, 2000), /autoLayout requires eda.pcb_PrimitiveComponent.getAll/);
+  const nativeLayoutReadback = await nativeLayoutServer.request('/bridge/admin/recover-client', {
+    action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-page',
+    readbackPath: '/bridge/jlceda/api/invoke',
+    readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
+  }, 2000);
+  assert.equal(nativeLayoutReadback.readbackVerified, true);
+  assert.equal(nativeLayoutReadback.writesRemainBlocked, false);
+  nativeLayoutNew.socket.close();
+  nativeLayoutOld = undefined;
+  nativeLayoutNew = undefined;
+  nativeLayoutServer.close();
+  nativeLayoutServer = undefined;
+
+  const lateUnknownPort = await reservePort();
+  lateUnknownServer = new EdaBridgeServer(lateUnknownPort);
+  await lateUnknownServer.start();
+  lateUnknownClient = await registerEda(
+    `ws://127.0.0.1:${lateUnknownPort}/bridge/ws${tokenQuery}`,
+    'late-unknown-page',
+    { documentUuid: 'late-unknown-document', projectUuid: 'late-unknown-project', pageKind: 'pcb', pageUuid: 'late-unknown-pcb' },
+  );
+  let lateUnknownTask;
+  lateUnknownClient.socket.on('message', (data) => {
+    const message = JSON.parse(data.toString());
+    if (message.type !== 'bridge/task') return;
+    lateUnknownTask = message;
+    lateUnknownClient.socket.send(JSON.stringify({
+      type: 'bridge/task-started', clientId: 'late-unknown-page',
+      requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+    }));
+  });
+  await assert.rejects(lateUnknownServer.request('/bridge/jlceda/api/invoke', {
+    apiFullName: 'eda.pcb_Document.autoLayout', args: [],
+  }, 100), /Request execution timeout/);
+  assert.ok(lateUnknownTask);
+  const lateUnknownProcessed = waitForMessage(lateUnknownClient.socket, (message) => message.type === 'bridge/heartbeat-ack');
+  lateUnknownClient.socket.send(JSON.stringify({
+    type: 'bridge/result', clientId: 'late-unknown-page',
+    requestId: lateUnknownTask.requestId, leaseTerm: lateUnknownTask.leaseTerm,
+    result: { apiFullName: 'eda.pcb_Document.autoLayout', ok: false, commitState: 'unknown', retryBlocked: true, pcbUuid: 'late-unknown-pcb' },
+  }));
+  lateUnknownClient.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'late-unknown-page', sentAt: Date.now() }));
+  await lateUnknownProcessed;
+  const lateUnknownSnapshot = await lateUnknownServer.request('/bridge/admin/clients', {}, 2000);
+  assert.equal(lateUnknownSnapshot.clients[0].quarantine.diagnostics[0].requestId, lateUnknownTask.requestId);
+  await assert.rejects(lateUnknownServer.request('/bridge/test/write-after-late-unknown', {}, 2000), /writes are blocked pending recovery readback/);
+  lateUnknownClient.socket.close();
+  lateUnknownClient = undefined;
+  lateUnknownServer.close();
+  lateUnknownServer = undefined;
 
   const disconnectPort = await reservePort();
   disconnectServer = new EdaBridgeServer(disconnectPort);
@@ -1052,6 +1171,9 @@ try {
   reconnectTarget?.socket.close();
   disconnectedRecoveryOld?.socket.close();
   disconnectedRecoveryTarget?.socket.close();
+  nativeLayoutOld?.socket.close();
+  nativeLayoutNew?.socket.close();
+  lateUnknownClient?.socket.close();
   expiryServer?.close();
   livenessServer?.close();
   queueServer?.close();
@@ -1061,6 +1183,8 @@ try {
   queuedDisconnectServer?.close();
   reconnectServer?.close();
   disconnectedRecoveryServer?.close();
+  nativeLayoutServer?.close();
+  lateUnknownServer?.close();
   secondaryServer.close();
   mainServer.close();
   if (originalToken === undefined) {
