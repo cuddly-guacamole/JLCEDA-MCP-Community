@@ -341,7 +341,7 @@ export async function handlePcbDocumentTask(payload: unknown): Promise<unknown> 
 			importContext,
 			commitState: imported === true ? 'pending_confirmation' : 'not_started',
 			requiresNativeConfirmation: imported === true,
-			verification: imported === true ? 'Apply Changes in EDA, then read back PCB components and nets.' : undefined,
+			verification: imported === true ? 'After applying or cancelling the native EDA dialog and confirming it closed, get this requestId from bridge_clients and call bridge_recover_client with action=resolve_import, confirm=true, and resolution=applied or cancelled. The Server then reads back all PCB components and nets before unblocking writes.' : undefined,
 		};
 	}
 	const methodName = action === 'import_auto_route_json' ? 'importAutoRouteJsonFile' : action === 'import_auto_route_ses' ? 'importAutoRouteSesFile' : 'importAutoLayoutJsonFile';
