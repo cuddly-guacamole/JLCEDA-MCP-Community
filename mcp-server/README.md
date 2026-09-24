@@ -32,7 +32,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_layout_check` 对当前原理图执行保守的符号/引脚/属性/导线矩形碰撞检查，并显式报告属性几何和页面边界能力是否可用。修复模式需要 `confirm: true`，只移动属性文本，不改变电气连接。
 
-`schematic_connectivity_action` 提供 `wire_preview`、`wire_create`、`netport_create` 和 `netport_move`。先预览导线与现有导线的电气接触，再把确实要连接的导线 ID 传给 `allowedWireIds`；没有连接点的纯十字交叉不算接触，不同已命名网络的接触会被拒绝。创建后返回受影响导线 ID，仍需复查网表。NetPort 在当前图页创建或移动并回读图元；新建时还返回目标网络的引脚列表。NetPort 是层次图端口，可用于同页连接，不应当作跨页连接标识。
+`schematic_connectivity_action` 提供 `wire_preview`、`wire_create`、`netport_create` 和 `netport_move`。新导线的 `line` 最多包含 512 个数（256 个坐标点）。先预览导线与现有导线的电气接触，再把确实要连接的导线 ID 传给 `allowedWireIds`；没有连接点的纯十字交叉不算接触，不同已命名网络的接触会被拒绝。创建后返回受影响导线 ID，仍需复查网表。NetPort 在当前图页创建或移动并回读图元；新建时还返回目标网络的引脚列表。NetPort 是层次图端口，可用于同页连接，不应当作跨页连接标识。
 
 Server 提供 `schematic_document_action`，用于受限地检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置，并执行视图导航、图元选择、属性读取、保存和变更导入。
 

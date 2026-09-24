@@ -8,7 +8,7 @@
 - `bridge_recover_client`：不可取消 EDA 修改超时时，先从 `bridge_clients` 取得超时诊断的 `requestId`，再调用 `action=recover` 建立恢复会话。底层调用若持续挂起或 PCB 自动布局的提交状态未知，此后须重启原 EDA 宿主以终止旧调用；待新 Bridge 连接建立，按原始文档与图页身份选择新客户端，再对同一图页执行 `action=readback`。诊断未记录图页 UUID 时可提供 `expectedPageUuid`。原理图当前页器件回读使用 `api_invoke` 调用 `getAllPrimitiveId` 或 `getAll`，传入 `args:[null,false]`；PCB 器件回读使用无参数的 `eda.pcb_PrimitiveComponent.getAll`。回读前始终阻止写操作，超时修改可能已经完成。
 - `schematic_document_action`：检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置；执行视图导航、图元选择、图元属性/BBox 读取、保存和变更导入。
 - `schematic_layout_check`：基于结构化 EDA 几何估算原理图符号、引脚、属性文本、网络标签和导线重叠，报告密集区域与可选页面越界；`mode: "fix"` 仅在 `confirm: true` 时移动属性文本。
-- `schematic_connectivity_action`：预览新导线与现有导线的接触、明确允许接触后创建导线，并创建或移动当前图页 NetPort；返回图元和网络回读状态。NetPort 适合同页连接与层次图端口，跨页连接应使用跨页连接标识。
+- `schematic_connectivity_action`：预览新导线与现有导线的接触、明确允许接触后创建导线，并创建或移动当前图页 NetPort；单条新导线最多传入 256 个坐标点。返回图元和网络回读状态。NetPort 适合同页连接与层次图端口，跨页连接应使用跨页连接标识。
 - `schematic_pages_manage`：在 `confirm: true` 时创建、复制、重命名或完整重排原理图页面。重排必须提供每个当前页面 UUID，Bridge 会重新读取并验证结果；不提供删除功能。
 - `pcb_drc_check`：读取 PCB 设计规则检查结果。
 - `pcb_net_query`：按条件和数量限制查询当前 PCB 网络；精确网络图元过滤使用官方 `EPCB_PrimitiveType` 枚举。

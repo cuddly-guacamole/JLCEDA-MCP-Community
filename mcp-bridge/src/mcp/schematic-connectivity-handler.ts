@@ -6,6 +6,7 @@ interface Segment { start: Point; end: Point }
 type ConnectivityAction = 'wire_preview' | 'wire_create' | 'netport_create' | 'netport_move';
 // EDA readback may differ from grid coordinates by a few floating-point ulps.
 const COORDINATE_EPSILON = 1e-6;
+const MAX_WIRE_LINE_COORDINATES = 512;
 
 interface WireState {
 	id: string;
@@ -198,6 +199,8 @@ function effectiveWireNets(wires: WireState[], components: ComponentState[]): Ma
 
 async function handleWireAction(action: 'wire_preview' | 'wire_create', payload: Record<string, unknown>, eda: Record<string, unknown>): Promise<unknown> {
 	const line = payload.line;
+	if (Array.isArray(line) && line.length > MAX_WIRE_LINE_COORDINATES)
+		throw new RangeError(`line must contain at most ${MAX_WIRE_LINE_COORDINATES} coordinates.`);
 	const inputSegments = segmentsFromFlatLine(line);
 	if (inputSegments.length === 0 || !Array.isArray(line) || inputSegments.length !== line.length / 2 - 1)
 		throw new TypeError('line must contain at least two distinct [x,y] points as a flat numeric array.');

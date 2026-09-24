@@ -434,6 +434,14 @@ assert.ok(connectivityDefinition);
 const connectivitySchema = z.fromJSONSchema(connectivityDefinition.inputSchema);
 assert.equal(connectivitySchema.safeParse({ action: 'wire_preview', line: [0, 0, 100, 0] }).success, true);
 assert.equal(connectivitySchema.safeParse({ action: 'wire_create', line: [0, 0, 100, 0], allowedWireIds: ['wire-1'] }).success, true);
+const maximumWireLine = Array.from({ length: 256 }, (_, index) => [index, 0]).flat();
+assert.equal(connectivityDefinition.inputSchema.properties.line.maxItems, 512);
+for (const action of ['wire_preview', 'wire_create']) {
+  const actionSchema = connectivityDefinition.inputSchema.oneOf.find((variant) => variant.properties.action.const === action);
+  assert.equal(actionSchema.properties.line.maxItems, 512);
+  assert.equal(connectivitySchema.safeParse({ action, line: maximumWireLine }).success, true);
+  assert.equal(connectivitySchema.safeParse({ action, line: [...maximumWireLine, 256, 0] }).success, false);
+}
 assert.equal(connectivitySchema.safeParse({ action: 'netport_create', net: 'SIGNAL', x: 10, y: 20 }).success, true);
 assert.equal(connectivitySchema.safeParse({ action: 'netport_move', id: 'port-1', x: 10, y: 20 }).success, true);
 assert.equal(connectivitySchema.safeParse({ action: 'netport_move', id: 'port-1', x: 10 }).success, false);

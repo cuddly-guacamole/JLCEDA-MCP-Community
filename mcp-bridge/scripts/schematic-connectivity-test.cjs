@@ -42,12 +42,16 @@ function port(state) {
 async function main() {
 	const wires = [wire('wire-a', 'NET_A', [0, 0, 100, 0])];
 	const ports = [{ id: 'port-a', net: 'NET_A', x: 0, y: 0 }];
+	let wireReads = 0;
 	let wireCreates = 0;
 	let portCreates = 0;
 	let createdPortReadbackDeltaY = 0;
 	globalThis.eda = {
 		sch_PrimitiveWire: {
-			async getAll() { return wires; },
+			async getAll() {
+				wireReads += 1;
+				return wires;
+			},
 			async create(line, net) {
 				wireCreates += 1;
 				const created = wire(`wire-${wireCreates}`, net ?? '', line);
@@ -70,6 +74,18 @@ async function main() {
 		},
 		sch_Drc: { async check() { return true; } },
 	};
+
+	const oversizedLine = Array.from({ length: 257 }, (_, index) => [index, 0]).flat();
+	for (const action of ['wire_preview', 'wire_create'])
+		await assert.rejects(handleSchematicConnectivityTask({ action, line: oversizedLine }), /at most 512 coordinates/);
+	assert.equal(wireReads, 0, 'oversized input must fail before EDA readback');
+	assert.equal(wireCreates, 0);
+
+	// The input limit must not reject longer wires already present on the EDA page.
+	wires.push(wire('long-existing', '', Array.from({ length: 257 }, (_, index) => [10000 + index, 0]).flat()));
+	const previewBesideLongWire = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [0, 100, 10, 100] });
+	assert.equal(previewBesideLongWire.canCreate, true);
+	wires.pop();
 
 	const preview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [50, -50, 50, 0], net: 'NET_A' });
 	assert.equal(preview.canCreate, false);

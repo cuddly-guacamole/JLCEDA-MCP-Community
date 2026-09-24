@@ -7,6 +7,7 @@
 - 交互式 `component_place` 等待用户退出当前放置模式，只返回退出后仍存在的新增图元 ID；重复图元或超时后停止批次，不自动重试可能已提交的放置。
 - `component_place_auto` 检查本批次此前放置的器件位号；后续放置导致位号变化时停止批次，并返回更新后的已放置明细。
 - 新增 `schematic_connectivity_action`，提供导线交点预览、需显式允许已有导线接触的创建流程，以及当前图页 NetPort 创建和移动入口。
+- `schematic_connectivity_action` 的单条新导线最多接收 256 个坐标点，工具参数在 Server 与 Bridge 双层校验。
 - 按最近心跳判定 Bridge 客户端是否就绪，并让心跳停滞的连接超时退出；`bridge_clients` 增加 `lastHeartbeatMsAgo`。
 - 已开始的写任务若因 EDA 客户端或 MCP 调用方失联而中断，保留未确认修改诊断；重连隔离时间届满仍需恢复回读才能再次写入。
 - 恢复隔离期间允许 `getAllPrimitiveId` / `getAll` 以严格的 `args:[null,false]` 查询当前页器件，并可用于受控恢复回读；无参数调用继续兼容，其余 `api_invoke` 仍按写入隔离。
