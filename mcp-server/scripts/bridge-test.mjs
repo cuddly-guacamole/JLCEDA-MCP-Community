@@ -154,6 +154,9 @@ let nativeLayoutOld;
 let nativeLayoutNew;
 let lateUnknownServer;
 let lateUnknownClient;
+let lateConnectivityServer;
+let lateConnectivityActive;
+let lateConnectivityStandby;
 
 try {
   await mainServer.start();
@@ -921,6 +924,60 @@ try {
   lateUnknownServer.close();
   lateUnknownServer = undefined;
 
+  const lateConnectivityPort = await reservePort();
+  lateConnectivityServer = new EdaBridgeServer(lateConnectivityPort);
+  await lateConnectivityServer.start();
+  lateConnectivityActive = await registerEda(
+    `ws://127.0.0.1:${lateConnectivityPort}/bridge/ws${tokenQuery}`,
+    'late-connectivity-active',
+    { documentUuid: 'connectivity-document', projectUuid: 'connectivity-project', pageKind: 'schematic', pageUuid: 'connectivity-page' },
+  );
+  let lateConnectivityTask;
+  lateConnectivityActive.socket.on('message', (data) => {
+    const message = JSON.parse(data.toString());
+    if (message.type !== 'bridge/task') return;
+    lateConnectivityTask = message;
+    lateConnectivityActive.socket.send(JSON.stringify({
+      type: 'bridge/task-started', clientId: 'late-connectivity-active',
+      requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+    }));
+  });
+  lateConnectivityStandby = await registerEda(
+    `ws://127.0.0.1:${lateConnectivityPort}/bridge/ws${tokenQuery}`,
+    'late-connectivity-standby',
+    { documentUuid: 'connectivity-document', projectUuid: 'connectivity-project', pageKind: 'schematic', pageUuid: 'connectivity-page' },
+  );
+  attachTaskResponder(lateConnectivityStandby.socket, 'late-connectivity-standby', (message) => ({
+    source: 'late-connectivity-standby', path: message.path,
+  }));
+  await assert.rejects(lateConnectivityServer.request('/bridge/jlceda/schematic/connectivity', {
+    action: 'wire_create', line: [0, 0, 10, 0],
+  }, 100), /Request execution timeout/);
+  assert.ok(lateConnectivityTask);
+  const lateConnectivityProcessed = waitForMessage(lateConnectivityActive.socket, (message) => message.type === 'bridge/heartbeat-ack');
+  lateConnectivityActive.socket.send(JSON.stringify({
+    type: 'bridge/result', clientId: 'late-connectivity-active',
+    requestId: lateConnectivityTask.requestId, leaseTerm: lateConnectivityTask.leaseTerm,
+    result: { ok: false, action: 'wire_create', committed: false, commitUnknown: true },
+  }));
+  lateConnectivityActive.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'late-connectivity-active', sentAt: Date.now() }));
+  await lateConnectivityProcessed;
+  const lateConnectivitySnapshot = await lateConnectivityServer.request('/bridge/admin/clients', {}, 2000);
+  assert.equal(lateConnectivitySnapshot.clients.find(client => client.clientId === 'late-connectivity-active').quarantine.diagnostics[0].requestId, lateConnectivityTask.requestId);
+  await lateConnectivityServer.request('/bridge/admin/select-client', { clientId: 'late-connectivity-standby' }, 2000);
+  assert.deepEqual(await lateConnectivityServer.request('/bridge/jlceda/context', {}, 2000), {
+    source: 'late-connectivity-standby', path: '/bridge/jlceda/context',
+  });
+  await assert.rejects(lateConnectivityServer.request('/bridge/jlceda/schematic/connectivity', {
+    action: 'netport_create', net: 'SIG', x: 0, y: 0,
+  }, 2000), /writes are blocked pending recovery readback/);
+  lateConnectivityActive.socket.close();
+  lateConnectivityActive = undefined;
+  lateConnectivityStandby.socket.close();
+  lateConnectivityStandby = undefined;
+  lateConnectivityServer.close();
+  lateConnectivityServer = undefined;
+
   const disconnectPort = await reservePort();
   disconnectServer = new EdaBridgeServer(disconnectPort);
   await disconnectServer.start();
@@ -1279,6 +1336,8 @@ try {
   nativeLayoutOld?.socket.close();
   nativeLayoutNew?.socket.close();
   lateUnknownClient?.socket.close();
+  lateConnectivityActive?.socket.close();
+  lateConnectivityStandby?.socket.close();
   expiryServer?.close();
   livenessServer?.close();
   queueServer?.close();
@@ -1291,6 +1350,7 @@ try {
   disconnectedRecoveryServer?.close();
   nativeLayoutServer?.close();
   lateUnknownServer?.close();
+  lateConnectivityServer?.close();
   secondaryServer.close();
   mainServer.close();
   if (originalToken === undefined) {

@@ -636,7 +636,8 @@ export class EdaBridgeServer {
       const diagnostic = this.recoveryDiagnostics.get(requestId);
       const bridgeTimedOut = getBridgeTaskTimeoutMs(message.error) !== undefined
         || (isRecord(message.error) && message.error.code === 'BRIDGE_TASK_TIMEOUT');
-      const commitUnknown = isRecord(message.result) && message.result.commitState === 'unknown';
+      const commitUnknown = isRecord(message.result)
+        && (message.result.commitState === 'unknown' || message.result.commitUnknown === true);
       if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown) {
         this.recoveryDiagnostics.delete(requestId);
       }
