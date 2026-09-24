@@ -14,6 +14,7 @@
 - `nets` 单网络自动布线在 EDA 3.2.181 上仍抛原生 RPC 超时；实机过程见 [Issue #37 验证记录](../docs/issue-37-validation.md)，该问题继续开放。
 - 超时写操作仍在后台运行时允许只读 Bridge 任务，便于诊断和暂时读回；写操作继续隔离，无法取消底层 EDA Promise。
 - 与 Server 共享当前页器件查询的只读分类，允许 `getAllPrimitiveId` / `getAll` 使用 `args:[null,false]`，并保留无参数兼容。
+- PCB 器件 `getAll` 的无参数调用可作为恢复期只读回读，其他参数形式仍受隔离。
 
 ## [2.3.1] - 2026-09-24
 

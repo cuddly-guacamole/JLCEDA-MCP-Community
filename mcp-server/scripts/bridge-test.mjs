@@ -489,6 +489,14 @@ try {
     await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, false] }, 2000),
     { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
   );
+  assert.deepEqual(
+    await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] }, 2000),
+    { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
+  );
+  await assert.rejects(
+    recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] }, 2000),
+    /writes are blocked pending recovery readback/,
+  );
   await assert.rejects(
     recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, true] }, 2000),
     /writes are blocked pending recovery readback/,
@@ -538,7 +546,7 @@ try {
   disconnectedRecoveryOld = await registerEda(
     `ws://127.0.0.1:${disconnectedRecoveryPort}/bridge/ws${tokenQuery}`,
     'disconnected-recovery-old',
-    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'schematic', pageUuid: 'disconnected-page' },
+    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
   disconnectedRecoveryOld.socket.on('message', (data) => {
     const message = JSON.parse(data.toString());
@@ -555,7 +563,7 @@ try {
   disconnectedRecoveryTarget = await registerEda(
     `ws://127.0.0.1:${disconnectedRecoveryPort}/bridge/ws${tokenQuery}`,
     'disconnected-recovery-target',
-    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'schematic', pageUuid: 'disconnected-page' },
+    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
   attachTaskResponder(disconnectedRecoveryTarget.socket, 'disconnected-recovery-target', (message) => message.path === '/bridge/jlceda/context'
     ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' } }
@@ -593,7 +601,7 @@ try {
   disconnectedRecoveryOld = await registerEda(
     `ws://127.0.0.1:${disconnectedRecoveryPort}/bridge/ws${tokenQuery}`,
     'disconnected-recovery-old',
-    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'schematic', pageUuid: 'disconnected-page' },
+    { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
   );
   attachTaskResponder(disconnectedRecoveryOld.socket, 'disconnected-recovery-old', (message) => message.path === '/bridge/jlceda/context'
     ? { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' } }
@@ -606,8 +614,11 @@ try {
     clientId: 'disconnected-recovery-old',
     expectedDocumentUuid: 'disconnected-document',
     expectedProjectUuid: 'disconnected-project',
+    readbackPath: '/bridge/jlceda/api/invoke',
+    readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
   }, 2000);
   assert.equal(disconnectedReadback.readbackVerified, true);
+  assert.equal(disconnectedReadback.readback.path, '/bridge/jlceda/api/invoke');
   disconnectedRecoveryOld.socket.close();
   disconnectedRecoveryOld = undefined;
   disconnectedRecoveryTarget = undefined;

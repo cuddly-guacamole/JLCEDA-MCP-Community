@@ -13,6 +13,7 @@
 - `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
 - EDA 修改超时或已开始的写任务中途失联后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，重启 EDA 宿主以终止旧调用，再打开目标图页，使用 `bridge_recover_client` 验证新客户端身份和当前页状态；不要把恢复请求当成取消 EDA 调用。
 - 原理图当前页器件 ID 回读优先用 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args: [null, false]`；需要器件对象时可用 `eda.sch_PrimitiveComponent.getAll` 搭配同样的参数。这两种精确参数形式可通过恢复期只读隔离，无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。跨页查询不得用于判断当前页的超时操作是否提交。
+- PCB 器件位置恢复回读可用 `api_invoke` 调用 `eda.pcb_PrimitiveComponent.getAll`，传 `args: []`。恢复期只允许此方法的无参数形式；先核对活动 PCB 的文档身份，再与超时前的位置快照比较。
 - `schematic_read`：仅在执行器件选型（`component_select`）或器件放置（`component_place`）任务时，需要了解当前页已有器件与网络连接关系时才调用，用于获取辅助上下文。仅覆盖当前激活页面。禁止在原理图检查、审查、功能分析、连线核查等场景调用此工具；此类场景必须使用 `schematic_review`。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`components` 为器件列表，每个器件含 `componentDesignator`（位号）、`componentSymbolName`（符号名）、`pins`（引脚列表，每个引脚含 `pinNumber`、`pinSignalName`、`pinElectricalType`、`connectedNetworkName`（引脚所连网络名，空字符串表示工具未能识别到连接——可能是引脚真正悬空，也可能是该引脚位于复用块（Reuse Block）内部、复用块内部导线对 API 不可见所致；若 `drcCheckPassed` 为 `true`，则空值大概率属于工具限制而非真实错误，应提示用户自行在原理图中核实）、`hasNoConnectMark`）；`networks` 为网络列表，每个网络含 `networkName` 和 `connectedPinRefs`（连接该网络的所有引脚引用，格式为位号.引脚号）。
 - `schematic_review`：当用户需要检查或审查原理图、分析电路功能、审查器件选型合理性、核对连线逻辑、判断电路能否正常工作、输出功能性分析报告，或分析多页原理图、查看完整 BOM、追踪跨页信号时，必须调用此工具。
