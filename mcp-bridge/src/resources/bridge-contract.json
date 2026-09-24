@@ -338,14 +338,19 @@
 			"readOnlyIf": {
 				"field": "action",
 				"defaultValue": "status",
-				"equals": ["status", "canvas_origin", "filter_configuration", "selection", "mouse_position", "primitive_type_by_id", "primitive_by_id", "primitives_by_id", "primitives_bbox", "primitive_at_point", "primitives_in_region", "convert_canvas_to_data", "convert_data_to_canvas"]
+				"equals": ["status", "canvas_origin", "filter_configuration", "selection", "mouse_position", "primitive_type_by_id", "primitive_by_id", "primitives_by_id", "primitives_bbox", "primitive_at_point", "primitives_in_region", "convert_canvas_to_data", "convert_data_to_canvas", "navigate_to_coordinates", "navigate_to_region", "zoom_to_board_outline"]
 			}
 		},
 		{
 			"toolName": "schematic_document_action",
 			"path": "/bridge/jlceda/schematic/document",
 			"owner": "bridge",
-			"timeoutPolicy": "extended-read"
+			"timeoutPolicy": "extended-read",
+			"readOnlyIf": {
+				"field": "action",
+				"defaultValue": "status",
+				"equals": ["status", "filter_configuration", "selection", "mouse_position", "primitive_type_by_id", "primitive_by_id", "primitives_by_id", "primitives_bbox", "primitive_at_point", "primitives_in_region", "navigate_to_coordinates", "navigate_to_region"]
+			}
 		},
 		{
 			"toolName": "schematic_pages_manage",

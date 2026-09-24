@@ -409,6 +409,18 @@ try {
   queueServer = undefined;
 
   const connectivityPath = '/bridge/jlceda/schematic/connectivity';
+  for (const action of ['navigate_to_coordinates', 'navigate_to_region', 'zoom_to_board_outline']) {
+    assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', { action }), true);
+  }
+  for (const action of ['select_primitives', 'clear_selection', 'start_ratline', 'stop_ratline', 'save', 'import_changes']) {
+    assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', { action }), false);
+  }
+  for (const action of [undefined, 'status', 'selection', 'primitive_by_id', 'navigate_to_coordinates', 'navigate_to_region']) {
+    assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/document', action === undefined ? {} : { action }), true);
+  }
+  for (const action of ['select_primitives', 'clear_selection', 'save', 'import_changes']) {
+    assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/document', { action }), false);
+  }
   assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action: 'wire_preview' }), true);
   for (const action of ['wire_create', 'netport_create', 'netport_move']) {
     assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);

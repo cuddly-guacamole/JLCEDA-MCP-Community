@@ -91,6 +91,14 @@ try {
   await assert.rejects(server.request('/bridge/jlceda/pcb/document', { action: 'clear_routing' }, 2000), /writes are blocked/);
   assert.equal((await server.request('/bridge/jlceda/context', {}, 2000)).currentPcbInfo.uuid, 'pcb-one');
   assert.equal((await server.request('/bridge/jlceda/pcb/document', { action: 'status' }, 2000)).action, 'status');
+  for (const payload of [
+    { action: 'navigate_to_coordinates', x: 25, y: 35 },
+    { action: 'navigate_to_region', left: 0, right: 100, top: 100, bottom: 0 },
+    { action: 'zoom_to_board_outline' },
+  ]) {
+    assert.equal((await server.request('/bridge/jlceda/pcb/document', payload, 2000)).action, payload.action);
+  }
+  await assert.rejects(server.request('/bridge/jlceda/pcb/document', { action: 'select_primitives' }, 2000), /writes are blocked/);
   otherSocket = await registerEda(port, 'import-other', 'import-test-token', 'other-pcb');
   respond(otherSocket, 'import-other', transform);
   await server.request('/bridge/admin/select-client', { clientId: 'import-other' }, 2000);
