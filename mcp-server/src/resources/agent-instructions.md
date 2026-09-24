@@ -31,6 +31,7 @@
 - `pcb_layer_query`：读取当前 PCB 图层、当前工作层和铜层数量。
 - `pcb_realtime_drc`：默认只查询实时 DRC 状态；只有用户明确要求时才执行 `start` 或 `stop`。
 - `component_select`：可使用 `properties.supplierId` 等 0.4.15 精确字段查询器件。`keyword` 与 `properties` 二选一，结果仍必须等待用户确认后才能放置。
+- `netlabel_place`：先通过 `eda_context` 确认编辑器版本。普通网络标签的官方 API 从 EDA v4 起提供；3.x 返回 `EDA_VERSION_UNSUPPORTED`、`commitStatus: not_started`，无需重试。电源/地网络标识仍可放置；不要把电源标识当成普通信号标签。
 - `project_info`：读取工程、板子、原理图、PCB 和图页身份，适合在跨页面任务开始时建立上下文。
 - `manufacture_export`：仅生成白名单制造数据，不直接写入本地文件系统。默认返回文件元数据和文本预览；只有用户明确需要下载数据时才设置 `includeData: true`，并注意 Base64 结果可能很大。
 - `manufacture_templates_query`：在 PCB BOM 导出前读取当前可用模板；将返回的模板名原样传给 `manufacture_export` 的 `template` 参数，不要猜测模板名称。原理图查询只返回官方装配变体。
