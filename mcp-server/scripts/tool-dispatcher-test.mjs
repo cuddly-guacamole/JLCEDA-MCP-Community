@@ -22,7 +22,7 @@ const fakeBridge = {
       return { ok: true, sessionId: 'session-1' };
     }
     if (path === '/bridge/jlceda/component/place/check') {
-      return { ok: true, placed: true, userCancelled: false };
+      return { ok: true, placed: true, primitiveIds: ['placed-1'], designatorChanges: [{ primitiveId: 'old', before: 'U4', after: 'U15' }], annotationWarning: 'Designators changed', userCancelled: false };
     }
     if (path === '/bridge/jlceda/component/place/close') {
       return { ok: true };
@@ -61,9 +61,35 @@ const result = await dispatcher.dispatch({
   },
 });
 
-assert.equal(result.structuredContent.ok, true);
+assert.equal(result.structuredContent.ok, false);
 assert.equal(result.structuredContent.placedCount, 1);
+assert.deepEqual(result.structuredContent.results[0].primitiveIds, ['placed-1']);
+assert.equal(result.structuredContent.results[0].annotationWarning, 'Designators changed');
 assert.deepEqual(calls.map((call) => call.path), [
+  '/bridge/jlceda/component/place',
+  '/bridge/jlceda/component/place/start',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/close',
+]);
+
+const duplicateCalls = [];
+const duplicateBridge = {
+  async request(path) {
+    duplicateCalls.push(path);
+    if (path === '/bridge/jlceda/component/place') {
+      return { placement: { components: [{ uuid: 'one' }, { uuid: 'two' }], timeoutSeconds: 30, retryCount: 3 } };
+    }
+    if (path.endsWith('/start')) return { ok: true, sessionId: 'duplicate-session' };
+    if (path.endsWith('/check')) return { ok: true, placed: false, duplicate: true, primitiveIds: ['a', 'b'] };
+    if (path.endsWith('/close')) return { ok: true };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const duplicateResult = await new ToolDispatcher(duplicateBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(duplicateResult.structuredContent.ok, false);
+assert.equal(duplicateResult.structuredContent.notAttemptedCount, 1);
+assert.deepEqual(duplicateResult.structuredContent.results[0].primitiveIds, ['a', 'b']);
+assert.deepEqual(duplicateCalls, [
   '/bridge/jlceda/component/place',
   '/bridge/jlceda/component/place/start',
   '/bridge/jlceda/component/place/check',

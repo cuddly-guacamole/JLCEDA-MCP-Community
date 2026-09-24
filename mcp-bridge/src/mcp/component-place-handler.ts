@@ -9,7 +9,7 @@
  * ------------------------------------------------------------------------
  */
 
-import { getEdaRuntime, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
+import { getEdaRuntime, getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
 
 interface ComponentPlaceItem {
 	uuid: string;
@@ -25,13 +25,13 @@ interface ComponentPlaceRequest {
 	description: string;
 	components: ComponentPlaceItem[];
 	timeoutSeconds: number;
-	retryCount: number;
 }
 
 interface PlaceComponentApi {
 	context: unknown;
 	placeComponentWithMouse: (component: { libraryUuid: string; uuid: string }, subPartName?: string) => Promise<boolean>;
-	getAllPrimitiveId: () => Promise<string[]>;
+	getAllPrimitiveId: (componentType?: unknown, allSchematicPages?: boolean) => Promise<string[]>;
+	getAll: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown[]>;
 }
 
 interface FollowMouseTipApi {
@@ -43,6 +43,7 @@ interface FollowMouseTipApi {
 interface ActivePlaceSession {
 	sessionId: string;
 	referenceIds: Set<string>;
+	baselineDesignators: Map<string, string>;
 	tipText: string;
 	followMouseTipApi: FollowMouseTipApi | null;
 	placeApi: PlaceComponentApi;
@@ -56,12 +57,6 @@ const activePlaceSessions = new Map<string, ActivePlaceSession>();
 
 function createPlaceSessionId(): string {
 	return `component_place_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		globalThis.setTimeout(resolve, ms);
-	});
 }
 
 // 规范化单个待放置器件参数。
@@ -125,15 +120,33 @@ function resolvePlaceComponentApi(): PlaceComponentApi {
 	const componentModule = (edaGlobal as { sch_PrimitiveComponent?: unknown }).sch_PrimitiveComponent;
 	if (!isPlainObjectRecord(componentModule)
 		|| typeof componentModule.placeComponentWithMouse !== 'function'
-		|| typeof componentModule.getAllPrimitiveId !== 'function') {
-		throw new Error('未找到 eda.sch_PrimitiveComponent.placeComponentWithMouse API。');
+		|| typeof componentModule.getAllPrimitiveId !== 'function'
+		|| typeof componentModule.getAll !== 'function') {
+		throw new Error('未找到 eda.sch_PrimitiveComponent.placeComponentWithMouse/getAll API。');
 	}
 
 	return {
 		context: componentModule,
 		placeComponentWithMouse: componentModule.placeComponentWithMouse as (component: { libraryUuid: string; uuid: string }, subPartName?: string) => Promise<boolean>,
-		getAllPrimitiveId: componentModule.getAllPrimitiveId as () => Promise<string[]>,
+		getAllPrimitiveId: componentModule.getAllPrimitiveId as PlaceComponentApi['getAllPrimitiveId'],
+		getAll: componentModule.getAll as PlaceComponentApi['getAll'],
 	};
+}
+
+async function readDesignators(api: PlaceComponentApi): Promise<Map<string, string>> {
+	const components = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+	if (!Array.isArray(components)) {
+		throw new TypeError('sch_PrimitiveComponent.getAll 未返回器件列表。');
+	}
+	const designators = new Map<string, string>();
+	for (const component of components) {
+		const id = getSyncState(component, 'getState_PrimitiveId', '');
+		const designator = getSyncState(component, 'getState_Designator', '');
+		if (id && designator) {
+			designators.set(id, designator);
+		}
+	}
+	return designators;
 }
 
 function resolveFollowMouseTipApi(): FollowMouseTipApi | null {
@@ -215,10 +228,9 @@ export async function handleComponentPlaceTask(payload: unknown): Promise<unknow
 	const placement: ComponentPlaceRequest = {
 		protocol: COMPONENT_PLACE_PROTOCOL,
 		title: '原理图器件放置',
-		description: `请按顺序在原理图中放置以下 ${String(components.length)} 个器件。单个器件超时后，工具会在当前尝试结束后自动重试 1 次。`,
+		description: `请按顺序在原理图中放置以下 ${String(components.length)} 个器件。每次点击后按 Esc 结束当前器件放置；超时后先核对图元，勿直接重试。`,
 		components,
 		timeoutSeconds,
-		retryCount: 1,
 	};
 
 	return {
@@ -245,6 +257,9 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const placeApi = resolvePlaceComponentApi();
 	const followMouseTipApi = resolveFollowMouseTipApi();
 	const tipText = `请在原理图中放置器件：${formatComponentTitle(component)}`;
+	// 必须先取基线，再把器件绑定到鼠标。用户可能在 API 返回后立即点击。
+	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, undefined, false)));
+	const baselineDesignators = await readDesignators(placeApi);
 
 	if (followMouseTipApi) {
 		void Promise.resolve(followMouseTipApi.show.call(followMouseTipApi.context, tipText, timeoutMs)).catch(() => undefined);
@@ -271,28 +286,11 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 			};
 		}
 
-		await delay(500);
-
-		const referenceIds = new Set<string>();
-		try {
-			const currentIds = await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context));
-			for (let index = 0; index < currentIds.length; index += 1) {
-				const primitiveId = String(currentIds[index] || '').trim();
-				if (primitiveId.length > 0) {
-					referenceIds.add(primitiveId);
-				}
-			}
-		}
-		catch (error: unknown) {
-			// 基线快照失败时保持空集合，后续任意新图元都视为放置完成。
-			// 这是一个合理的降级策略，因为空集合会让任何新增图元都被检测到。
-			console.warn('获取基线图元列表失败，将使用空基线：', toSafeErrorMessage(error));
-		}
-
 		const sessionId = createPlaceSessionId();
 		const session: ActivePlaceSession = {
 			sessionId,
 			referenceIds,
+			baselineDesignators,
 			tipText,
 			followMouseTipApi,
 			placeApi,
@@ -363,7 +361,36 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 	}
 
 	try {
-		// 用户右键取消放置（mousedown 事件已标记），优先于图元 ID 检测立即返回。
+		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context, undefined, false));
+		const primitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
+		if (primitiveIds.length > 0) {
+			let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
+			let annotationWarning: string | undefined;
+			try {
+				const currentDesignators = await readDesignators(session.placeApi);
+				designatorChanges = [...session.baselineDesignators]
+					.filter(([id, before]) => currentDesignators.has(id) && currentDesignators.get(id) !== before)
+					.map(([primitiveId, before]) => ({ primitiveId, before, after: currentDesignators.get(primitiveId) }));
+				if (designatorChanges.length > 0) {
+					annotationWarning = 'EDA 在放置时改变了已有器件位号；请核对 designatorChanges 后再继续。';
+				}
+			}
+			catch (error: unknown) {
+				annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
+			}
+			await cleanupPlaceSession(sessionId);
+			return {
+				ok: true,
+				placed: primitiveIds.length === 1,
+				duplicate: primitiveIds.length > 1,
+				primitiveIds,
+				designatorChanges,
+				annotationWarning,
+				userCancelled: false,
+			};
+		}
+
+		// 用户在点击放置后可能再右键结束悬浮状态，已提交图元优先。
 		if (session.cancelledByRightClick) {
 			await cleanupPlaceSession(sessionId);
 			return {
@@ -371,19 +398,6 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 				placed: false,
 				userCancelled: true,
 			};
-		}
-
-		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context));
-		for (let index = 0; index < currentIds.length; index += 1) {
-			const primitiveId = String(currentIds[index] || '').trim();
-			if (primitiveId.length > 0 && !session.referenceIds.has(primitiveId)) {
-				await cleanupPlaceSession(sessionId);
-				return {
-					ok: true,
-					placed: true,
-					userCancelled: false,
-				};
-			}
 		}
 
 		// 检测基线图元是否消失（用户右键取消，浮动图元被移除）。

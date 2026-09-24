@@ -137,11 +137,13 @@ Claude Desktop、Claude Code、Cursor 等客户端应将 `jlceda-mcp` 注册为�
 ## 交互与注意事项
 
 1. 写操作前保存工程，并确认活动项目和页面正确。
-2. `component_place` 会启动 EDA 内的交互放置；`component_place_auto` 才会按坐标直接创建。
+2. `component_place` 会启动 EDA 内的交互放置；每次点击后按 Esc 结束当前器件放置。结果包含新增图元 ID；若一次点击产生多个图元，先核对并处理，不要重试。`component_place_auto` 按坐标直接创建，并返回已有器件的位号变化。
 3. 多个 EDA 页面同时连接时，应先枚举客户端并明确选择目标页面。
 4. 修改端口或 token 后，必须同步更新 MCP Server 环境变量与 Bridge 地址。
 5. 普通网络标签创建失败时不要改用电源网络标识代替；3.x 请使用支持的导线操作，4.x 请查看 Bridge 调试日志。
 6. 状态异常时先关闭旧版 MCP Hub，再重启 AI 客户端与 EDA Bridge。
+
+开发分支对 `api_invoke` 中的 `eda.sch_PrimitiveComponent.modify` 和 `delete` 做兼容处理：修改时省略 `otherProperty` 会保留原值；传入图元 ID 数组删除时会逐项执行并返回 `deletedIds`、`failedIds`。这些行为尚未包含在 2.3.1 发布包中。
 ## 常见问题
 
 ### 聊天里看不到工具怎么办？

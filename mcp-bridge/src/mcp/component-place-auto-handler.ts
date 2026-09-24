@@ -9,7 +9,7 @@
  * ------------------------------------------------------------------------
  */
 
-import { isPlainObjectRecord, toSafeErrorMessage } from '../utils';
+import { getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
 
 interface ComponentPlaceAutoItem {
 	uuid: string;
@@ -43,6 +43,7 @@ interface FixedPositionConfig {
 
 interface ComponentCreateApi {
 	context: unknown;
+	getAll?: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown[]>;
 	create: (
 		component: { libraryUuid: string; uuid: string },
 		x: number,
@@ -311,8 +312,28 @@ function resolveComponentCreateApi(): ComponentCreateApi {
 
 	return {
 		context: componentModule,
+		getAll: typeof componentModule.getAll === 'function' ? componentModule.getAll as ComponentCreateApi['getAll'] : undefined,
 		create: componentModule.create as ComponentCreateApi['create'],
 	};
+}
+
+async function readDesignators(api: ComponentCreateApi): Promise<Map<string, string>> {
+	if (!api.getAll) {
+		throw new TypeError('sch_PrimitiveComponent.getAll API 不可用。');
+	}
+	const components = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+	if (!Array.isArray(components)) {
+		throw new TypeError('sch_PrimitiveComponent.getAll 未返回器件列表。');
+	}
+	const designators = new Map<string, string>();
+	for (const component of components) {
+		const id = getSyncState(component, 'getState_PrimitiveId', '');
+		const designator = getSyncState(component, 'getState_Designator', '');
+		if (id && designator) {
+			designators.set(id, designator);
+		}
+	}
+	return designators;
 }
 
 /**
@@ -350,7 +371,15 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 	);
 
 	const api = resolveComponentCreateApi();
-	const placedComponents: Array<{ uuid: string; libraryUuid: string; x: number; y: number }> = [];
+	let originalDesignators = new Map<string, string>();
+	let annotationWarning: string | undefined;
+	try {
+		originalDesignators = await readDesignators(api);
+	}
+	catch (error: unknown) {
+		annotationWarning = `无法记录已有器件位号，放置后需手动核对：${toSafeErrorMessage(error)}`;
+	}
+	const placedComponents: Array<{ uuid: string; libraryUuid: string; x: number; y: number; primitiveId: string; designator: string }> = [];
 	const failedComponents: Array<{ uuid: string; libraryUuid: string; error: string }> = [];
 
 	for (let index = 0; index < components.length; index += 1) {
@@ -387,6 +416,8 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 				libraryUuid: component.libraryUuid,
 				x: position.x,
 				y: position.y,
+				primitiveId: getSyncState(createdComponent, 'getState_PrimitiveId', ''),
+				designator: getSyncState(createdComponent, 'getState_Designator', ''),
 			});
 		}
 		catch (error: unknown) {
@@ -395,6 +426,21 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 				libraryUuid: component.libraryUuid,
 				error: toSafeErrorMessage(error),
 			});
+		}
+	}
+	let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
+	if (!annotationWarning) {
+		try {
+			const currentDesignators = await readDesignators(api);
+			designatorChanges = [...originalDesignators]
+				.filter(([id, before]) => currentDesignators.has(id) && currentDesignators.get(id) !== before)
+				.map(([primitiveId, before]) => ({ primitiveId, before, after: currentDesignators.get(primitiveId) }));
+			if (designatorChanges.length > 0) {
+				annotationWarning = 'EDA 在放置时改变了已有器件位号；请核对 designatorChanges 后再继续。';
+			}
+		}
+		catch (error: unknown) {
+			annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
 		}
 	}
 
@@ -406,6 +452,8 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			totalCount: components.length,
 			placedComponents,
 			failedComponents,
+			designatorChanges,
+			annotationWarning,
 			message: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
 		};
 	}
@@ -415,6 +463,8 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 		placedCount: placedComponents.length,
 		totalCount: components.length,
 		placedComponents,
+		designatorChanges,
+		annotationWarning,
 		message: `成功放置了全部 ${String(components.length)} 个器件。`,
 	};
 }

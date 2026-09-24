@@ -33,6 +33,8 @@
 
 待发布改进：PCB `import_changes` 返回 `pending_confirmation` 时，还需在 EDA 原生对话框点击“应用变更”并读回器件、网络。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求先读回器件坐标再重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
 
+待发布的原理图改进：交互放置返回新增图元 ID，遇到重复图元或未知提交状态时停止后续放置；坐标放置报告已有器件的位号变化。针对 EDA 3.x 已知行为，`api_invoke` 的器件属性修改保留省略的 BOM 扩展属性，批量删除逐项执行并核对结果。
+
 社区维护的嘉立创 EDA 专业版 MCP 集成基于 [`sengbin/JLCEDA-MCP`](https://github.com/sengbin/JLCEDA-MCP) 改进。本项目不是嘉立创官方插件，也不代表上游维护者。
 
 - 社区联系与安全报告：`hs150521@proton.me`

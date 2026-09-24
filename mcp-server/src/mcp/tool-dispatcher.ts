@@ -239,67 +239,71 @@ export class ToolDispatcher {
     }
 
     const timeoutSeconds = Math.max(30, Math.min(180, Number(placement.timeoutSeconds) || 60));
-    const retryCount = Math.max(0, Math.min(3, Number(placement.retryCount) || 0));
     const results: Array<Record<string, unknown>> = [];
 
     for (let componentIndex = 0; componentIndex < components.length; componentIndex += 1) {
       const component = components[componentIndex];
       let placed = false;
       let userCancelled = false;
+      let duplicate = false;
+      let primitiveIds: string[] = [];
+      let designatorChanges: unknown[] = [];
+      let annotationWarning = '';
       let errorMessage = '';
-      let attempts = 0;
+      let sessionId = '';
+      try {
+        const startResult = await this.bridgeServer.request(`${placementPath}/start`, {
+          component,
+          timeoutSeconds,
+        });
+        if (!isPlainObjectRecord(startResult) || startResult.ok !== true) {
+          throw new Error(String(isPlainObjectRecord(startResult) ? startResult.error ?? 'placement start failed' : 'placement start returned invalid data'));
+        }
 
-      for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-        attempts = attempt + 1;
-        let sessionId = '';
-        try {
-          const startResult = await this.bridgeServer.request(`${placementPath}/start`, {
-            component,
-            timeoutSeconds,
-          });
-          if (!isPlainObjectRecord(startResult) || startResult.ok !== true) {
-            throw new Error(String(isPlainObjectRecord(startResult) ? startResult.error ?? 'placement start failed' : 'placement start returned invalid data'));
-          }
+        sessionId = String(startResult.sessionId ?? '').trim();
+        if (!sessionId) {
+          throw new Error('placement start returned no sessionId');
+        }
 
-          sessionId = String(startResult.sessionId ?? '').trim();
-          if (!sessionId) {
-            throw new Error('placement start returned no sessionId');
+        const deadline = Date.now() + timeoutSeconds * 1000;
+        while (Date.now() < deadline) {
+          await delay(250);
+          const checkResult = await this.bridgeServer.request(`${placementPath}/check`, { sessionId }, 5000);
+          if (!isPlainObjectRecord(checkResult) || checkResult.ok !== true) {
+            throw new Error(String(isPlainObjectRecord(checkResult) ? checkResult.error ?? 'placement check failed' : 'placement check returned invalid data'));
           }
-
-          const deadline = Date.now() + timeoutSeconds * 1000;
-          while (Date.now() < deadline) {
-            await delay(250);
-            const checkResult = await this.bridgeServer.request(`${placementPath}/check`, { sessionId }, 5000);
-            if (!isPlainObjectRecord(checkResult) || checkResult.ok !== true) {
-              throw new Error(String(isPlainObjectRecord(checkResult) ? checkResult.error ?? 'placement check failed' : 'placement check returned invalid data'));
-            }
-            if (checkResult.placed === true) {
-              placed = true;
-              break;
-            }
-            if (checkResult.userCancelled === true) {
-              userCancelled = true;
-              break;
-            }
+          primitiveIds = Array.isArray(checkResult.primitiveIds)
+            ? checkResult.primitiveIds.filter((id): id is string => typeof id === 'string')
+            : [];
+          designatorChanges = Array.isArray(checkResult.designatorChanges) ? checkResult.designatorChanges : [];
+          annotationWarning = typeof checkResult.annotationWarning === 'string' ? checkResult.annotationWarning : '';
+          if (checkResult.duplicate === true) {
+            duplicate = true;
+            errorMessage = `One placement created ${String(primitiveIds.length)} primitives; inspect before continuing`;
+            break;
           }
-
-          if (!placed && !userCancelled) {
-            errorMessage = `Placement timed out after ${String(timeoutSeconds)} seconds`;
+          if (checkResult.placed === true) {
+            placed = true;
+            break;
           }
-        } catch (error) {
-          errorMessage = error instanceof Error ? error.message : String(error);
-        } finally {
-          if (sessionId) {
-            try {
-              await this.bridgeServer.request(`${placementPath}/close`, { sessionId }, 5000);
-            } catch {
-              // The check handler may already have cleaned up a completed session.
-            }
+          if (checkResult.userCancelled === true) {
+            userCancelled = true;
+            break;
           }
         }
 
-        if (placed || userCancelled) {
-          break;
+        if (!placed && !userCancelled && !duplicate) {
+          errorMessage = `Placement timed out after ${String(timeoutSeconds)} seconds; inspect the schematic before retrying`;
+        }
+      } catch (error) {
+        errorMessage = error instanceof Error ? error.message : String(error);
+      } finally {
+        if (sessionId) {
+          try {
+            await this.bridgeServer.request(`${placementPath}/close`, { sessionId }, 5000);
+          } catch {
+            // The check handler may already have cleaned up a completed session.
+          }
         }
       }
 
@@ -308,22 +312,30 @@ export class ToolDispatcher {
         component,
         placed,
         userCancelled,
-        attempts,
+        duplicate,
+        primitiveIds,
+        designatorChanges,
+        ...(annotationWarning ? { annotationWarning } : {}),
+        attempts: 1,
         ...(placed || userCancelled ? {} : { error: errorMessage || 'placement failed' }),
       });
+      if ((!placed && !userCancelled) || annotationWarning) {
+        break;
+      }
     }
 
     const placedCount = results.filter((result) => result.placed === true).length;
     const cancelledCount = results.filter((result) => result.userCancelled === true).length;
     const failedCount = results.length - placedCount - cancelledCount;
     return this.toToolContent({
-      ok: placedCount === results.length,
+      ok: placedCount === components.length && results.every((result) => !result.annotationWarning),
       placedCount,
       cancelledCount,
       failedCount,
-      totalCount: results.length,
+      totalCount: components.length,
+      notAttemptedCount: components.length - results.length,
       results,
-      message: `Interactive placement completed: ${String(placedCount)}/${String(results.length)} placed`,
+      message: `Interactive placement completed: ${String(placedCount)}/${String(components.length)} placed`,
     });
   }
 }

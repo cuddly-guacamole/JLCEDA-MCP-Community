@@ -276,7 +276,7 @@
   },
   {
     "name": "component_place",
-    "description": "引导用户按顺序交互放置已确认的器件列表。",
+    "description": "引导用户按顺序交互放置已确认的器件列表，返回新增图元 ID；重复放置或超时后停止，不自动重试。",
     "inputSchema": {
       "type": "object",
       "properties": {

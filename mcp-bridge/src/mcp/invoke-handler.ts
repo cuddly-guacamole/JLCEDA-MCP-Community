@@ -9,7 +9,7 @@
  * ------------------------------------------------------------------------
  */
 
-import { isPlainObjectRecord, toSafeErrorMessage, toSerializableAsync } from '../utils';
+import { getSyncState, isPlainObjectRecord, toSafeErrorMessage, toSerializableAsync } from '../utils';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
@@ -94,6 +94,55 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	const { callable, thisArg, resolvedPath } = resolveApiCallable(apiFullName);
 	const invokeArgs = Array.isArray(payload.args) ? payload.args : [];
 	const normalizedPath = resolvedPath.toLowerCase();
+
+	// EDA 3.x 的 modify 会在省略 otherProperty 时清空已有的 BOM 属性。
+	if (normalizedPath === 'eda.sch_primitivecomponent.modify' && typeof invokeArgs[0] === 'string' && isPlainObjectRecord(invokeArgs[1]) && !Object.hasOwn(invokeArgs[1], 'otherProperty')) {
+		const module = thisArg as { get?: (id: string) => Promise<unknown> };
+		if (typeof module.get !== 'function') {
+			throw new TypeError('无法读取器件原有属性，已取消可能清空 BOM 属性的修改。');
+		}
+		const component = await Promise.resolve(module.get.call(thisArg, invokeArgs[0]));
+		if (!component) {
+			throw new Error(`找不到器件图元 ${invokeArgs[0]}，未执行修改。`);
+		}
+		const otherProperty = getSyncState<unknown>(component, 'getState_OtherProperty', (component as { otherProperty?: unknown }).otherProperty);
+		if (isPlainObjectRecord(otherProperty)) {
+			invokeArgs[1] = { ...invokeArgs[1], otherProperty: { ...otherProperty } };
+		}
+	}
+
+	// EDA 3.x 的数组重载可能仅删除首项。逐个删除并核对实际图元列表。
+	if (normalizedPath === 'eda.sch_primitivecomponent.delete' && (typeof invokeArgs[0] === 'string' || (Array.isArray(invokeArgs[0]) && invokeArgs[0].every(id => typeof id === 'string')))) {
+		const module = thisArg as {
+			get?: (id: string) => Promise<unknown>;
+			getAllPrimitiveId?: (componentType?: unknown, allSchematicPages?: boolean) => Promise<string[]>;
+		};
+		if (typeof module.getAllPrimitiveId !== 'function') {
+			throw new TypeError('无法核对器件图元列表，已取消删除。');
+		}
+		const ids = (typeof invokeArgs[0] === 'string' ? [invokeArgs[0]] : invokeArgs[0]) as string[];
+		const deletedIds: string[] = [];
+		const failedIds: string[] = [];
+		for (const id of ids) {
+			const before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, false));
+			if (!before.includes(id)) {
+				failedIds.push(id);
+				continue;
+			}
+			await Promise.resolve(callable.call(thisArg, id));
+			let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, false));
+			if (remaining.includes(id) && typeof module.get === 'function') {
+				const liveObject = await Promise.resolve(module.get.call(thisArg, id));
+				if (liveObject) {
+					await Promise.resolve(callable.call(thisArg, liveObject));
+					remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, false));
+				}
+			}
+			(remaining.includes(id) ? failedIds : deletedIds).push(id);
+		}
+		return { apiFullName: resolvedPath, result: failedIds.length === 0, deletedIds, failedIds };
+	}
+
 	if (normalizedPath === PCB_AUTO_LAYOUT && pcbAutoLayoutReadbackRequired) {
 		return {
 			apiFullName: resolvedPath,
