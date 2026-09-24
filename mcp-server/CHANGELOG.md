@@ -2,6 +2,9 @@
 
 ## [2.3.2] - 2026-09-25
 
+- 首个连接页面未就绪时，自动改选后续已就绪页面；手动选中的页面、执行中的任务和未确认写入不会被自动切走。
+- PCB 自动布局的恢复诊断使用任务启动时及原生结果中的实际 PCB 身份，不再依赖可能过期的心跳图页；恢复读回自动请求完整器件位置。
+- `api_invoke` 可为无参数 PCB 器件 `getAll` 指定 `includeCompletePositions:true`，在保留通用 `result` 字段的同时额外返回全量 `componentPositions`。
 - 将 PCB 和原理图文档工具的纯查询及画布导航归为非设计写入，允许在写入隔离期间使用；选择状态、飞线计算、保存和导入仍受隔离。
 - PCB `import_changes` 返回待确认时建立全局写入屏障；用户明确确认已在原生对话框应用或取消后，`bridge_recover_client action=resolve_import` 校验导入时的 PCB 身份并完整读回器件与分页网络，才解除屏障。无法确认时保留重启宿主的受控恢复路径。
 - `netlabel_place` 工具说明标明普通网络标签需要 EDA v4；EDA 3.x 将直接返回未开始，避免调用不可用的 API。
@@ -15,7 +18,7 @@
 - 恢复隔离期间允许 `getAllPrimitiveId` / `getAll` 以严格的 `args:[null,false]` 查询当前页器件，并可用于受控恢复回读；无参数调用继续兼容，其余 `api_invoke` 仍按写入隔离。
 - PCB 恢复期间可用无参数的 `eda.pcb_PrimitiveComponent.getAll` 回读器件位置；带筛选参数的调用继续受隔离。
 - `bridge_recover_client` 使用原始超时诊断的图页 UUID 校验新客户端与实际 `/context` 回读；同一文档中的其他原理图页或 PCB 不再能解除当前图页的写入阻断。
-- PCB 器件位置回读返回完整的位置、旋转角和位号摘要，不会在多于 120 个器件时截断恢复依据。
+- PCB 器件位置回读通过 `componentPositions` 返回完整的位置、旋转角和位号摘要，不会在多于 120 个器件时截断恢复依据。
 - 恢复回读明确失败时继续阻断写入；PCB 自动布局超时后，强制以同板完整器件位置回读恢复，单独查询 `/context` 不会解除隔离。
 - Server 与 Bridge 超时先后交错、或 EDA 原生自动布局返回提交状态未知时保留恢复诊断，避免重启 Bridge 后绕过位置回读。
 - 原理图导线及 NetPort 的结果若标记 `commitUnknown: true`，按时返回也会建立未确认写入诊断；迟到结果继续保留诊断，避免另一页面提前再次写入。

@@ -66,7 +66,8 @@ try {
       case '/bridge/jlceda/context':
         return { currentDocumentInfo: { uuid: 'document-one', parentProjectUuid: 'project-one' }, currentPcbInfo: { uuid: pageUuid } };
       case '/bridge/jlceda/api/invoke':
-        return { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ uuid: 'c1', x: 1, y: 2 }], componentCount: 1 };
+        assert.equal(message.payload.includeCompletePositions, true);
+        return { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ uuid: 'c1', x: 1, y: 2 }], componentPositions: [{ primitiveId: 'c1', designator: 'U1', x: 1, y: 2, rotation: 0 }], componentCount: 1 };
       case '/bridge/jlceda/net/query-pcb':
         netPages += 1;
         if (truncateNets) return { ok: true, mode: 'names', offset: 0, names: ['GND'], total: 2, returned: 1, truncated: false };

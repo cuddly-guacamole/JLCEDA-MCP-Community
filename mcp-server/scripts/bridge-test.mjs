@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { WebSocket } from 'ws';
 import { EdaBridgeServer } from '../dist/mcp/bridge-client.js';
-import { isReadOnlyBridgeRequest } from '../dist/mcp/bridge-contract.js';
+import { isReadOnlyBridgeRequest, validateBridgeClientMessage } from '../dist/mcp/bridge-contract.js';
 
 async function reservePort() {
   const server = createServer();
@@ -409,6 +409,10 @@ try {
   queueServer = undefined;
 
   const connectivityPath = '/bridge/jlceda/schematic/connectivity';
+  assert.equal(validateBridgeClientMessage({
+    type: 'bridge/task-started', clientId: 'pcb-client', requestId: 'layout-1', leaseTerm: 1, startedAt: Date.now(),
+    context: { pageKind: 'pcb', pageUuid: 'actual-pcb', documentUuid: 'actual-document' },
+  }), undefined);
   for (const action of ['navigate_to_coordinates', 'navigate_to_region', 'zoom_to_board_outline']) {
     assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', { action }), true);
   }
@@ -722,6 +726,7 @@ try {
         requestId: message.requestId,
         leaseTerm: message.leaseTerm,
         startedAt: Date.now(),
+        context: { documentUuid: 'disconnected-document', projectUuid: 'disconnected-project', pageKind: 'pcb', pageUuid: 'disconnected-page' },
       }));
     }
   });
@@ -824,9 +829,10 @@ try {
       return { currentDocumentInfo: { uuid: 'disconnected-document', parentProjectUuid: 'disconnected-project' }, currentProjectInfo: { uuid: 'disconnected-project' }, currentPcbInfo: { uuid: pcbReadbackPageUuid } };
     }
     if (message.path === '/bridge/jlceda/api/invoke') {
+      assert.equal(message.payload.includeCompletePositions, true);
       return pcbPositionReadbackValid
-        ? { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ primitiveId: 'pcb-component-1', designator: 'U1', x: 100, y: 200, rotation: 0 }], componentCount: 1 }
-        : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [], componentCount: 1 };
+        ? { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ uuid: 'pcb-component-1' }], componentPositions: [{ primitiveId: 'pcb-component-1', designator: 'U1', x: 100, y: 200, rotation: 0 }], componentCount: 1 }
+        : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [], componentPositions: [], componentCount: 1 };
     }
     return { source: 'disconnected-recovery-fresh', path: message.path };
   });
@@ -875,7 +881,7 @@ try {
   nativeLayoutOld = await registerEda(
     `ws://127.0.0.1:${nativeLayoutPort}/bridge/ws${tokenQuery}`,
     'native-layout-page',
-    { documentUuid: 'native-layout-document', projectUuid: 'native-layout-project', pageKind: 'pcb', pageUuid: 'native-layout-pcb' },
+    { documentUuid: 'stale-layout-document', projectUuid: 'stale-layout-project', pageKind: 'pcb', pageUuid: 'stale-layout-pcb' },
   );
   attachTaskResponder(nativeLayoutOld.socket, 'native-layout-page', () => ({
     apiFullName: 'eda.pcb_Document.autoLayout',
@@ -883,6 +889,7 @@ try {
     commitState: 'unknown',
     retryBlocked: true,
     pcbUuid: 'native-layout-pcb',
+    layoutContext: { pageKind: 'pcb', pageUuid: 'native-layout-pcb', documentUuid: 'native-layout-document', projectUuid: 'native-layout-project' },
     error: 'RPC Call autoLayout Timed Out',
   }));
   const nativeLayoutResult = await nativeLayoutServer.request('/bridge/jlceda/api/invoke', {
@@ -893,6 +900,8 @@ try {
   const nativeLayoutDiagnostic = nativeLayoutSnapshot.clients[0].quarantine.diagnostics[0];
   assert.equal(nativeLayoutDiagnostic.requiredReadback, 'pcb_component_positions');
   assert.equal(nativeLayoutDiagnostic.uncertaintyReason, 'native autoLayout timeout');
+  assert.equal(nativeLayoutDiagnostic.context.pageUuid, 'native-layout-pcb', 'execution-time result must replace the stale heartbeat page');
+  assert.equal(nativeLayoutDiagnostic.context.documentUuid, 'native-layout-document');
   await assert.rejects(nativeLayoutServer.request('/bridge/test/write-after-native-layout-timeout', {}, 2000), /writes are blocked pending recovery readback/);
   const nativeLayoutRecovery = await nativeLayoutServer.request('/bridge/admin/recover-client', {
     confirm: true, requestId: nativeLayoutDiagnostic.requestId,
@@ -903,9 +912,12 @@ try {
     'native-layout-new',
     { documentUuid: 'native-layout-document', projectUuid: 'native-layout-project', pageKind: 'pcb', pageUuid: 'native-layout-pcb' },
   );
-  attachTaskResponder(nativeLayoutNew.socket, 'native-layout-new', (message) => message.path === '/bridge/jlceda/context'
-    ? { currentDocumentInfo: { uuid: 'native-layout-document', parentProjectUuid: 'native-layout-project' }, currentProjectInfo: { uuid: 'native-layout-project' }, currentPcbInfo: { uuid: 'native-layout-pcb' } }
-    : { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ primitiveId: 'native-component-1', designator: 'R1', x: 1, y: 2, rotation: 0 }], componentCount: 1 });
+  attachTaskResponder(nativeLayoutNew.socket, 'native-layout-new', (message) => {
+    if (message.path === '/bridge/jlceda/context')
+      return { currentDocumentInfo: { uuid: 'native-layout-document', parentProjectUuid: 'native-layout-project' }, currentProjectInfo: { uuid: 'native-layout-project' }, currentPcbInfo: { uuid: 'native-layout-pcb' } };
+    assert.equal(message.payload.includeCompletePositions, true);
+    return { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', result: [{ uuid: 'native-component-1' }], componentPositions: [{ primitiveId: 'native-component-1', designator: 'R1', x: 1, y: 2, rotation: 0 }], componentCount: 1 };
+  });
   await assert.rejects(nativeLayoutServer.request('/bridge/admin/recover-client', {
     action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-new',
     readbackPath: '/bridge/jlceda/context',
@@ -935,7 +947,7 @@ try {
   lateUnknownClient = await registerEda(
     `ws://127.0.0.1:${lateUnknownPort}/bridge/ws${tokenQuery}`,
     'late-unknown-page',
-    { documentUuid: 'late-unknown-document', projectUuid: 'late-unknown-project', pageKind: 'pcb', pageUuid: 'late-unknown-pcb' },
+    { documentUuid: 'stale-late-document', projectUuid: 'stale-late-project', pageKind: 'pcb', pageUuid: 'stale-late-pcb' },
   );
   let lateUnknownTask;
   lateUnknownClient.socket.on('message', (data) => {
@@ -945,17 +957,22 @@ try {
     lateUnknownClient.socket.send(JSON.stringify({
       type: 'bridge/task-started', clientId: 'late-unknown-page',
       requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+      context: { documentUuid: 'late-unknown-document', projectUuid: 'late-unknown-project', pageKind: 'pcb', pageUuid: 'late-unknown-pcb' },
     }));
   });
   await assert.rejects(lateUnknownServer.request('/bridge/jlceda/api/invoke', {
     apiFullName: 'eda.pcb_Document.autoLayout', args: [],
   }, 100), /Request execution timeout/);
   assert.ok(lateUnknownTask);
+  const beforeLateResult = await lateUnknownServer.request('/bridge/admin/clients', {}, 2000);
+  assert.equal(beforeLateResult.clients[0].quarantine.diagnostics[0].context.pageUuid, 'late-unknown-pcb',
+    'a Server timeout must retain task-start PCB identity rather than the stale heartbeat');
+  assert.equal(beforeLateResult.clients[0].quarantine.diagnostics[0].context.documentUuid, 'late-unknown-document');
   const lateUnknownProcessed = waitForMessage(lateUnknownClient.socket, (message) => message.type === 'bridge/heartbeat-ack');
   lateUnknownClient.socket.send(JSON.stringify({
     type: 'bridge/result', clientId: 'late-unknown-page',
     requestId: lateUnknownTask.requestId, leaseTerm: lateUnknownTask.leaseTerm,
-    result: { apiFullName: 'eda.pcb_Document.autoLayout', ok: false, commitState: 'unknown', retryBlocked: true, pcbUuid: 'late-unknown-pcb' },
+    result: { apiFullName: 'eda.pcb_Document.autoLayout', ok: false, commitState: 'unknown', retryBlocked: true, pcbUuid: 'late-unknown-pcb', layoutContext: { documentUuid: 'late-unknown-document', projectUuid: 'late-unknown-project', pageKind: 'pcb', pageUuid: 'late-unknown-pcb' } },
   }));
   lateUnknownClient.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'late-unknown-page', sentAt: Date.now() }));
   await lateUnknownProcessed;
@@ -966,6 +983,48 @@ try {
   lateUnknownClient = undefined;
   lateUnknownServer.close();
   lateUnknownServer = undefined;
+
+  const missingLayoutIdentityPort = await reservePort();
+  const missingLayoutIdentityServer = new EdaBridgeServer(missingLayoutIdentityPort);
+  let missingLayoutIdentityOld;
+  let missingLayoutIdentityFresh;
+  try {
+    await missingLayoutIdentityServer.start();
+    const identityUrl = `ws://127.0.0.1:${missingLayoutIdentityPort}/bridge/ws${tokenQuery}`;
+    missingLayoutIdentityOld = await registerEda(identityUrl, 'missing-layout-identity-old', {
+      documentUuid: 'heartbeat-document', projectUuid: 'heartbeat-project', pageKind: 'pcb', pageUuid: 'heartbeat-pcb',
+    });
+    missingLayoutIdentityOld.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      missingLayoutIdentityOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'missing-layout-identity-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+      }));
+    });
+    await assert.rejects(missingLayoutIdentityServer.request('/bridge/jlceda/api/invoke', {
+      apiFullName: 'eda.pcb_Document.autoLayout', args: [],
+    }, 100), /Request execution timeout/);
+    const missingSnapshot = await missingLayoutIdentityServer.request('/bridge/admin/clients', {}, 2000);
+    const missingDiagnostic = missingSnapshot.clients[0].quarantine.diagnostics[0];
+    assert.equal(missingDiagnostic.context.pageUuid, undefined, 'heartbeat PCB must not be treated as execution identity');
+    const recovery = await missingLayoutIdentityServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: missingDiagnostic.requestId,
+    }, 2000);
+    missingLayoutIdentityFresh = await registerEda(identityUrl, 'missing-layout-identity-fresh', {
+      documentUuid: 'heartbeat-document', projectUuid: 'heartbeat-project', pageKind: 'pcb', pageUuid: 'heartbeat-pcb',
+    });
+    await assert.rejects(missingLayoutIdentityServer.request('/bridge/admin/recover-client', {
+      action: 'readback', confirm: true, recoveryId: recovery.recoveryId, clientId: 'missing-layout-identity-fresh',
+      expectedDocumentUuid: 'heartbeat-document', expectedPageUuid: 'heartbeat-pcb',
+      readbackPath: '/bridge/jlceda/api/invoke',
+      readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
+    }, 2000), /no verified execution-time PCB page identity/);
+  } finally {
+    missingLayoutIdentityOld?.socket.close();
+    missingLayoutIdentityFresh?.socket.close();
+    missingLayoutIdentityServer.close();
+  }
 
   const lateConnectivityPort = await reservePort();
   lateConnectivityServer = new EdaBridgeServer(lateConnectivityPort);
@@ -1384,6 +1443,72 @@ try {
   livenessPeer.socket.close();
   livenessServer.close();
   livenessServer = undefined;
+
+  const readyPromotionPort = await reservePort();
+  const readyPromotionServer = new EdaBridgeServer(readyPromotionPort, { peerTtlMs: 400, peerSweepIntervalMs: 2000 });
+  let unreadyPeer;
+  let readyPeer;
+  let pendingPeer;
+  let laterPeer;
+  try {
+    await readyPromotionServer.start();
+    const readyPromotionUrl = `ws://127.0.0.1:${readyPromotionPort}/bridge/ws${tokenQuery}`;
+    unreadyPeer = await connect(readyPromotionUrl);
+    const firstWelcome = waitForMessage(unreadyPeer, message => message.type === 'bridge/welcome');
+    const firstRole = waitForMessage(unreadyPeer, message => message.type === 'bridge/role');
+    unreadyPeer.send(JSON.stringify({ type: 'bridge/hello', clientId: 'unready-first', bridgeVersion: '2.3.2' }));
+    await firstWelcome;
+    assert.equal((await firstRole).role, 'active');
+    readyPeer = await registerEda(readyPromotionUrl, 'ready-second');
+    let pendingTask;
+    let pendingTaskStarted;
+    const pendingTaskStartedPromise = new Promise(resolve => { pendingTaskStarted = resolve; });
+    readyPeer.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      readyPeer.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'ready-second', requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now() }));
+      if (message.path === '/bridge/test/pending-promotion') {
+        pendingTask = message;
+        pendingTaskStarted();
+        return;
+      }
+      readyPeer.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'ready-second', requestId: message.requestId, leaseTerm: message.leaseTerm, result: { source: 'ready-second', path: message.path } }));
+    });
+    assert.equal((await readyPromotionServer.request('/bridge/admin/clients', {}, 2000)).activeClientId, 'ready-second');
+    assert.deepEqual(await readyPromotionServer.request('/bridge/jlceda/context', {}, 2000), {
+      source: 'ready-second', path: '/bridge/jlceda/context',
+    });
+
+    const pendingRequest = readyPromotionServer.request('/bridge/test/pending-promotion', {}, 2000);
+    await pendingTaskStartedPromise;
+    await new Promise(resolve => setTimeout(resolve, 450));
+    pendingPeer = await registerEda(readyPromotionUrl, 'ready-while-pending');
+    assert.equal((await readyPromotionServer.request('/bridge/admin/clients', {}, 2000)).activeClientId, 'ready-second',
+      'an active request must not be interrupted by automatic promotion');
+    readyPeer.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'ready-second', requestId: pendingTask.requestId, leaseTerm: pendingTask.leaseTerm, result: { completed: true } }));
+    assert.deepEqual(await pendingRequest, { completed: true });
+    const promotionHeartbeat = waitForMessage(pendingPeer.socket, message => message.type === 'bridge/heartbeat-ack');
+    pendingPeer.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'ready-while-pending', sentAt: Date.now() }));
+    await promotionHeartbeat;
+    assert.equal((await readyPromotionServer.request('/bridge/admin/clients', {}, 2000)).activeClientId, 'ready-while-pending');
+
+    unreadyPeer.send(JSON.stringify({ type: 'bridge/ready', clientId: 'unready-first', readyAt: Date.now() }));
+    const firstHeartbeat = waitForMessage(unreadyPeer, message => message.type === 'bridge/heartbeat-ack');
+    unreadyPeer.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'unready-first', sentAt: Date.now() }));
+    await firstHeartbeat;
+    await readyPromotionServer.request('/bridge/admin/select-client', { clientId: 'unready-first' }, 2000);
+    await new Promise(resolve => setTimeout(resolve, 450));
+    laterPeer = await registerEda(readyPromotionUrl, 'ready-third');
+    assert.equal((await readyPromotionServer.request('/bridge/admin/clients', {}, 2000)).activeClientId, 'unready-first',
+      'a manually selected page must not be replaced when its heartbeat becomes stale');
+    await readyPromotionServer.request('/bridge/admin/select-client', { clientId: 'ready-third' }, 2000);
+  } finally {
+    unreadyPeer?.close();
+    readyPeer?.socket.close();
+    pendingPeer?.socket.close();
+    laterPeer?.socket.close();
+    readyPromotionServer.close();
+  }
 
   mainServer.close();
   await waitUntil(() => secondaryServer.getMode() === 'main');

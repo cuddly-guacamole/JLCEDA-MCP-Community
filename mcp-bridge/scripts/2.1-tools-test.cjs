@@ -660,9 +660,12 @@ async function main() {
 		pcbAutoLayoutCalls += 1;
 		throw new Error('RPC Call autoLayout Timed Out');
 	};
+	await assert.rejects(() => handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [], expectedPcbUuid: 'pcb-other' }), /PCB page changed between task start and autoLayout invocation/);
+	assert.equal(pcbAutoLayoutCalls, 0, 'a page mismatch must fail before the native autoLayout call');
 	const unknownLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(unknownLayout.commitState, 'unknown');
 	assert.equal(unknownLayout.retryBlocked, true);
+	assert.equal(unknownLayout.layoutContext.pageUuid, 'pcb-1');
 	const runtimeLayoutQuarantine = new BridgeTaskQuarantine();
 	const runtimeLayoutPath = '/bridge/jlceda/api/invoke';
 	if (requiresHostRestartForResult(runtimeLayoutPath, { apiFullName: 'eda.pcb_Document.autoLayout', args: [] }, unknownLayout))
@@ -671,31 +674,42 @@ async function main() {
 	assert.equal(blockedLayout.retryBlocked, true);
 	assert.equal(pcbAutoLayoutCalls, 1);
 	globalThis.eda.pcb_PrimitiveComponent = {
-		async getAll() { return Array.from({ length: 125 }, (_, index) => ({ uuid: `R${index + 1}`, x: 10 + index, y: 20, rotation: 90 })); },
+		async getAll() { return Array.from({ length: 125 }, (_, index) => ({ uuid: `R${index + 1}`, x: 10 + index, y: 20, rotation: 90, footprint: '0402' })); },
 	};
 	const filteredReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] });
 	assert.equal(filteredReadback.autoLayoutReadbackPerformed, undefined);
+	assert.equal(filteredReadback.result[0].footprint, '0402', 'ordinary getAll must retain component fields');
 	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] })).retryBlocked, true);
 	activePcbUuid = 'pcb-2';
 	const otherPcbReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
 	assert.equal(otherPcbReadback.autoLayoutReadbackPerformed, undefined);
+	assert.equal(otherPcbReadback.componentPositions, undefined);
+	assert.equal(otherPcbReadback.result[0].footprint, '0402');
 	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] })).retryBlocked, true);
 	activePcbUuid = 'pcb-1';
 	const layoutReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
 	assert.equal(layoutReadback.autoLayoutReadbackPerformed, true);
 	assert.equal(layoutReadback.componentCount, 125);
-	assert.equal(layoutReadback.result.length, 125, 'layout recovery must return every component position');
-	assert.equal(layoutReadback.result[124].primitiveId, 'R125');
+	assert.equal(layoutReadback.result[0].footprint, '0402');
+	assert.equal(layoutReadback.componentPositions.length, 125, 'layout recovery must return every component position');
+	assert.equal(layoutReadback.componentPositions[124].primitiveId, 'R125');
 	const serializedLayoutReadback = await toSerializableAsync(layoutReadback);
-	assert.equal(serializedLayoutReadback.result.length, 125, 'Bridge result serialization must preserve every verified position');
-	assert.equal(layoutReadback.result[0].rotation, 90);
+	assert.equal(serializedLayoutReadback.componentPositions.length, 125, 'Bridge result serialization must preserve every verified position');
+	assert.equal(layoutReadback.componentPositions[0].rotation, 90);
 	assert.equal(runtimeLayoutQuarantine.requiresHostRestart(), true, 'same-page readback must not clear the runtime write barrier before EDA host restart');
 	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
 	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
 	assert.equal(completedLayout.result.success, true);
 	const nextLayoutBaseline = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
-	assert.equal(nextLayoutBaseline.componentCount, 125);
-	assert.equal(nextLayoutBaseline.result[124].primitiveId, 'R125', 'the complete position snapshot must also be available before a layout attempt');
+	assert.equal(nextLayoutBaseline.componentCount, undefined);
+	assert.equal(nextLayoutBaseline.result.length, 120, 'ordinary getAll retains its bounded generic serialization');
+	assert.equal(nextLayoutBaseline.result[0].footprint, '0402');
+	const requestedPositionReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [], includeCompletePositions: true });
+	assert.equal(requestedPositionReadback.componentCount, 125);
+	assert.equal(requestedPositionReadback.componentPositions[124].primitiveId, 'R125');
+	globalThis.eda.pcb_PrimitiveComponent.getAll = async () => [{ uuid: 'R1', footprint: '0402' }];
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] })).result[0].footprint, '0402');
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [], includeCompletePositions: true })).ok, false, 'strict position validation applies only to requested recovery readbacks');
 	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = originalCurrentPcbInfo;
 	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: false, successNetsCount: 0, duration: 0, failedNets: ['VCC'] });
 	const failedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });

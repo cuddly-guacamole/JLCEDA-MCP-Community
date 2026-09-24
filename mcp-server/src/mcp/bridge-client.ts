@@ -273,6 +273,7 @@ export class EdaBridgeServer {
   private readonly instanceId = randomUUID();
   private requestIdCounter = 0;
   private activeClientId = '';
+  private activeClientExplicitlySelected = false;
   private leaseTerm = 0;
   private started = false;
   private isMainServer = false;
@@ -582,6 +583,7 @@ export class EdaBridgeServer {
     this.clientIdBySocket.set(socket, clientId);
     if (!this.activeClientId || !this.peers.has(this.activeClientId)) {
       this.activeClientId = clientId;
+      this.activeClientExplicitlySelected = false;
       this.leaseTerm += 1;
     }
     return peer;
@@ -621,6 +623,7 @@ export class EdaBridgeServer {
       this.rejectPendingForClient(clientId, 'Active EDA client disconnected');
       const replacement = [...this.peers.values()].filter(candidate => this.isPeerReady(candidate)).sort((left, right) => left.connectedAt - right.connectedAt)[0];
       this.activeClientId = replacement?.clientId ?? '';
+      this.activeClientExplicitlySelected = false;
       this.leaseTerm += 1;
       this.broadcastRoles('Active client disconnected; standby promoted');
     }
@@ -646,6 +649,7 @@ export class EdaBridgeServer {
       // A Bridge task timeout or an unknown commit state does not mean the
       // underlying EDA Promise settled. Keep the write quarantine in that case.
       const diagnostic = this.recoveryDiagnostics.get(requestId);
+      this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
       const bridgeTimedOut = getBridgeTaskTimeoutMs(message.error) !== undefined
         || (isRecord(message.error) && message.error.code === 'BRIDGE_TASK_TIMEOUT');
       const commitUnknown = isRecord(message.result)
@@ -688,6 +692,7 @@ export class EdaBridgeServer {
       diagnostic.context = isRecord(message.result) ? parseClientContext(message.result.importContext) : undefined;
       this.pendingImportSockets.set(requestId, peer.socket);
     }
+    this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
     if (isRecord(message.error) && typeof message.error.message === 'string') {
       const code = typeof message.error.code === 'string' ? message.error.code : undefined;
       const timeoutMs = Number(message.error.timeoutMs);
@@ -716,6 +721,12 @@ export class EdaBridgeServer {
 
     pending.started = true;
     pending.startedAt = Date.now();
+    if (isPcbAutoLayoutRequest(pending.path ?? '', pending.payload)) {
+      const executionContext = parseClientContext(message.context);
+      pending.context = executionContext?.pageKind === 'pcb' && executionContext.pageUuid
+        ? executionContext
+        : { pageKind: 'pcb' };
+    }
     this.clearPendingTimeout(pending);
     const executionTimeoutMs = pending.executionTimeoutMs ?? 30000;
     if (pending.mcpSocket && pending.internalRequestId) {
@@ -874,9 +885,16 @@ export class EdaBridgeServer {
   }
 
   private promoteReadyPeerIfNeeded(peer: BridgePeer): void {
-    if (this.activeClientId || !this.isPeerReady(peer))
+    if (!this.isPeerReady(peer) || this.activeClientId === peer.clientId)
+      return;
+    const active = this.peers.get(this.activeClientId);
+    if ((active && (this.isPeerReady(active) || this.activeClientExplicitlySelected))
+      || this.recoverySession || this.resolvingImports.size > 0
+      || hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values())
+      || [...this.pendingRequests.values()].some(request => request.clientId === this.activeClientId))
       return;
     this.activeClientId = peer.clientId;
+    this.activeClientExplicitlySelected = false;
     this.leaseTerm += 1;
     this.broadcastRoles('Ready standby promoted');
   }
@@ -954,6 +972,7 @@ export class EdaBridgeServer {
       this.leaseTerm += 1;
       this.broadcastRoles('Client explicitly selected by MCP');
     }
+    this.activeClientExplicitlySelected = true;
     return this.getClientSnapshot();
   }
 
@@ -975,6 +994,22 @@ export class EdaBridgeServer {
       context: pending.context,
     };
     this.recoveryDiagnostics.set(requestId, diagnostic);
+  }
+
+  private updateAutoLayoutDiagnostic(requestId: string, result: unknown, clientId: string): void {
+    const diagnostic = this.recoveryDiagnostics.get(requestId);
+    if (diagnostic?.clientId !== clientId || diagnostic.requiredReadback !== 'pcb_component_positions' || !isRecord(result))
+      return;
+    const layoutContext = parseClientContext(result.layoutContext);
+    const pageUuid = layoutContext?.pageKind === 'pcb' ? layoutContext.pageUuid : optionalString(result.pcbUuid);
+    if (!pageUuid)
+      return;
+    diagnostic.context = {
+      pageKind: 'pcb',
+      pageUuid,
+      documentUuid: layoutContext?.documentUuid,
+      projectUuid: layoutContext?.projectUuid,
+    };
   }
 
   private async recoverClient(payload: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
@@ -1064,6 +1099,10 @@ export class EdaBridgeServer {
       && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
+      && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
+      throw new Error('Timed-out PCB autoLayout has no verified execution-time PCB page identity; writes remain blocked.');
+    }
     if (session.diagnostic.pendingNativeConfirmation
       && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload))) {
       throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
@@ -1088,6 +1127,14 @@ export class EdaBridgeServer {
     const expectedProjectUuid = optionalString(payload.expectedProjectUuid) ?? session.diagnostic.context?.projectUuid;
     const expectedPageUuid = session.diagnostic.context?.pageUuid ?? optionalString(payload.expectedPageUuid);
     const expectedPageKind = session.diagnostic.context?.pageKind ?? target.context?.pageKind;
+    const autoLayoutExecutionIdentity = session.diagnostic.requiredReadback === 'pcb_component_positions'
+      ? {
+        pageKind: session.diagnostic.context?.pageKind,
+        pageUuid: session.diagnostic.context?.pageUuid,
+        documentUuid: session.diagnostic.context?.documentUuid,
+        projectUuid: session.diagnostic.context?.projectUuid,
+      }
+      : undefined;
     if (!expectedDocumentUuid && !expectedProjectUuid)
       throw new Error('Recovery requires expectedDocumentUuid or expectedProjectUuid when the original client did not report document identity.');
     if (expectedDocumentUuid && target.context?.documentUuid && target.context.documentUuid !== expectedDocumentUuid)
@@ -1099,7 +1146,12 @@ export class EdaBridgeServer {
     this.selectClient(targetClientId, true, true);
     session.targetClientId = targetClientId;
     session.targetSocket = target.socket;
-    const readback = await this.dispatchToEda(readbackPath, readbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+    const requiresPcbPositions = session.diagnostic.requiredReadback === 'pcb_component_positions'
+      || session.diagnostic.pendingNativeConfirmation;
+    const effectiveReadbackPayload = requiresPcbPositions
+      ? { ...readbackPayload, includeCompletePositions: true }
+      : readbackPayload;
+    const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
     if (isRecord(readback) && readback.ok === false) {
       const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
         || readbackPath === '/bridge/jlceda/schematic/drc-check';
@@ -1107,14 +1159,7 @@ export class EdaBridgeServer {
         throw new Error(`Recovery readback failed: ${optionalString(readback.error) ?? 'the read-only operation returned ok:false'}`);
       }
     }
-    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
-      && (!isRecord(readback)
-        || optionalString(readback.apiFullName)?.toLowerCase() !== 'eda.pcb_primitivecomponent.getall'
-        || !Array.isArray(readback.result)
-        || readback.componentCount !== readback.result.length)) {
-      throw new Error('PCB component position readback did not return a complete component list; writes remain blocked.');
-    }
-    if (session.diagnostic.pendingNativeConfirmation)
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions' || session.diagnostic.pendingNativeConfirmation)
       this.validateCompletePcbComponents(readback);
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
@@ -1135,6 +1180,13 @@ export class EdaBridgeServer {
       await this.readCompletePcbNets(targetClientId, timeoutMs);
       const finalContext = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
       this.assertPcbIdentity(finalContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+    }
+    if (autoLayoutExecutionIdentity
+      && (session.diagnostic.context?.pageKind !== autoLayoutExecutionIdentity.pageKind
+        || session.diagnostic.context?.pageUuid !== autoLayoutExecutionIdentity.pageUuid
+        || session.diagnostic.context?.documentUuid !== autoLayoutExecutionIdentity.documentUuid
+        || session.diagnostic.context?.projectUuid !== autoLayoutExecutionIdentity.projectUuid)) {
+      throw new Error('PCB autoLayout execution identity changed during recovery readback; retry against the actual PCB page.');
     }
     this.recoverySession = undefined;
     this.recoveryDiagnostics.delete(session.diagnostic.requestId);
@@ -1164,11 +1216,15 @@ export class EdaBridgeServer {
   private validateCompletePcbComponents(value: unknown): number {
     if (!isRecord(value)
       || optionalString(value.apiFullName)?.toLowerCase() !== 'eda.pcb_primitivecomponent.getall'
-      || !Array.isArray(value.result)
-      || value.componentCount !== value.result.length) {
-      throw new Error('PCB import component readback did not return a complete component list; writes remain blocked.');
+      || !Array.isArray(value.componentPositions)
+      || value.componentCount !== value.componentPositions.length
+      || value.componentPositions.some(position => !isRecord(position)
+        || !optionalString(position.primitiveId)
+        || !Number.isFinite(position.x) || !Number.isFinite(position.y)
+        || !Number.isFinite(position.rotation))) {
+      throw new Error('PCB component position readback did not return a complete component list; writes remain blocked.');
     }
-    return value.result.length;
+    return value.componentPositions.length;
   }
 
   private async readCompletePcbNets(clientId: string, timeoutMs: number): Promise<number> {
@@ -1217,7 +1273,7 @@ export class EdaBridgeServer {
       const read = (path: string, body: Record<string, unknown>) => this.dispatchToEda(path, body, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, peer.clientId);
       const firstContext = await read('/bridge/jlceda/context', {});
       this.assertPcbIdentity(firstContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
-      const components = await read('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+      const components = await read('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [], includeCompletePositions: true });
       const componentCount = this.validateCompletePcbComponents(components);
       const netCount = await this.readCompletePcbNets(peer.clientId, timeoutMs);
       const finalContext = await read('/bridge/jlceda/context', {});

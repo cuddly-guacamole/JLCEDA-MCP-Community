@@ -34,6 +34,9 @@
 					"requestId": "non-empty-string",
 					"leaseTerm": "non-negative-integer",
 					"startedAt": "finite-number"
+				},
+				"optional": {
+					"context": "context"
 				}
 			},
 			"bridge/result": {

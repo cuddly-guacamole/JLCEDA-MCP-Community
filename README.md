@@ -2,6 +2,8 @@
 
 当前发布版本：Bridge `2.3.2`，MCP Server `2.3.2`。本版本改进原理图当前页读取、器件放置、BOM 属性修改和连通性操作，并明确 PCB 导入与自动布局的提交状态。EDA 修改超时或连接失联后，Server 会保留诊断，要求在原图页完成只读回读才能恢复写入。
 
+多页面连接时，首个页面未就绪会自动改选已就绪页面；显式选择或正在执行任务时不会自动切换。PCB 自动布局使用执行时的实际图页身份进行恢复核对；调用 `eda.pcb_PrimitiveComponent.getAll` 时可指定 `includeCompletePositions:true` 额外获取不截断的 `componentPositions`，通用 `result` 保持原有字段。
+
 ## 功能与工具
 
 - `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由；它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。

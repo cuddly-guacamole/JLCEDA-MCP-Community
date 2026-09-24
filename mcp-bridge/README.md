@@ -18,6 +18,8 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 Server 通过 `bridge_recover_client action=recover` 建立受控恢复会话后，Bridge 会等待底层 EDA Promise 结束再创建新运行时世代及全新 `clientId`；请求本身不能取消 EDA Promise。Promise 持续挂起或 PCB `autoLayout` 返回提交状态未知时，在建立恢复会话后关闭并重启原 EDA 宿主，再用恢复会话后的新连接核对目标图页并执行只读回读；普通掉线自动重连保留旧 `clientId`，不会解除写隔离。原理图当前页器件查询推荐 `getAllPrimitiveId` 或 `getAll` 搭配 `args:[null,false]`；无参数调用仍兼容。PCB 器件回读可用无参数的 `eda.pcb_PrimitiveComponent.getAll`。隔离期间 Bridge 可处理只读查询，但其结果在原调用结束前只是暂时快照；写入仍被阻止。
 
+PCB 自动布局启动时，Bridge 会采集实际 PCB 身份并发送给 Server；若启动与执行之间切换图页，则取消调用。无参数 `eda.pcb_PrimitiveComponent.getAll` 的普通 `result` 保留原有组件字段；传入 `includeCompletePositions:true` 时另返回不截断的 `componentPositions` 和 `componentCount`，供布局前后与恢复期比较。
+
 PCB `import_changes` 打开原生确认对话框后，Bridge 和 Server 均暂停写入，只读查询可继续。用户在 EDA 点击应用修改或取消并确认对话框关闭后，从 `bridge_clients` 取得 `requestId`，调用 `bridge_recover_client action=resolve_import`，设置 `confirm:true` 和对应的 `resolution`。Server 核对同一 PCB 并完整回读器件与网络后发出解除指令。底层 API 不提供对话框完成事件；无法确认时先建立 `action=recover` 会话，重启原 EDA 宿主，再用新 Bridge 客户端执行 PCB 回读。
 
 2.1 版本新增 `schematic_document_action`，用于受限地检查原理图坐标/区域、选中对象、图元、导航、保存和导入。

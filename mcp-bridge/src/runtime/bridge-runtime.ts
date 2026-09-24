@@ -21,7 +21,7 @@ import {
 } from '../mcp/component-place-handler.ts';
 import { BridgeStateManager } from '../state/state-manager.ts';
 import { BridgeStatusReporter } from '../state/status-reporter.ts';
-import { safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
+import { isPlainObjectRecord, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
 import { debugLog } from '../utils/debug-log.ts';
 import { getBridgeTaskHandler } from './bridge-handler-registry.ts';
 import { BridgeTransport } from './bridge-transport.ts';
@@ -267,6 +267,22 @@ function stopTransport(): void {
 	}
 }
 
+async function readPcbAutoLayoutTaskContext(): Promise<BridgeClientContext> {
+	const [pcb, document, project] = await Promise.all([
+		safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
+		safeCall(() => eda.dmt_SelectControl.getCurrentDocumentInfo()),
+		safeCall(() => eda.dmt_Project.getCurrentProjectInfo()),
+	]);
+	if (!pcb?.uuid)
+		throw new Error('Cannot verify the current PCB before autoLayout; the operation was not started.');
+	return {
+		pageKind: 'pcb',
+		pageUuid: pcb.uuid,
+		documentUuid: document?.uuid,
+		projectUuid: document?.parentProjectUuid ?? project?.uuid,
+	};
+}
+
 // 按角色更新页面状态。
 function applyRole(message: BridgeServerRoleMessage): void {
 	currentRole = message.role;
@@ -387,14 +403,22 @@ export function enqueueTask(task: { requestId: string; path: string; payload: un
 		let handlerSettled: Promise<void> | undefined;
 		try {
 			debugLog('[DEBUG] calling handler for path:', task.path);
-			currentTransport.reportTaskStarted(task.requestId, task.leaseTerm);
+			const autoLayoutTask = task.path === '/bridge/jlceda/api/invoke'
+				&& isPlainObjectRecord(task.payload)
+				&& typeof task.payload.apiFullName === 'string'
+				&& task.payload.apiFullName.trim().toLowerCase() === 'eda.pcb_document.autolayout';
+			const executionContext = autoLayoutTask ? await readPcbAutoLayoutTaskContext() : undefined;
+			const handlerPayload = autoLayoutTask
+				? { ...(task.payload as Record<string, unknown>), expectedPcbUuid: executionContext!.pageUuid }
+				: task.payload;
+			currentTransport.reportTaskStarted(task.requestId, task.leaseTerm, executionContext);
 			writeTaskLog('info', 'bridge.task.started', 'Bridge 任务开始执行', task, 'handler');
 			// 任务执行前刷新服务端活动时间戳，避免空闲超时误判
 			currentTransport.refreshServerActivity();
 			const timeoutMs = resolveBridgeTaskTimeoutMs(task.path, task.payload);
 			const timedTask = startTimedTask(
 				(async () => {
-					const value = await toSerializableAsync(await handler(task.payload));
+					const value = await toSerializableAsync(await handler(handlerPayload));
 					if (task.path === '/bridge/jlceda/pcb/document'
 						&& task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload)
 						&& (task.payload as Record<string, unknown>).action === 'import_changes'

@@ -242,13 +242,14 @@ export class BridgeTransport {
 		this.lastServerActivityAt = Date.now();
 	}
 
-	public reportTaskStarted(requestId: string, leaseTerm: number): void {
+	public reportTaskStarted(requestId: string, leaseTerm: number, context?: BridgeClientContext): void {
 		this.sendMessage({
 			type: 'bridge/task-started',
 			clientId: this.clientId,
 			requestId,
 			leaseTerm,
 			startedAt: Date.now(),
+			...(context ? { context } : {}),
 		});
 	}
 

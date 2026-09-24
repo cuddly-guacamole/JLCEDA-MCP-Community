@@ -72,6 +72,7 @@ export interface BridgeClientTaskStartedMessage {
 	requestId: string;
 	leaseTerm: number;
 	startedAt: number;
+	context?: BridgeClientContext;
 }
 
 // 客户端上报日志消息。

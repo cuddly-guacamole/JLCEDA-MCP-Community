@@ -9,7 +9,7 @@
  * ------------------------------------------------------------------------
  */
 
-import { getSyncState, isPlainObjectRecord, preserveBoundedArray, toSafeErrorMessage, toSerializableAsync } from '../utils';
+import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
@@ -31,6 +31,20 @@ function pcbComponentPosition(component: unknown): { primitiveId: string; design
 async function currentPcbUuid(): Promise<string | undefined> {
 	const pcb = await Promise.resolve(eda.dmt_Pcb.getCurrentPcbInfo());
 	return isPlainObjectRecord(pcb) && typeof pcb.uuid === 'string' ? pcb.uuid : undefined;
+}
+
+async function currentPcbLayoutContext(): Promise<{ pageKind: 'pcb'; pageUuid?: string; documentUuid?: string; projectUuid?: string }> {
+	const [pcb, document, project] = await Promise.all([
+		safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
+		safeCall(() => eda.dmt_SelectControl.getCurrentDocumentInfo()),
+		safeCall(() => eda.dmt_Project.getCurrentProjectInfo()),
+	]);
+	return {
+		pageKind: 'pcb',
+		pageUuid: pcb?.uuid,
+		documentUuid: document?.uuid,
+		projectUuid: document?.parentProjectUuid ?? project?.uuid,
+	};
 }
 
 // 在对象上解析段名，要求精确匹配。
@@ -111,6 +125,10 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	const { callable, thisArg, resolvedPath } = resolveApiCallable(apiFullName);
 	const invokeArgs = Array.isArray(payload.args) ? payload.args : [];
 	const normalizedPath = resolvedPath.toLowerCase();
+	if (payload.includeCompletePositions !== undefined
+		&& (payload.includeCompletePositions !== true || normalizedPath !== PCB_COMPONENT_GET_ALL || invokeArgs.length !== 0)) {
+		throw new TypeError('includeCompletePositions is only supported for eda.pcb_PrimitiveComponent.getAll with no arguments.');
+	}
 
 	// EDA 3.x 的 modify 会在省略 otherProperty 时清空已有的 BOM 属性。
 	if (normalizedPath === 'eda.sch_primitivecomponent.modify' && typeof invokeArgs[0] === 'string' && isPlainObjectRecord(invokeArgs[1]) && !Object.hasOwn(invokeArgs[1], 'otherProperty')) {
@@ -170,9 +188,12 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			verification: 'Activate the timed-out PCB and read all components with eda.pcb_PrimitiveComponent.getAll() before another autoLayout call.',
 		};
 	}
-	const layoutPcbUuid = normalizedPath === PCB_AUTO_LAYOUT ? await currentPcbUuid() : undefined;
+	const layoutContext = normalizedPath === PCB_AUTO_LAYOUT ? await currentPcbLayoutContext() : undefined;
+	const layoutPcbUuid = layoutContext?.pageUuid;
 	if (normalizedPath === PCB_AUTO_LAYOUT && !layoutPcbUuid)
 		throw new Error('无法确认当前 PCB 身份，未启动自动布局。');
+	if (normalizedPath === PCB_AUTO_LAYOUT && typeof payload.expectedPcbUuid === 'string' && payload.expectedPcbUuid !== layoutPcbUuid)
+		throw new Error('PCB page changed between task start and autoLayout invocation; the operation was not started.');
 	const readbackPcbUuid = normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && pendingAutoLayoutPcbUuid
 		? await currentPcbUuid()
 		: undefined;
@@ -189,6 +210,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 				commitState: 'unknown',
 				retryBlocked: true,
 				pcbUuid: layoutPcbUuid,
+				layoutContext,
 				error: toSafeErrorMessage(error),
 				verification: 'Auto layout may still commit. Activate this PCB and read all component positions with eda.pcb_PrimitiveComponent.getAll() before retrying.',
 			};
@@ -196,28 +218,31 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		throw error;
 	}
 	if (normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && Array.isArray(invokeResult)) {
-		const componentPositions = invokeResult.map(pcbComponentPosition);
-		if (componentPositions.some(position => !position)) {
+		const autoLayoutReadbackPerformed = Boolean(pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid);
+		if (autoLayoutReadbackPerformed || payload.includeCompletePositions === true) {
+			const componentPositions = invokeResult.map(pcbComponentPosition);
+			if (componentPositions.some(position => !position)) {
+				return {
+					apiFullName: resolvedPath,
+					ok: false,
+					...(pendingAutoLayoutPcbUuid ? { commitState: 'unknown', retryBlocked: true, pcbUuid: pendingAutoLayoutPcbUuid } : {}),
+					error: 'The PCB component readback omitted an ID or position.',
+				};
+			}
+			const readbackDetails: Record<string, unknown> = {};
+			if (autoLayoutReadbackPerformed) {
+				pendingAutoLayoutPcbUuid = undefined;
+				readbackDetails.autoLayoutReadbackPerformed = true;
+				readbackDetails.verification = 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.';
+			}
 			return {
 				apiFullName: resolvedPath,
-				ok: false,
-				...(pendingAutoLayoutPcbUuid ? { commitState: 'unknown', retryBlocked: true, pcbUuid: pendingAutoLayoutPcbUuid } : {}),
-				error: 'The PCB component readback omitted an ID or position.',
+				result: await toSerializableAsync(invokeResult),
+				componentPositions: preserveBoundedArray(componentPositions),
+				componentCount: componentPositions.length,
+				...readbackDetails,
 			};
 		}
-		const autoLayoutReadbackPerformed = Boolean(pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid);
-		const readbackDetails: Record<string, unknown> = {};
-		if (autoLayoutReadbackPerformed) {
-			pendingAutoLayoutPcbUuid = undefined;
-			readbackDetails.autoLayoutReadbackPerformed = true;
-			readbackDetails.verification = 'Compare this complete component position and rotation snapshot with the pre-layout snapshot before deciding whether to retry.';
-		}
-		return {
-			apiFullName: resolvedPath,
-			result: preserveBoundedArray(componentPositions),
-			componentCount: componentPositions.length,
-			...readbackDetails,
-		};
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {
 		return {

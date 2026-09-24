@@ -123,6 +123,11 @@
           "items": {},
           "description": "API 调用参数列表，严格按 signatureText 中的参数顺序填写。无入参时传空数组 []。"
         },
+        "includeCompletePositions": {
+          "type": "boolean",
+          "const": true,
+          "description": "仅用于无参数的 eda.pcb_PrimitiveComponent.getAll：额外返回全部器件位置快照 componentPositions 和 componentCount；普通 result 仍按通用 API 规则序列化。"
+        },
         "timeoutMs": {
           "type": "integer",
           "minimum": 1000,
