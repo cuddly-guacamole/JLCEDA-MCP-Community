@@ -20,7 +20,7 @@
 
 原理图当前页器件 ID 回读建议使用 `readbackPath: "/bridge/jlceda/api/invoke"` 和 `readbackPayload: {"apiFullName":"eda.sch_PrimitiveComponent.getAllPrimitiveId","args":[null,false]}`。`getAllPrimitiveId` 和 `getAll` 的 `args:[null,false]` 被严格识别为当前页只读查询；无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。`allSchematicPages: true` 不适合当前页恢复判断。`bridge_clients` 的 `ready` 依据最近心跳判定，`lastHeartbeatMsAgo` 可用于识别仅有其他消息但心跳已停的客户端。
 
-PCB 器件位置回读可将 `readbackPath` 设为 `/bridge/jlceda/api/invoke`，`readbackPayload` 设为 `{"apiFullName":"eda.pcb_PrimitiveComponent.getAll","args":[]}`。恢复期仅放行此 PCB 方法的无参数形式；带图层或锁定筛选参数的调用仍被隔离。
+PCB 器件位置回读可将 `readbackPath` 设为 `/bridge/jlceda/api/invoke`，`readbackPayload` 设为 `{"apiFullName":"eda.pcb_PrimitiveComponent.getAll","args":[]}`。若原操作是 `eda.pcb_Document.autoLayout`，恢复时必须使用这一完整位置回读；仅查 `/context` 不会解除写入阻断。恢复期仅放行此 PCB 方法的无参数形式；带图层或锁定筛选参数的调用仍被隔离。
 
 Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Server 会将该结果纳入同一受控恢复诊断流程，不要求必须等 Server 自身的备用计时器触发。
 
