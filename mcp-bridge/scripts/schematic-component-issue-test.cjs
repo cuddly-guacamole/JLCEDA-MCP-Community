@@ -49,6 +49,28 @@ async function main() {
 	assert.deepEqual(modified.result.otherProperty, { Value: '10k', Datasheet: 'https://example.test/r' });
 	await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.modify', args: ['r1', { otherProperty: { Value: '22k' } }] });
 	assert.deepEqual(metadata, { Value: '22k' });
+	let unsafeModifyCalls = 0;
+	for (const component of [
+		{ otherProperty: { Value: 'stale' } },
+		{ getState_OtherProperty() { throw new Error('state read failed'); } },
+		{ getState_OtherProperty() { return undefined; } },
+	]) {
+		globalThis.eda.sch_PrimitiveComponent = {
+			async get() { return component; },
+			async modify() { unsafeModifyCalls += 1; },
+		};
+		await assert.rejects(
+			handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.modify', args: ['r1', { designator: 'R2' }] }),
+			/无法读取器件原有 BOM 属性/,
+		);
+	}
+	assert.equal(unsafeModifyCalls, 0, 'unreadable BOM metadata must block native modify');
+	const explicitProperty = await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.modify',
+		args: ['r1', { otherProperty: { Value: '22k' } }],
+	});
+	assert.equal(explicitProperty.result, undefined);
+	assert.equal(unsafeModifyCalls, 1, 'explicit replacement metadata needs no state getter');
 
 	// The host's array overload removes only its first element; single IDs work.
 	const remaining = new Set(['a', 'b', 'c']);

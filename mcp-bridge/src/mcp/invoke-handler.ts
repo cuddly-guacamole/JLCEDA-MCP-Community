@@ -141,10 +141,11 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		if (!component) {
 			throw new Error(`找不到器件图元 ${invokeArgs[0]}，未执行修改。`);
 		}
-		const otherProperty = getSyncState<unknown>(component, 'getState_OtherProperty', (component as { otherProperty?: unknown }).otherProperty);
-		if (isPlainObjectRecord(otherProperty)) {
-			invokeArgs[1] = { ...invokeArgs[1], otherProperty: { ...otherProperty } };
+		const otherProperty = getSyncState<unknown>(component, 'getState_OtherProperty', undefined);
+		if (!isPlainObjectRecord(otherProperty)) {
+			throw new TypeError('无法读取器件原有 BOM 属性，已取消可能清空 BOM 属性的修改。');
 		}
+		invokeArgs[1] = { ...invokeArgs[1], otherProperty: { ...otherProperty } };
 	}
 
 	// EDA 3.x 的数组重载可能仅删除首项。逐个删除并核对实际图元列表。
