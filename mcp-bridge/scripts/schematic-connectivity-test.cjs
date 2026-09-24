@@ -191,6 +191,36 @@ async function main() {
 	ports.splice(0, ports.length);
 	const independentCrossing = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [-50, 0, 0, 0], net: 'NET_A', allowedWireIds: ['cross-a'] });
 	assert.equal(independentCrossing.canCreate, true);
+
+	// EDA may read a grid coordinate back as 324.99999999999994 instead of 325.
+	const nearly325 = 324.99999999999994;
+	wires.splice(0, wires.length, wire('float-end-a', 'NET_A', [300, 325, 325, 325]));
+	const nearEndpoint = [325, nearly325, 325, 300];
+	const endpointPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: nearEndpoint, net: 'NET_B', allowedWireIds: ['float-end-a'] });
+	assert.equal(endpointPreview.canCreate, false);
+	assert.deepEqual(endpointPreview.conflictingNetWireIds, ['float-end-a']);
+	const wireCreatesBeforeFloat = wireCreates;
+	const endpointCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: nearEndpoint, net: 'NET_B', allowedWireIds: ['float-end-a'] });
+	assert.equal(endpointCreate.canCreate, false);
+	assert.equal(wireCreates, wireCreatesBeforeFloat);
+	const actualGap = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [325, 324.99, 325, 300], net: 'NET_B' });
+	assert.equal(actualGap.canCreate, true, 'a real 0.01-unit gap must not count as a contact');
+
+	wires.splice(0, wires.length);
+	ports.splice(0, ports.length, { id: 'float-port-b', net: 'NET_B', x: 325, y: nearly325 });
+	const nearPortLine = [300, 325, 350, 325];
+	const portPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: nearPortLine, net: 'NET_A' });
+	assert.equal(portPreview.canCreate, false);
+	assert.deepEqual(portPreview.conflictingNetPortIds, ['float-port-b']);
+	const portCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: nearPortLine, net: 'NET_A' });
+	assert.equal(portCreate.canCreate, false);
+	assert.equal(wireCreates, wireCreatesBeforeFloat);
+
+	wires.splice(0, wires.length, wire('float-unnamed', '', [300, 325, 350, 325]));
+	ports.splice(0, ports.length, { id: 'float-port-a', net: 'NET_A', x: 300, y: nearly325 });
+	const remotePortPreview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [350, 325, 375, 325], net: 'NET_B', allowedWireIds: ['float-unnamed'] });
+	assert.equal(remotePortPreview.canCreate, false);
+	assert.deepEqual(remotePortPreview.conflictingNetWireIds, ['float-unnamed']);
 }
 
 main().catch((error) => {

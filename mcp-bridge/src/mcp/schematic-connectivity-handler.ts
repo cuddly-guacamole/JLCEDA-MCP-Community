@@ -4,6 +4,8 @@ import { handleSchematicReadTask } from './schematic-read-handler.ts';
 interface Point { x: number; y: number }
 interface Segment { start: Point; end: Point }
 type ConnectivityAction = 'wire_preview' | 'wire_create' | 'netport_create' | 'netport_move';
+// EDA readback may differ from grid coordinates by a few floating-point ulps.
+const COORDINATE_EPSILON = 1e-6;
 
 interface WireState {
 	id: string;
@@ -63,19 +65,29 @@ function orientation(a: Point, b: Point, c: Point): number {
 	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
 
+function orientationSign(a: Point, b: Point, c: Point): number {
+	const cross = orientation(a, b, c);
+	const tolerance = COORDINATE_EPSILON * Math.hypot(b.x - a.x, b.y - a.y);
+	if (cross > tolerance)
+		return 1;
+	if (cross < -tolerance)
+		return -1;
+	return 0;
+}
+
 function pointOnSegment(point: Point, segment: Segment): boolean {
-	return orientation(segment.start, segment.end, point) === 0
-		&& point.x >= Math.min(segment.start.x, segment.end.x)
-		&& point.x <= Math.max(segment.start.x, segment.end.x)
-		&& point.y >= Math.min(segment.start.y, segment.end.y)
-		&& point.y <= Math.max(segment.start.y, segment.end.y);
+	return orientationSign(segment.start, segment.end, point) === 0
+		&& point.x >= Math.min(segment.start.x, segment.end.x) - COORDINATE_EPSILON
+		&& point.x <= Math.max(segment.start.x, segment.end.x) + COORDINATE_EPSILON
+		&& point.y >= Math.min(segment.start.y, segment.end.y) - COORDINATE_EPSILON
+		&& point.y <= Math.max(segment.start.y, segment.end.y) + COORDINATE_EPSILON;
 }
 
 function segmentsTouch(first: Segment, second: Segment): boolean {
-	const firstStart = orientation(first.start, first.end, second.start);
-	const firstEnd = orientation(first.start, first.end, second.end);
-	const secondStart = orientation(second.start, second.end, first.start);
-	const secondEnd = orientation(second.start, second.end, first.end);
+	const firstStart = orientationSign(first.start, first.end, second.start);
+	const firstEnd = orientationSign(first.start, first.end, second.end);
+	const secondStart = orientationSign(second.start, second.end, first.start);
+	const secondEnd = orientationSign(second.start, second.end, first.end);
 	return (firstStart === 0 && pointOnSegment(second.start, first))
 		|| (firstEnd === 0 && pointOnSegment(second.end, first))
 		|| (secondStart === 0 && pointOnSegment(first.start, second))
