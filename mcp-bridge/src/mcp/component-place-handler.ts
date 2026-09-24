@@ -65,6 +65,11 @@ export function isPlacementModeExitRequired(): boolean {
 	return placementModeNeedsExit;
 }
 
+/** 交互放置会话结束前，其他写任务不能与 EDA 鼠标模式并行。 */
+export function isInteractivePlacementActive(): boolean {
+	return activePlaceSessions.size > 0;
+}
+
 async function readCurrentSchematicPageUuid(): Promise<string> {
 	const schematicModule = getEdaRuntime()?.dmt_Schematic;
 	if (!isPlainObjectRecord(schematicModule) || typeof schematicModule.getCurrentSchematicPageInfo !== 'function') {

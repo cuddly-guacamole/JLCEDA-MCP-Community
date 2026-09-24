@@ -106,12 +106,23 @@ async function main() {
 	assert.equal(waitingForExit.placed, false);
 	assert.equal(waitingForExit.awaitingExit, true);
 	assert.deepEqual(waitingForExit.candidatePrimitiveIds, ['floating-1']);
+	const concurrentWrite = { apiFullName: 'eda.sch_PrimitiveComponent.modify', args: ['r1', { designator: 'R2' }] };
+	assert.match(getPlacementModeWriteRejection('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }), /正在交互放置/);
+	assert.match(getPlacementModeWriteRejection('/bridge/jlceda/component/place/start', { component: { uuid: 'device', libraryUuid: 'library' } }), /正在交互放置/);
+	for (const [path, payload] of [
+		['/bridge/jlceda/component/place/check', { sessionId: start.sessionId }],
+		['/bridge/jlceda/component/place/close', { sessionId: start.sessionId }],
+		['/bridge/jlceda/schematic/connectivity', { action: 'wire_preview' }],
+		['/bridge/jlceda/context', {}],
+	])
+		assert.equal(getPlacementModeWriteRejection(path, payload), undefined);
 	ids.splice(ids.indexOf('floating-1'), 1);
 	ids.push('placed-1');
 	pressEscape();
 	const check = await handleComponentPlaceCheckTask({ sessionId: start.sessionId });
 	assert.equal(check.placed, true);
 	assert.deepEqual(check.primitiveIds, ['placed-1']);
+	assert.equal(getPlacementModeWriteRejection('/bridge/jlceda/api/invoke', concurrentWrite), undefined);
 
 	globalThis.eda.sch_PrimitiveComponent.placeComponentWithMouse = async () => {
 		ids.push('placed-2', 'placed-3');
@@ -182,10 +193,9 @@ async function main() {
 		completeTask(requestId, _leaseTerm, _result, error) { taskResults.push({ requestId, error }); },
 	};
 	const apiWrite = { apiFullName: 'eda.sch_PrimitiveComponent.modify', args: ['r1', { designator: 'R2' }] };
-	enqueueTask({ requestId: 'queued-before-loss', path: '/bridge/jlceda/api/invoke', payload: apiWrite, leaseTerm: 0 }, mockTransport);
+	enqueueTask({ requestId: 'write-before-loss', path: '/bridge/jlceda/api/invoke', payload: apiWrite, leaseTerm: 0 }, mockTransport);
+	assert.match(taskResults.find(item => item.requestId === 'write-before-loss').error.message, /正在交互放置/);
 	await cleanupAllComponentPlaceSessions();
-	await new Promise(resolve => setImmediate(resolve));
-	assert.match(taskResults.find(item => item.requestId === 'queued-before-loss').error.message, /Esc|右键/);
 	enqueueTask({ requestId: 'after-loss', path: '/bridge/jlceda/api/invoke', payload: apiWrite, leaseTerm: 0 }, mockTransport);
 	assert.match(taskResults.find(item => item.requestId === 'after-loss').error.message, /Esc|右键/);
 	enqueueTask({ requestId: 'read-after-loss', path: '/bridge/jlceda/schematic/connectivity', payload: { action: 'wire_preview' }, leaseTerm: 0 }, mockTransport);
