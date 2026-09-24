@@ -1023,10 +1023,9 @@ export class EdaBridgeServer {
       && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
     }
-    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
-      && session.sourceSocket
+    if (session.sourceSocket
       && this.peers.get(session.diagnostic.clientId)?.socket === session.sourceSocket) {
-      throw new Error('The original PCB autoLayout Bridge client must disconnect before recovery readback. Restart the EDA host first.');
+      throw new Error('The original Bridge client must disconnect before recovery readback. Wait for its EDA call to settle, or restart the EDA host if it remains hung.');
     }
     const target = this.peers.get(targetClientId);
     if (!target || !this.isPeerReady(target))

@@ -12,7 +12,7 @@
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由，不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
-`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`。若原 EDA Promise 一直挂起，须重启 EDA 宿主，终止旧调用后再打开目标图页；保持 MCP Server 运行以保留诊断。随后以 `action=recover` 建立恢复会话，再用新 `clientId` 做文档与图页身份校验和当前页只读回读。优先使用原始诊断中的 `pageUuid`；诊断未记录时可提供 `expectedPageUuid`。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
+`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`。若原 EDA Promise 一直挂起，须重启 EDA 宿主，终止旧调用后再打开目标图页；保持 MCP Server 运行以保留诊断。随后以 `action=recover` 建立恢复会话，等待原 Bridge 连接断开，再用新 `clientId` 做文档与图页身份校验和当前页只读回读。原调用正常结束时 Bridge 会自行重连；仍在运行的旧页面不能被另一条新连接提前替代。优先使用原始诊断中的 `pageUuid`；诊断未记录时可提供 `expectedPageUuid`。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 
 恢复时必须从 `bridge_clients` 选择具体超时写操作的 `requestId`；`readbackPath` 与 `readbackPayload` 始终只能描述只读操作，恢复目标客户端在首次回读后锁定。多个未解决的超时写操作会继续保持写阻断，直到各自收到迟到结果或完成受控恢复；未确认完成的写诊断不会因 TTL 自动放行写入。
 

@@ -538,6 +538,22 @@ try {
   assert.equal(recoveryStart.diagnostic.timeoutMs, 50);
   const recoveryMessage = await recoveryMessagePromise;
   assert.equal(recoveryMessage.recoveryId, recoveryStart.recoveryId);
+  const earlyRecoveryTarget = await registerEda(
+    `ws://127.0.0.1:${recoveryPort}/bridge/ws${tokenQuery}`,
+    'early-recovery-page',
+    { documentUuid: 'recovery-document', projectUuid: 'recovery-project', pageKind: 'schematic', pageUuid: 'recovery-page' },
+  );
+  attachTaskResponder(earlyRecoveryTarget.socket, 'early-recovery-page', () => ({
+    currentDocumentInfo: { uuid: 'recovery-document', parentProjectUuid: 'recovery-project' },
+    currentProjectInfo: { uuid: 'recovery-project' },
+    currentSchematicPageInfo: { uuid: 'recovery-page' },
+  }));
+  await assert.rejects(recoveryServer.request('/bridge/admin/recover-client', {
+    action: 'readback', confirm: true, recoveryId: recoveryStart.recoveryId,
+    clientId: 'early-recovery-page', readbackPath: '/bridge/jlceda/context',
+  }, 2000), /original Bridge client must disconnect/);
+  await assert.rejects(recoveryServer.request('/bridge/test/write-before-source-disconnect', {}, 2000), /writes are blocked pending recovery readback/);
+  earlyRecoveryTarget.socket.close();
   stuck.socket.close();
   stuck = undefined;
   wrongRecoveryPage = await registerEda(
@@ -853,7 +869,7 @@ try {
     readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
   };
-  await assert.rejects(nativeLayoutServer.request('/bridge/admin/recover-client', nativeLayoutReadbackRequest, 2000), /original PCB autoLayout Bridge client must disconnect/);
+  await assert.rejects(nativeLayoutServer.request('/bridge/admin/recover-client', nativeLayoutReadbackRequest, 2000), /original Bridge client must disconnect/);
   await assert.rejects(nativeLayoutServer.request('/bridge/test/write-while-native-layout-source-connected', {}, 2000), /writes are blocked pending recovery readback/);
   nativeLayoutOld.socket.close();
   await waitUntil(async () => (await nativeLayoutServer.request('/bridge/admin/clients', {}, 2000)).clients
