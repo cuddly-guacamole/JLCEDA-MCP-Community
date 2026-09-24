@@ -371,10 +371,10 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 	);
 
 	const api = resolveComponentCreateApi();
-	let originalDesignators: Map<string, string>;
+	let trackedDesignators: Map<string, string>;
 	let annotationWarning: string | undefined;
 	try {
-		originalDesignators = await readDesignators(api);
+		trackedDesignators = await readDesignators(api);
 	}
 	catch (error: unknown) {
 		return {
@@ -444,13 +444,23 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 
 		try {
 			const currentDesignators = await readDesignators(api);
-			designatorChanges = [...originalDesignators]
+			// Track the starting page and every earlier placement in this batch.
+			// A later create may renumber an earlier new component too.
+			designatorChanges = [...trackedDesignators]
 				.filter(([id, before]) => currentDesignators.has(id) && currentDesignators.get(id) !== before)
 				.map(([primitiveId, before]) => ({ primitiveId, before, after: currentDesignators.get(primitiveId) }));
+			for (const placed of placedComponents) {
+				const currentDesignator = currentDesignators.get(placed.primitiveId);
+				if (currentDesignator !== undefined)
+					placed.designator = currentDesignator;
+			}
 			if (designatorChanges.length > 0) {
-				annotationWarning = 'EDA 在放置时改变了已有器件位号；请核对 designatorChanges 后再继续。';
+				annotationWarning = 'EDA 在放置时改变了已有或本批次已放置器件的位号；请核对 designatorChanges 后再继续。';
 				break;
 			}
+			const latest = placedComponents[placedComponents.length - 1];
+			if (latest.primitiveId)
+				trackedDesignators.set(latest.primitiveId, latest.designator);
 		}
 		catch (error: unknown) {
 			annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
@@ -472,7 +482,7 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			designatorChanges,
 			annotationWarning,
 			message: annotationWarning
-				? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；已有位号需核对。`
+				? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；器件位号需核对。`
 				: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
 		};
 	}

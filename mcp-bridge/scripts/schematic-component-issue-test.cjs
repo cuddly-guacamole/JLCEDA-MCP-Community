@@ -238,6 +238,40 @@ async function main() {
 	assert.deepEqual(placed.designatorChanges, [{ primitiveId: 'existing-u', before: 'U4', after: 'U15' }]);
 	assert.match(placed.annotationWarning, /位号/);
 
+	// A later create can renumber an earlier component from the same request.
+	// Stop before the third placement and return the first component's current designator.
+	let batchCreateCalls = 0;
+	const batchComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return batchComponents; },
+		async create() {
+			batchCreateCalls += 1;
+			if (batchCreateCalls === 1) {
+				const first = primitive('batch-first', 'R1');
+				batchComponents.push(first);
+				return first;
+			}
+			batchComponents[1] = primitive('batch-first', 'R9');
+			const second = primitive('batch-second', 'R2');
+			batchComponents.push(second);
+			return second;
+		},
+	};
+	const batchPlaced = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
+		{ uuid: 'third', libraryUuid: 'library' },
+	] });
+	assert.equal(batchPlaced.ok, false);
+	assert.equal(batchPlaced.needsReview, true);
+	assert.equal(batchPlaced.placedCount, 2);
+	assert.equal(batchPlaced.notAttemptedCount, 1);
+	assert.equal(batchCreateCalls, 2);
+	assert.equal(batchPlaced.placedComponents[0].designator, 'R9');
+	assert.equal(batchPlaced.placedComponents[1].designator, 'R2');
+	assert.deepEqual(batchPlaced.designatorChanges, [{ primitiveId: 'batch-first', before: 'R1', after: 'R9' }]);
+	assert.match(batchPlaced.annotationWarning, /本批次/);
+
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => {
 		throw new Error('readback failed');
 	};

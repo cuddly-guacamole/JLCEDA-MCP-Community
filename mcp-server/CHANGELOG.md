@@ -5,6 +5,7 @@
 - `netlabel_place` 工具说明标明普通网络标签需要 EDA v4；EDA 3.x 将直接返回未开始，避免调用不可用的 API。
 - `pcb_document_action` 与代理指引标明 PCB 变更导入的原生确认阶段，以及 PCB BETA 自动布局/布线的结果验证步骤。
 - 交互式 `component_place` 等待用户退出当前放置模式，只返回退出后仍存在的新增图元 ID；重复图元或超时后停止批次，不自动重试可能已提交的放置。
+- `component_place_auto` 检查本批次此前放置的器件位号；后续放置导致位号变化时停止批次，并返回更新后的已放置明细。
 - 新增 `schematic_connectivity_action`，提供导线交点预览、需显式允许已有导线接触的创建流程，以及当前图页 NetPort 创建和移动入口。
 - 按最近心跳判定 Bridge 客户端是否就绪，并让心跳停滞的连接超时退出；`bridge_clients` 增加 `lastHeartbeatMsAgo`。
 - 已开始的写任务若因 EDA 客户端或 MCP 调用方失联而中断，保留未确认修改诊断；重连隔离时间届满仍需恢复回读才能再次写入。

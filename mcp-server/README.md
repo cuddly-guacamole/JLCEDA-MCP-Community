@@ -10,6 +10,8 @@
 
 `component_place` 等待用户按 Esc 或右键退出当前放置模式后才启动下一件，并透传新增图元 ID 和已有器件位号变化；重复放置、失联或超时后停止当前批次，不自动重试未知是否已提交的放置操作。
 
+`component_place_auto` 按坐标逐件创建；若 EDA 改变已有器件或本批次此前放置器件的位号，则停止后续放置，返回变化记录及已放置器件的当前位号。
+
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由，不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
 `bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`。若原 EDA Promise 一直挂起，须重启 EDA 宿主，终止旧调用后再打开目标图页；保持 MCP Server 运行以保留诊断。随后以 `action=recover` 建立恢复会话，等待原 Bridge 连接断开，再用新 `clientId` 做文档与图页身份校验和当前页只读回读。原调用正常结束时 Bridge 会自行重连；仍在运行的旧页面不能被另一条新连接提前替代。优先使用原始诊断中的 `pageUuid`；诊断未记录时可提供 `expectedPageUuid`。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
