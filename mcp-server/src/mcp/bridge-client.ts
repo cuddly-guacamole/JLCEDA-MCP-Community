@@ -656,6 +656,11 @@ export class EdaBridgeServer {
       && message.result.retryBlocked === true) {
       this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native autoLayout timeout');
     }
+    else if (!isReadOnlyRequest(pending.path ?? '', pending.payload)
+      && isRecord(message.result)
+      && message.result.commitUnknown === true) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'write result could not be verified');
+    }
     if (isRecord(message.error) && typeof message.error.message === 'string') {
       const code = typeof message.error.code === 'string' ? message.error.code : undefined;
       const timeoutMs = Number(message.error.timeoutMs);

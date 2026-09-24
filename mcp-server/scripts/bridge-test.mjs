@@ -157,6 +157,9 @@ let lateUnknownClient;
 let lateConnectivityServer;
 let lateConnectivityActive;
 let lateConnectivityStandby;
+let unverifiedWriteServer;
+let unverifiedWriteActive;
+let unverifiedWriteStandby;
 
 try {
   await mainServer.start();
@@ -978,6 +981,48 @@ try {
   lateConnectivityServer.close();
   lateConnectivityServer = undefined;
 
+  const unverifiedWritePort = await reservePort();
+  unverifiedWriteServer = new EdaBridgeServer(unverifiedWritePort);
+  await unverifiedWriteServer.start();
+  unverifiedWriteActive = await registerEda(
+    `ws://127.0.0.1:${unverifiedWritePort}/bridge/ws${tokenQuery}`,
+    'unverified-write-active',
+    { documentUuid: 'unverified-document', projectUuid: 'unverified-project', pageKind: 'schematic', pageUuid: 'unverified-page' },
+  );
+  attachTaskResponder(unverifiedWriteActive.socket, 'unverified-write-active', () => ({
+    ok: false, action: 'wire_create', committed: false, commitUnknown: true,
+  }));
+  unverifiedWriteStandby = await registerEda(
+    `ws://127.0.0.1:${unverifiedWritePort}/bridge/ws${tokenQuery}`,
+    'unverified-write-standby',
+    { documentUuid: 'unverified-document', projectUuid: 'unverified-project', pageKind: 'schematic', pageUuid: 'unverified-page' },
+  );
+  attachTaskResponder(unverifiedWriteStandby.socket, 'unverified-write-standby', (message) => ({
+    source: 'unverified-write-standby', path: message.path,
+  }));
+  const unverifiedResult = await unverifiedWriteServer.request('/bridge/jlceda/schematic/connectivity', {
+    action: 'wire_create', line: [0, 0, 10, 0],
+  }, 2000);
+  assert.equal(unverifiedResult.commitUnknown, true);
+  const unverifiedSnapshot = await unverifiedWriteServer.request('/bridge/admin/clients', {}, 2000);
+  const unverifiedDiagnostic = unverifiedSnapshot.clients.find(client => client.clientId === 'unverified-write-active').quarantine.diagnostics[0];
+  assert.equal(unverifiedDiagnostic.path, '/bridge/jlceda/schematic/connectivity');
+  assert.equal(unverifiedDiagnostic.mutating, true);
+  assert.equal(unverifiedDiagnostic.uncertaintyReason, 'write result could not be verified');
+  await unverifiedWriteServer.request('/bridge/admin/select-client', { clientId: 'unverified-write-standby' }, 2000);
+  assert.deepEqual(await unverifiedWriteServer.request('/bridge/jlceda/context', {}, 2000), {
+    source: 'unverified-write-standby', path: '/bridge/jlceda/context',
+  });
+  await assert.rejects(unverifiedWriteServer.request('/bridge/jlceda/schematic/connectivity', {
+    action: 'netport_create', net: 'SIG', x: 0, y: 0,
+  }, 2000), /writes are blocked pending recovery readback/);
+  unverifiedWriteActive.socket.close();
+  unverifiedWriteActive = undefined;
+  unverifiedWriteStandby.socket.close();
+  unverifiedWriteStandby = undefined;
+  unverifiedWriteServer.close();
+  unverifiedWriteServer = undefined;
+
   const disconnectPort = await reservePort();
   disconnectServer = new EdaBridgeServer(disconnectPort);
   await disconnectServer.start();
@@ -1338,6 +1383,8 @@ try {
   lateUnknownClient?.socket.close();
   lateConnectivityActive?.socket.close();
   lateConnectivityStandby?.socket.close();
+  unverifiedWriteActive?.socket.close();
+  unverifiedWriteStandby?.socket.close();
   expiryServer?.close();
   livenessServer?.close();
   queueServer?.close();
@@ -1351,6 +1398,7 @@ try {
   nativeLayoutServer?.close();
   lateUnknownServer?.close();
   lateConnectivityServer?.close();
+  unverifiedWriteServer?.close();
   secondaryServer.close();
   mainServer.close();
   if (originalToken === undefined) {

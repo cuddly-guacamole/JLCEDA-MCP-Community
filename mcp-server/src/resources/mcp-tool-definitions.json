@@ -32,13 +32,13 @@
   },
   {
     "name": "bridge_recover_client",
-    "description": "对 EDA 写操作超时或执行中失联后的 Bridge 执行受控恢复。先从 bridge_clients 取得未确认 requestId，以 action=recover 和 confirm=true 建立恢复会话。原调用若一直挂起或 PCB autoLayout 提交状态未知，此后重启原 EDA 宿主以终止旧调用；等待原 Bridge 断开和恢复会话后的新连接就绪，再用新 clientId、原始文档与图页身份、当前页只读回读完成 action=readback。恢复前已有连接不能用于本次回读；PCB autoLayout 必须以无参数 eda.pcb_PrimitiveComponent.getAll 回读全部器件位置；回读完成前写入持续阻断。",
+    "description": "对 EDA 写操作超时、执行中失联或返回提交未确认状态后的 Bridge 执行受控恢复。先从 bridge_clients 取得未确认 requestId，以 action=recover 和 confirm=true 建立恢复会话。原调用若一直挂起或 PCB autoLayout 提交状态未知，此后重启原 EDA 宿主以终止旧调用；等待原 Bridge 断开和恢复会话后的新连接就绪，再用新 clientId、原始文档与图页身份、当前页只读回读完成 action=readback。恢复前已有连接不能用于本次回读；PCB autoLayout 必须以无参数 eda.pcb_PrimitiveComponent.getAll 回读全部器件位置；回读完成前写入持续阻断。",
     "inputSchema": {
       "type": "object",
       "properties": {
         "action": { "type": "string", "enum": ["recover", "readback"], "default": "recover" },
         "confirm": { "const": true, "description": "必须显式确认恢复和可能已完成的修改。" },
-        "requestId": { "type": "string", "minLength": 1, "description": "bridge_clients 返回的具体超时或失联写操作 requestId。" },
+        "requestId": { "type": "string", "minLength": 1, "description": "bridge_clients 返回的具体超时、失联或提交未确认写操作 requestId。" },
         "recoveryId": { "type": "string", "minLength": 1 },
         "clientId": { "type": "string", "minLength": 1, "description": "readback 时 bridge_clients 返回的全新 Bridge clientId。" },
         "expectedDocumentUuid": { "type": "string", "minLength": 1 },

@@ -11,7 +11,7 @@
 
 - `bridge_clients`：列出所有已连接 EDA 页面及其官方 API 返回的项目、文档、图页身份。在存在多个客户端，或用户指定了项目/页面时，任何 EDA 读取或修改操作前必须先调用并核对目标。
 - `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
-- EDA 修改超时或已开始的写任务中途失联后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`，先用 `bridge_recover_client` 的 `action=recover` 建立恢复会话。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，再重启原 EDA 宿主以终止旧调用，打开目标图页，等待恢复会话建立后的新 Bridge 连接；最后以 `action=readback` 验证新客户端身份和当前页状态。恢复请求本身不能取消 EDA 调用，恢复前已经连接的客户端不能用于本次回读。
+- EDA 修改超时、已开始的写任务中途失联，或工具返回 `commitUnknown: true` 后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`，先用 `bridge_recover_client` 的 `action=recover` 建立恢复会话。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，再重启原 EDA 宿主以终止旧调用，打开目标图页，等待恢复会话建立后的新 Bridge 连接；最后以 `action=readback` 验证新客户端身份和当前页状态。恢复请求本身不能取消 EDA 调用，恢复前已经连接的客户端不能用于本次回读。
 - 原理图当前页器件 ID 回读优先用 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args: [null, false]`；需要器件对象时可用 `eda.sch_PrimitiveComponent.getAll` 搭配同样的参数。这两种精确参数形式可通过恢复期只读隔离，无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。跨页查询不得用于判断当前页的超时操作是否提交。
 - PCB 器件位置恢复回读可用 `api_invoke` 调用 `eda.pcb_PrimitiveComponent.getAll`，传 `args: []`。若原操作是 `eda.pcb_Document.autoLayout`，`bridge_recover_client` 必须以该完整器件列表作为回读；只读 `/context` 不会解除写阻断。先核对活动 PCB 的文档身份，再与超时前的位置快照比较。
 - `schematic_read`：仅在执行器件选型（`component_select`）或器件放置（`component_place`）任务时，需要了解当前页已有器件与网络连接关系时才调用，用于获取辅助上下文。仅覆盖当前激活页面。禁止在原理图检查、审查、功能分析、连线核查等场景调用此工具；此类场景必须使用 `schematic_review`。
@@ -19,7 +19,7 @@
 - `schematic_review`：当用户需要检查或审查原理图、分析电路功能、审查器件选型合理性、核对连线逻辑、判断电路能否正常工作、输出功能性分析报告，或分析多页原理图、查看完整 BOM、追踪跨页信号时，必须调用此工具。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`netlistText` 为全工程网表文件原始文本，包含所有原理图页面的器件与网络连接关系。
   获取数据后，必须输出与 `schematic_read` 相同的六类分析项（以专业 Markdown 表格形式呈现）：①电路功能概述；②器件清单与选型合理性；③电源方案分析；④信号与连线检查；⑤保护与可靠性分析；⑥整体可用性评估。分析须覆盖所有页面的器件与网络。
-- `schematic_connectivity_action`：创建导线前先用 `wire_preview` 查看当前页电气接触；没有连接点的纯十字交叉不算接触。确认意图后在 `wire_create.allowedWireIds` 中明确列出允许接触的导线 ID；写入后用 `schematic_review` 检查网表。若返回 `commitUnknown: true`，先核对当前图页，避免直接重复写入；迟到的未知结果会保留恢复诊断。`netport_create` 是创建同页连接/层次图端口的选项，结果会回读当前页图元和目标网络；它不等于跨页连接标识。移动已有端口用 `netport_move`，不要对 NetPort 调用仅支持普通器件的 `sch_PrimitiveComponent.modify`。
+- `schematic_connectivity_action`：创建导线前先用 `wire_preview` 查看当前页电气接触；没有连接点的纯十字交叉不算接触。确认意图后在 `wire_create.allowedWireIds` 中明确列出允许接触的导线 ID；写入后用 `schematic_review` 检查网表。若返回 `commitUnknown: true`，先核对当前图页，避免直接重复写入；按时或迟到的未知结果都会保留恢复诊断。`netport_create` 是创建同页连接/层次图端口的选项，结果会回读当前页图元和目标网络；它不等于跨页连接标识。移动已有端口用 `netport_move`，不要对 NetPort 调用仅支持普通器件的 `sch_PrimitiveComponent.modify`。
 - `component_select`：当用户要求搜索、筛选或确认具体器件型号时，必须调用此工具返回候选列表并等待用户确认。keyword 只写用户给出的型号或描述本身，禁止擅自追加封装、尺寸、引脚数或任何其他限定词；仅对电阻、电容、电感这类需要数值的器件才允许补充带单位的阻值/容值/感值参数，例如 `1kΩ`、`100nF`、`10uH`。用户确认后的结果即为最终结果，不得擅自改选或要求重新选择；用户取消或跳过时视为永久放弃该器件，必须立即停止针对该器件的所有选型动作，**禁止**以任何方式重试，包括但不限于：换关键词、换描述、换型号、拆分关键词、加宽或缩小筛选范围后再次调用 `component_select`；跳过后直接跳到下一步，不得就该器件再做任何动作。
 - `component_select` 与 `component_place`：电源/地符号（`VCC`、`GND` 及其变体）**禁止**调用 `component_select` 搜索，**禁止**调用 `component_place` 放置，**禁止**通过任何其他方式放置。电源/地符号只能由用户在 EDA 中手动放置。`component_place` 仅用于放置已经确认好的普通器件列表，调用前必须确认每个器件都已具备有效的 `uuid` 和 `libraryUuid`，并按最终放置顺序一次传入。
 
