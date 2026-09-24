@@ -17,6 +17,7 @@ export interface BridgeOperation {
   owner: 'server' | 'bridge';
   timeoutPolicy?: TimeoutPolicyName;
   readOnly?: boolean;
+  readOnlyIf?: { field: string; equals: unknown };
   readOnlyUnless?: { field: string; equals: unknown };
   readOnlyIfNoArgsApiFullNames?: string[];
   readOnlyIfCurrentPageArgsApiFullNames?: string[];
@@ -110,6 +111,9 @@ export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean
     const currentPageArgs = Array.isArray(args) && args.length === 2 && args[0] === null && args[1] === false;
     return (noArgs && (operation.readOnlyIfNoArgsApiFullNames?.includes(apiFullName) ?? false))
       || (currentPageArgs && (operation.readOnlyIfCurrentPageArgsApiFullNames?.includes(apiFullName) ?? false));
+  }
+  if (operation?.readOnlyIf) {
+    return isRecord(payload) && payload[operation.readOnlyIf.field] === operation.readOnlyIf.equals;
   }
   if (!operation?.readOnly) {
     return false;

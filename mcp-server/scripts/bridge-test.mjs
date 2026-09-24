@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { WebSocket } from 'ws';
 import { EdaBridgeServer } from '../dist/mcp/bridge-client.js';
+import { isReadOnlyBridgeRequest } from '../dist/mcp/bridge-contract.js';
 
 async function reservePort() {
   const server = createServer();
@@ -122,6 +123,7 @@ const secondaryServer = new EdaBridgeServer(port);
 let expiryServer;
 let livenessServer;
 let queueServer;
+let connectivityServer;
 let recoveryServer;
 let disconnectServer;
 let edaFirstServer;
@@ -130,6 +132,7 @@ let reconnectServer;
 let blue;
 let red;
 let queued;
+let connectivityClient;
 let stuck;
 let replacement;
 let wrongRecoveryPage;
@@ -398,6 +401,76 @@ try {
   queueServer.close();
   queueServer = undefined;
 
+  const connectivityPath = '/bridge/jlceda/schematic/connectivity';
+  assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action: 'wire_preview' }), true);
+  for (const action of ['wire_create', 'netport_create', 'netport_move']) {
+    assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);
+  }
+  assert.equal(isReadOnlyBridgeRequest(connectivityPath, {}), false);
+  const connectivityPort = await reservePort();
+  connectivityServer = new EdaBridgeServer(connectivityPort);
+  await connectivityServer.start();
+  connectivityClient = await registerEda(
+    `ws://127.0.0.1:${connectivityPort}/bridge/ws${tokenQuery}`,
+    'connectivity-page',
+  );
+  let previewTasksStarted = 0;
+  connectivityClient.socket.on('message', (data) => {
+    const message = JSON.parse(data.toString());
+    if (message.type !== 'bridge/task') return;
+    connectivityClient.socket.send(JSON.stringify({
+      type: 'bridge/task-started',
+      clientId: 'connectivity-page',
+      requestId: message.requestId,
+      leaseTerm: message.leaseTerm,
+      startedAt: Date.now(),
+    }));
+    if (message.payload.action === 'wire_preview') {
+      previewTasksStarted += 1;
+      return;
+    }
+    connectivityClient.socket.send(JSON.stringify({
+      type: 'bridge/result',
+      clientId: 'connectivity-page',
+      requestId: message.requestId,
+      leaseTerm: message.leaseTerm,
+      result: { action: message.payload.action },
+    }));
+  });
+  const previewPayload = { action: 'wire_preview', line: [0, 0, 10, 0] };
+  const timedOutPreview = assert.rejects(
+    connectivityServer.request(connectivityPath, previewPayload, 100),
+    /Request execution timeout/,
+  );
+  await waitUntil(() => previewTasksStarted === 1);
+  await timedOutPreview;
+  const timeoutSnapshot = await connectivityServer.request('/bridge/admin/clients', {}, 2000);
+  const timeoutDiagnostics = timeoutSnapshot.clients[0].quarantine.diagnostics;
+  assert.equal(timeoutDiagnostics.length, 1);
+  assert.equal(timeoutDiagnostics[0].mutating, false);
+  await new Promise((resolve) => setTimeout(resolve, 125));
+  assert.deepEqual(
+    await connectivityServer.request(connectivityPath, { action: 'wire_create', line: [0, 0, 10, 0] }, 2000),
+    { action: 'wire_create' },
+  );
+  const disconnectedPreview = assert.rejects(
+    connectivityServer.request(connectivityPath, previewPayload, 2000),
+    /disconnected/,
+  );
+  await waitUntil(() => previewTasksStarted === 2);
+  const previewStartedAck = waitForMessage(connectivityClient.socket, message => message.type === 'bridge/heartbeat-ack');
+  connectivityClient.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'connectivity-page', sentAt: Date.now() }));
+  await previewStartedAck;
+  connectivityClient.socket.close();
+  await disconnectedPreview;
+  const disconnectSnapshot = await connectivityServer.request('/bridge/admin/clients', {}, 2000);
+  const disconnectDiagnostics = disconnectSnapshot.clients.find(client => client.clientId === 'connectivity-page').quarantine.diagnostics;
+  assert.equal(disconnectDiagnostics.length, 1, 'Disconnecting a started preview must not add a mutation diagnostic');
+  assert.equal(disconnectDiagnostics[0].mutating, false);
+  connectivityClient = undefined;
+  connectivityServer.close();
+  connectivityServer = undefined;
+
   const recoveryPort = await reservePort();
   recoveryServer = new EdaBridgeServer(recoveryPort);
   await recoveryServer.start();
@@ -511,6 +584,16 @@ try {
     await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] }, 2000),
     { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
   );
+  assert.deepEqual(
+    await recoveryServer.request(connectivityPath, previewPayload, 2000),
+    { source: 'replacement', path: connectivityPath },
+  );
+  for (const action of ['wire_create', 'netport_create', 'netport_move']) {
+    await assert.rejects(
+      recoveryServer.request(connectivityPath, { action }, 2000),
+      /writes are blocked pending recovery readback/,
+    );
+  }
   assert.deepEqual(
     await recoveryServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, false] }, 2000),
     { source: 'replacement', path: '/bridge/jlceda/api/invoke' },
@@ -1161,6 +1244,7 @@ try {
   blue?.socket.close();
   red?.socket.close();
   queued?.socket.close();
+  connectivityClient?.socket.close();
   stuck?.socket.close();
   replacement?.socket.close();
   wrongRecoveryPage?.socket.close();
@@ -1182,6 +1266,7 @@ try {
   expiryServer?.close();
   livenessServer?.close();
   queueServer?.close();
+  connectivityServer?.close();
   recoveryServer?.close();
   disconnectServer?.close();
   edaFirstServer?.close();

@@ -27,6 +27,11 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/select', { timeo
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'check' }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'fix' }), false);
+const connectivityPath = '/bridge/jlceda/schematic/connectivity';
+assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action: 'wire_preview' }), true);
+for (const action of ['wire_create', 'netport_create', 'netport_move'])
+	assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);
+assert.equal(isReadOnlyBridgeRequest(connectivityPath, {}), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] }), true);

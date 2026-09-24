@@ -218,7 +218,11 @@
 			"toolName": "schematic_connectivity_action",
 			"path": "/bridge/jlceda/schematic/connectivity",
 			"owner": "bridge",
-			"timeoutPolicy": "standard-read"
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "wire_preview"
+			}
 		},
 		{
 			"toolName": "schematic_review",
