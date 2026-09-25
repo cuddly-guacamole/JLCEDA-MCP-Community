@@ -181,6 +181,8 @@ async function main() {
 	assert.equal(wrongGeometry.after.net, null);
 	assert.deepEqual(wrongGeometry.after.polygonSource, ['R', 697.55, -3717.55, 240, 160, 90, 0]);
 	assert.equal(wrongGeometry.requestedMismatches[0].field, 'polygonSource');
+	const serializedWrongGeometry = await toSerializableAsync(wrongGeometry);
+	assert.deepEqual(serializedWrongGeometry.requestedMismatches[0].actual, ['R', 697.55, -3717.55, 240, 160, 90, 0]);
 	assert.equal(wrongGeometry.commitUnknown, undefined);
 	assert.equal(requiresHostRestartForResult(path, {}, wrongGeometry), false);
 	globalThis.eda.pcb_PrimitivePolyline.create = originalPolylineCreate;

@@ -292,7 +292,10 @@ export async function handlePcbBoardOutlineManageTask(payload: unknown): Promise
 			if (!created || addedIds.length !== 1 || added.length !== 1)
 				throw new Error('EDA did not read back exactly one matching new board outline primitive.');
 			const requestedMismatches = Object.entries(requested!).filter(([field, expected]) =>
-				!matchesRequested(created, { [field]: expected })).map(([field, expected]) => ({ field, expected, actual: created[field] }));
+				!matchesRequested(created, { [field]: expected })).map(([field, expected]) => {
+				const actual = created[field];
+				return { field, expected, actual: Array.isArray(actual) ? [...actual] : actual };
+			});
 			if (created.net !== '' && created.net !== null)
 				requestedMismatches.push({ field: 'net', expected: '', actual: created.net });
 			if (requestedMismatches.length) {
