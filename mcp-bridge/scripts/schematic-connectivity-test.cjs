@@ -195,8 +195,13 @@ async function main() {
 		return delayedWire;
 	};
 	delayedWireApi.getAll = async () => {
-		if (delayedWire && ++postCreateReads === 3)
-			wires.push(delayedWire);
+		if (delayedWire) {
+			postCreateReads += 1;
+			if (postCreateReads === 1)
+				wires.push(wire('wire-unrelated', 'NET_OTHER', [4000, 1000, 4100, 1000]));
+			if (postCreateReads === 3)
+				wires.push(delayedWire);
+		}
 		return wires;
 	};
 	const delayedCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3000, 1000, 3100, 1000], net: 'NET_DELAYED' });
@@ -206,24 +211,35 @@ async function main() {
 	assert.equal(delayedCreate.commitUnknown, false);
 	assert.equal(delayedCreate.nativeCallSettled, true);
 	assert.equal(delayedCreate.returnedPrimitiveId, delayedWire.getState_PrimitiveId());
-	assert.deepEqual(delayedCreate.changedWireIds, [delayedWire.getState_PrimitiveId()]);
+	assert.deepEqual(delayedCreate.changedWireIds, ['wire-unrelated', delayedWire.getState_PrimitiveId()]);
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, delayedCreate), false);
 	delayedWireApi.create = originalCreate;
 	delayedWireApi.getAll = originalDelayedGetAll;
 
 	let unresolvedReads = 0;
-	delayedWireApi.create = async () => wire('unresolved-native-id', 'NET_DELAYED', [3200, 1000, 3300, 1000]);
+	let unresolvedNativeStarted = false;
+	let unrelatedAdded = false;
+	delayedWireApi.create = async () => {
+		unresolvedNativeStarted = true;
+		return wire('unresolved-native-id', 'NET_DELAYED', [3200, 1000, 3300, 1000]);
+	};
 	delayedWireApi.getAll = async () => {
 		unresolvedReads += 1;
+		if (unresolvedNativeStarted && !unrelatedAdded) {
+			wires.push(wire('unresolved-unrelated', 'NET_OTHER', [4200, 1000, 4300, 1000]));
+			unrelatedAdded = true;
+		}
 		return wires;
 	};
 	const unresolvedCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3200, 1000, 3300, 1000], net: 'NET_DELAYED' });
 	assert.ok(unresolvedReads > 2, 'readback retries must be bounded but allow delayed visibility');
 	assert.equal(unresolvedCreate.ok, false);
+	assert.equal(unresolvedCreate.committed, false, 'an unrelated new wire must not confirm the returned ID');
 	assert.equal(unresolvedCreate.commitUnknown, true);
 	assert.equal(unresolvedCreate.readbackRequired, true);
 	assert.equal(unresolvedCreate.nativeCallSettled, true);
 	assert.equal(unresolvedCreate.returnedPrimitiveId, 'unresolved-native-id');
+	assert.deepEqual(unresolvedCreate.changedWireIds, ['unresolved-unrelated']);
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, unresolvedCreate), false);
 	delayedWireApi.create = originalCreate;
 	delayedWireApi.getAll = originalDelayedGetAll;

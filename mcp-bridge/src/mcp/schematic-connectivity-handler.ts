@@ -417,10 +417,11 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		return unknownNativeWrite('wire_create', error, { net: net ?? null });
 	}
 	try {
+		const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
 		let changedWireIds: string[] = [];
 		let removedWireIds: string[] = [];
-		// EDA can resolve create before getAll exposes the returned wire. Wait for
-		// the new ID or a changed/removed existing wire before judging the commit.
+		// EDA can resolve create before getAll exposes the returned wire. A different
+		// new wire is not evidence that this native create has committed.
 		for (let attempt = 0; attempt < WIRE_READBACK_ATTEMPTS; attempt++) {
 			if (attempt > 0) {
 				if (readbackDeadline - Date.now() <= WIRE_READBACK_INTERVAL_MS)
@@ -433,13 +434,17 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 			const afterIds = new Set(after.map(wire => wire.id));
 			changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
 			removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
-			if (changedWireIds.length > 0 || removedWireIds.length > 0)
+			if (returnedPrimitiveId
+				? changedWireIds.includes(returnedPrimitiveId)
+				: changedWireIds.length > 0 || removedWireIds.length > 0) {
 				break;
+			}
 		}
 		const unexpectedChangedWireIds = changedWireIds.filter(id => beforeById.has(id) && !allowed.has(id));
 		const unexpectedRemovedWireIds = removedWireIds.filter(id => !allowed.has(id));
-		const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
-		const committed = changedWireIds.length > 0 || removedWireIds.length > 0;
+		const committed = returnedPrimitiveId
+			? changedWireIds.includes(returnedPrimitiveId)
+			: changedWireIds.length > 0 || removedWireIds.length > 0;
 		return {
 			ok: committed && unexpectedChangedWireIds.length === 0 && unexpectedRemovedWireIds.length === 0,
 			action,
