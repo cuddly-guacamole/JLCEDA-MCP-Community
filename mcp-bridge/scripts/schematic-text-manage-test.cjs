@@ -14,36 +14,16 @@ let document = page;
 let serial = 1;
 let writes = 0;
 let lastCreateArgs;
-let afterDonePage;
 
 function state(id, patch = {}) {
 	return { primitiveId: id, x: 100, y: 200, content: 'Note', rotation: 0, textColor: null, fontName: null, fontSize: null, bold: null, italic: null, underLine: null, alignMode: 1, ...patch };
 }
 
 function primitive(value) {
-	const result = Object.fromEntries(Object.entries(value).map(([field, item]) => {
+	return Object.fromEntries(Object.entries(value).map(([field, item]) => {
 		const name = field === 'primitiveId' ? 'PrimitiveId' : field[0].toUpperCase() + field.slice(1);
 		return [`getState_${name}`, () => item];
 	}));
-	const changes = {};
-	result.toAsync = () => result;
-	for (const field of ['x', 'y', 'content', 'rotation', 'textColor', 'fontName', 'fontSize', 'bold', 'italic', 'underLine']) {
-		const name = field[0].toUpperCase() + field.slice(1);
-		result[`setState_${name}`] = (item) => {
-			changes[field] = item;
-			return result;
-		};
-	}
-	result.done = async () => {
-		writes += 1;
-		Object.assign(texts.get(value.primitiveId), changes);
-		if (afterDonePage) {
-			page = afterDonePage;
-			document = page;
-		}
-		return primitive(texts.get(value.primitiveId));
-	};
-	return result;
 }
 
 async function main() {
@@ -59,11 +39,6 @@ async function main() {
 			const [x, y, content, rotation = 0, textColor = null, fontName = null, fontSize = null, bold = null, italic = null, underLine = null, alignMode = 1] = args;
 			const id = `created-${serial++}`;
 			texts.set(id, state(id, { x, y, content, rotation, textColor, fontName, fontSize, bold, italic, underLine, alignMode }));
-			return primitive(texts.get(id));
-		},
-		async modify(id, property) {
-			writes += 1;
-			Object.assign(texts.get(id), { alignMode: 3 }, property);
 			return primitive(texts.get(id));
 		},
 		async delete(id) {
@@ -97,25 +72,14 @@ async function main() {
 	assert.equal(created.text.bold, true);
 	assert.equal(created.text.italic, false);
 	assert.equal(created.text.underLine, false);
-	const contentOnly = await handleSchematicTextManageTask({ action: 'modify', primitiveId: created.primitiveId, property: { content: 'Revision A2' } });
-	assert.equal(contentOnly.verified, true);
-	assert.equal(contentOnly.text.alignMode, 1);
-	const changed = await handleSchematicTextManageTask({ action: 'modify', primitiveId: created.primitiveId, property: { content: 'Revision B', x: 700, textColor: '#ff0000', fontSize: 20 } });
-	assert.equal(changed.verified, true);
-	assert.equal(changed.text.content, 'Revision B');
-	assert.equal(changed.text.x, 700);
-	assert.equal(changed.text.alignMode, 1);
 	const deleted = await handleSchematicTextManageTask({ action: 'delete', primitiveId: created.primitiveId });
 	assert.equal(deleted.verified, true);
 	assert.equal(deleted.deleted, true);
 
 	const beforeInvalid = writes;
 	await assert.rejects(() => handleSchematicTextManageTask({ action: 'create', x: 1, y: 2 }), /required/);
-	await assert.rejects(() => handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: {} }), /non-empty/);
-	await assert.rejects(() => handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: { net: 'GND' } }), /Unsupported/);
+	await assert.rejects(() => handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: { content: 'Changed' } }), /modify is unavailable/);
 	await assert.rejects(() => handleSchematicTextManageTask({ action: 'create', x: 1, y: 2, content: 'Note', alignMode: 6 }), /cannot reliably write/);
-	await assert.rejects(() => handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: { alignMode: 6 } }), /cannot reliably write/);
-	await assert.rejects(() => handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: { rotation: 45 } }), /rotation/);
 	assert.equal(writes, beforeInvalid);
 
 	document = 'another-page';
@@ -134,13 +98,18 @@ async function main() {
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/text-manage', { action: 'create' }, unknown), true);
 	native.create = originalCreate;
 
-	afterDonePage = 'different-page';
-	const uncertainReadback = await handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: { content: 'Changed on old page' } });
+	native.create = async (...args) => {
+		const result = await originalCreate(...args);
+		page = 'different-page';
+		document = page;
+		return result;
+	};
+	const uncertainReadback = await handleSchematicTextManageTask({ action: 'create', x: 70, y: 80, content: 'Changed on old page' });
 	assert.equal(uncertainReadback.commitUnknown, true);
 	assert.equal(uncertainReadback.nativeCallSettled, true);
 	page = 'schematic-text-page';
 	document = page;
-	afterDonePage = undefined;
+	native.create = originalCreate;
 
 	page = 'next-page';
 	document = page;
@@ -151,7 +120,7 @@ async function main() {
 	native.getAllPrimitiveId = async () => ['different-page-text'];
 	const beforeStaleWrite = writes;
 	await assert.rejects(() => handleSchematicTextManageTask({ action: 'read' }), /list changed/);
-	await assert.rejects(() => handleSchematicTextManageTask({ action: 'modify', primitiveId: 'text-0', property: { content: 'Wrong page' } }), /list changed/);
+	await assert.rejects(() => handleSchematicTextManageTask({ action: 'delete', primitiveId: 'text-0' }), /list changed/);
 	assert.equal(writes, beforeStaleWrite);
 	native.getAllPrimitiveId = originalGetAllPrimitiveId;
 	console.log('schematic_text_manage handler tests passed');

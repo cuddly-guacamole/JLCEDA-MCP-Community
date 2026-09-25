@@ -1,6 +1,6 @@
 import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSafeErrorMessage } from '../utils.ts';
 
-type Action = 'read' | 'create' | 'modify' | 'delete';
+type Action = 'read' | 'create' | 'delete';
 
 interface TextState {
 	primitiveId: string;
@@ -128,30 +128,6 @@ async function oneText(runtime: Record<string, unknown>, api: TextApi, page: str
 	return (await allTexts(runtime, api, page)).find(text => text.primitiveId === id);
 }
 
-async function updateText(runtime: Record<string, unknown>, api: TextApi, page: string, id: string, property: Record<string, unknown>): Promise<unknown> {
-	const raw = await api.getAll();
-	if (!Array.isArray(raw))
-		throw new TypeError('EDA schematic text list is unavailable.');
-	const target = raw.find(item => state(item, 'PrimitiveId') === id);
-	if (!target)
-		throw new Error('EDA schematic text disappeared before modification.');
-	const toAsync = (target as Record<string, unknown>).toAsync;
-	if (typeof toAsync !== 'function')
-		throw new TypeError('EDA schematic text async edit API is unavailable.');
-	let draft: unknown = toAsync.call(target);
-	for (const [field, value] of Object.entries(property)) {
-		const setter = (draft as Record<string, unknown> | null)?.[`setState_${field[0].toUpperCase()}${field.slice(1)}`];
-		if (typeof setter !== 'function')
-			throw new TypeError(`EDA schematic text ${field} setter is unavailable.`);
-		draft = setter.call(draft, value) ?? draft;
-	}
-	await assertSamePage(runtime, page);
-	const done = (draft as Record<string, unknown> | null)?.done;
-	if (typeof done !== 'function')
-		throw new TypeError('EDA schematic text async commit API is unavailable.');
-	return await done.call(draft);
-}
-
 function requestedProperty(value: unknown): Record<string, unknown> {
 	if (!isPlainObjectRecord(value) || Object.keys(value).length === 0)
 		throw new TypeError('property must be a non-empty object.');
@@ -207,15 +183,16 @@ function unknownWrite(action: Exclude<Action, 'read'>, error: unknown, context: 
 export async function handleSchematicTextManageTask(payload: unknown): Promise<unknown> {
 	if (!isPlainObjectRecord(payload))
 		throw new TypeError('schematic_text_manage payload must be an object.');
+	if (payload.action === 'modify')
+		throw new TypeError('The current EDA API changes schematic text alignment during modification; modify is unavailable.');
 	const action = payload.action as Action;
-	if (!['read', 'create', 'modify', 'delete'].includes(action))
-		throw new TypeError('action must be read, create, modify, or delete.');
+	if (!['read', 'create', 'delete'].includes(action))
+		throw new TypeError('action must be read, create, or delete.');
 	const primitiveId = payload.primitiveId === undefined ? undefined : requiredId(payload.primitiveId);
-	if ((action === 'modify' || action === 'delete') && !primitiveId)
+	if (action === 'delete' && !primitiveId)
 		throw new TypeError('primitiveId is required.');
 	if (action === 'create' && payload.alignMode !== undefined)
 		throw new TypeError('The current EDA API cannot reliably write schematic text alignMode.');
-	const property = action === 'modify' ? requestedProperty(payload.property) : undefined;
 	const create = action === 'create'
 		? requestedProperty(Object.fromEntries([...FIELDS].filter(field => payload[field] !== undefined).map(field => [field, payload[field]])))
 		: undefined;
@@ -234,22 +211,18 @@ export async function handleSchematicTextManageTask(payload: unknown): Promise<u
 		const texts = await allTexts(runtime, api, page);
 		return { ok: true, action, scope: SCOPE, pageUuid: page, complete: true, textCount: texts.length, texts };
 	}
-	if (action !== 'modify' && typeof api[action] !== 'function')
+	if (typeof api[action] !== 'function')
 		throw new TypeError(`EDA sch_PrimitiveText.${action} is unavailable.`);
-	const before = primitiveId ? await oneText(runtime, api, page, primitiveId) : undefined;
-	if (primitiveId && !before)
+	const before = action === 'delete' ? await oneText(runtime, api, page, primitiveId!) : undefined;
+	if (action === 'delete' && !before)
 		throw new TypeError(`Schematic text ${primitiveId} does not exist on the current page.`);
 	const beforeIds = action === 'create' ? (await allTexts(runtime, api, page)).map(item => item.primitiveId) : undefined;
-	const expectedModified = action === 'modify' ? { ...before!, ...property! } : undefined;
 	const context: Record<string, unknown> = { pageUuid: page, ...(primitiveId ? { primitiveId } : {}) };
 	await assertSamePage(runtime, page);
 	let nativeResult: unknown;
 	try {
 		if (action === 'create') {
 			nativeResult = await api.create!.call(api, create!.x, create!.y, create!.content, create!.rotation ?? 0, create!.textColor ?? null, create!.fontName ?? null, create!.fontSize ?? null, create!.bold ?? false, create!.italic ?? false, create!.underLine ?? false, create!.alignMode);
-		}
-		else if (action === 'modify') {
-			nativeResult = await updateText(runtime, api, page, primitiveId!, property!);
 		}
 		else {
 			nativeResult = await api.delete!.call(api, primitiveId!);
@@ -268,11 +241,6 @@ export async function handleSchematicTextManageTask(payload: unknown): Promise<u
 			return { ok: true, action, scope: SCOPE, pageUuid: page, primitiveId: created.primitiveId, text: created, verified: true };
 		}
 		const observed = await oneText(runtime, api, page, primitiveId!);
-		if (action === 'modify') {
-			if (!observed || !matches(observed, expectedModified!))
-				throw new Error('EDA schematic text readback differs from the requested properties.');
-			return { ok: true, action, scope: SCOPE, pageUuid: page, primitiveId, text: observed, verified: true };
-		}
 		if (nativeResult === false || observed)
 			throw new Error('EDA schematic text still exists after delete.');
 		return { ok: true, action, scope: SCOPE, pageUuid: page, primitiveId, deleted: true, verified: true };

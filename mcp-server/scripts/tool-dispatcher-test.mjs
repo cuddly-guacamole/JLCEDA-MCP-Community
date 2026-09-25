@@ -641,7 +641,6 @@ for (const input of [
   { action: 'read' },
   { action: 'read', primitiveId: 'text-1' },
   { action: 'create', x: 100, y: 200, content: 'Note' },
-  { action: 'modify', primitiveId: 'text-1', property: { content: 'Updated', fontSize: null } },
   { action: 'delete', primitiveId: 'text-1' },
 ])
   assert.equal(schematicTextSchema.safeParse(input).success, true, `schematic_text_manage should accept ${JSON.stringify(input)}`);
@@ -649,8 +648,7 @@ for (const input of [
   { action: 'create', x: 100, y: 200 },
   { action: 'create', x: 100, y: 200, content: 'Note', rotation: 45 },
   { action: 'create', x: 100, y: 200, content: 'Note', alignMode: 6 },
-  { action: 'modify', primitiveId: 'text-1', property: { net: 'GND' } },
-  { action: 'modify', primitiveId: 'text-1', property: { alignMode: 6 } },
+  { action: 'modify', primitiveId: 'text-1', property: { content: 'Updated' } },
   { action: 'delete' },
 ])
   assert.equal(schematicTextSchema.safeParse(input).success, false, `schematic_text_manage should reject ${JSON.stringify(input)}`);

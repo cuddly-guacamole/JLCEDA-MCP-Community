@@ -284,11 +284,11 @@
   },
   {
     "name": "schematic_text_manage",
-    "description": "完整读取当前原理图页文字标注，或按 ID 创建、修改、删除单条文字。当前 EDA API 无法可靠写入 alignMode，本工具只回读对齐值。写前核对图页与编辑器身份，写后按 ID 回读；提交状态未知时须完整回读原图页全部文字。",
+    "description": "完整读取当前原理图页文字标注，或按 ID 创建、删除单条文字。当前 EDA API 修改已有文字会破坏对齐方式，故不提供 modify；alignMode 也只回读、不写入。写前核对图页与编辑器身份，写后按 ID 回读；提交状态未知时须完整回读原图页全部文字。",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "action": { "type": "string", "enum": ["read", "create", "modify", "delete"] },
+        "action": { "type": "string", "enum": ["read", "create", "delete"] },
         "primitiveId": { "$ref": "#/$defs/primitiveId" },
         "x": { "type": "number" },
         "y": { "type": "number" },
@@ -300,20 +300,17 @@
         "bold": { "type": "boolean" },
         "italic": { "type": "boolean" },
         "underLine": { "type": "boolean" },
-        "property": { "$ref": "#/$defs/property" },
         "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
       },
       "required": ["action"],
       "oneOf": [
         { "type": "object", "properties": { "action": { "const": "read" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action"], "additionalProperties": false },
         { "type": "object", "properties": { "action": { "const": "create" }, "x": { "type": "number" }, "y": { "type": "number" }, "content": { "type": "string" }, "rotation": { "$ref": "#/$defs/rotation" }, "textColor": { "type": ["string", "null"] }, "fontName": { "type": ["string", "null"] }, "fontSize": { "type": ["number", "null"], "exclusiveMinimum": 0 }, "bold": { "type": "boolean" }, "italic": { "type": "boolean" }, "underLine": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "x", "y", "content"], "additionalProperties": false },
-        { "type": "object", "properties": { "action": { "const": "modify" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "property": { "$ref": "#/$defs/property" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId", "property"], "additionalProperties": false },
         { "type": "object", "properties": { "action": { "const": "delete" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId"], "additionalProperties": false }
       ],
       "$defs": {
         "primitiveId": { "type": "string", "minLength": 1 },
-        "rotation": { "type": "integer", "enum": [0, 90, 180, 270] },
-        "property": { "type": "object", "minProperties": 1, "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "content": { "type": "string" }, "rotation": { "$ref": "#/$defs/rotation" }, "textColor": { "type": ["string", "null"] }, "fontName": { "type": ["string", "null"] }, "fontSize": { "type": ["number", "null"], "exclusiveMinimum": 0 }, "bold": { "type": "boolean" }, "italic": { "type": "boolean" }, "underLine": { "type": "boolean" } }, "additionalProperties": false }
+        "rotation": { "type": "integer", "enum": [0, 90, 180, 270] }
       },
       "additionalProperties": false
     }
