@@ -144,8 +144,8 @@ codex mcp list
 - Server 仅监听 `127.0.0.1`，Bridge Token 不得提交或公开。
 - MCP 写工具可修改当前工程；执行前请保存并核对活动项目和页面。
 - 不要让旧版 MCP Hub 与原生 Server 同时占用端口 8765。
-- 已在嘉立创 EDA 专业版 3.2.181 上测试。
-- 官方 `createNetLabel` 从 EDA v4 起提供。Bridge 在 3.x 上对普通网络标签直接返回 `EDA_VERSION_UNSUPPORTED`，不会启动可能挂起的 EDA 调用；电源和地网络标识仍可使用。
+- 本版扩展仅声明兼容嘉立创 EDA 专业版 3.x，已在 3.2.181 上测试；EDA v4 需等待未来明确支持 v4 的版本。
+- 官方 `createNetLabel` 从 EDA v4 起提供，当前 3.x 版本无法创建普通网络标签。Bridge 直接返回 `EDA_VERSION_UNSUPPORTED`，不会启动可能挂起的 EDA 调用；电源和地网络标识仍可使用。
 
 ## 开发与发布
 
@@ -163,5 +163,6 @@ npm run build
 - [安全政策](SECURITY.md)
 - [隐私与本地数据流](PRIVACY.md)
 - [发布检查表](docs/publishing.md)
+- [v2.3.3 发布说明](docs/releases/v2.3.3.md)
 - [嘉立创扩展广场发布要求](https://prodocs.lceda.cn/cn/api/guide/extensions-marketplace.html)
 - [OpenAI Codex MCP 配置](https://developers.openai.com/codex/mcp/)
