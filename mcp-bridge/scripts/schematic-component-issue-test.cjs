@@ -28,7 +28,7 @@ function placedPrimitive(id, x = 510, y = 415) {
 	return {
 		...primitive(id, 'U?'),
 		getState_Component: () => ({ libraryUuid: 'library', uuid: 'device' }),
-		getState_SubPartName: () => '',
+		getState_SubPartName: () => undefined,
 		getState_X: () => x,
 		getState_Y: () => y,
 		getState_Rotation: () => 0,
@@ -300,6 +300,29 @@ async function main() {
 	assert.deepEqual(exactCheck.removedDuplicateIds, ['same-2']);
 	assert.deepEqual(deletedExactIds, ['same-2']);
 	assert.deepEqual(exactIds, ['existing', 'same-1']);
+	assert.equal(exactCheck.annotationWarning, undefined, 'ordinary single-part symbols can have no sub-part name');
+
+	// An explicitly selected sub-part must still match the placed primitives.
+	const namedIds = ['existing'];
+	const deletedNamedIds = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...namedIds]; },
+		async getAll() { return namedIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete(id) {
+			deletedNamedIds.push(id);
+			return true;
+		},
+		async placeComponentWithMouse() {
+			namedIds.push('named-1', 'named-2');
+			return true;
+		},
+	};
+	const namedStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library', subPartName: 'B' } });
+	pressEscape();
+	const namedCheck = await handleComponentPlaceCheckTask({ sessionId: namedStart.sessionId });
+	assert.equal(namedCheck.placed, false);
+	assert.equal(namedCheck.duplicate, true);
+	assert.deepEqual(deletedNamedIds, []);
 
 	// Two intentional placements at different positions must be preserved.
 	const distinctIds = ['existing'];

@@ -214,7 +214,8 @@ function resolvePlaceComponentApi(): PlaceComponentApi {
 
 function readPlacedComponentState(primitive: unknown): PlacedComponentState | undefined {
 	const component = getSyncState<unknown>(primitive, 'getState_Component', null);
-	const subPartName = getSyncState<unknown>(primitive, 'getState_SubPartName', null);
+	// Single-part symbols legitimately return undefined for this optional state.
+	const subPartName = getSyncState<unknown>(primitive, 'getState_SubPartName', '');
 	const x = getSyncState<unknown>(primitive, 'getState_X', null);
 	const y = getSyncState<unknown>(primitive, 'getState_Y', null);
 	const rotation = getSyncState<unknown>(primitive, 'getState_Rotation', null);
