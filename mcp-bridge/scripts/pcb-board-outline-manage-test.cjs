@@ -198,6 +198,11 @@ async function main() {
 	const deletedWrongGeometry = await handlePcbBoardOutlineManageTask({ action: 'delete', kind: 'polyline', primitiveId: wrongGeometry.primitiveId });
 	assert.equal(deletedWrongGeometry.verified, true);
 	assert.equal(items.polyline.has(wrongGeometry.primitiveId), false);
+	const deletedRead = await handlePcbBoardOutlineManageTask({ action: 'read', kind: 'polyline', primitiveId: wrongGeometry.primitiveId });
+	assert.equal(deletedRead.found, false, 'an ID-only native placeholder is not a live board outline');
+	await assert.rejects(() => handlePcbBoardOutlineManageTask({ action: 'delete', kind: 'polyline', primitiveId: wrongGeometry.primitiveId }), /does not exist/);
+	globalThis.eda.pcb_PrimitivePolyline.get = async id => ({ getState_PrimitiveId: () => id });
+	await assert.rejects(() => handlePcbBoardOutlineManageTask({ action: 'read', kind: 'polyline', primitiveId: polyline.primitiveId }), /getState_Net is unavailable/);
 	globalThis.eda.pcb_PrimitivePolyline.get = originalPolylineGet;
 
 	globalThis.eda.pcb_PrimitiveArc.create = async (...args) => {

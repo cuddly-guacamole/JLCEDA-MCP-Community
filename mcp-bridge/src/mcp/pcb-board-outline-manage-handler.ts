@@ -104,7 +104,16 @@ async function getOne(runtime: Record<string, unknown>, kind: Kind, id: string, 
 	await assertSamePage(runtime, expectedPage);
 	if (raw == null)
 		return undefined;
-	const result = readPrimitive(kind, raw);
+	let result: Primitive;
+	try {
+		result = readPrimitive(kind, raw);
+	}
+	catch (error: unknown) {
+		// EDA may return an ID-only placeholder after deleting a primitive.
+		if (!(await getAllPrimitiveIds(runtime, kind, expectedPage)).includes(id))
+			return undefined;
+		throw error;
+	}
 	return result.layer === BOARD_OUTLINE_LAYER ? result : undefined;
 }
 
