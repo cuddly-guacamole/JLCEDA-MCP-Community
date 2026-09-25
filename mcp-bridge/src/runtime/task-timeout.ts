@@ -54,6 +54,7 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 	if (path === '/bridge/jlceda/pcb/connectivity'
 		|| path === '/bridge/jlceda/pcb/component-edit'
 		|| path === '/bridge/jlceda/pcb/pour-manage'
+		|| path === '/bridge/jlceda/pcb/routing-edit'
 		|| path === '/bridge/jlceda/schematic/connectivity'
 		|| path === '/bridge/jlceda/schematic/component-edit'
 		|| path === '/bridge/jlceda/netlabel/place'

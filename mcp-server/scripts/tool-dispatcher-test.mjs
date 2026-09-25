@@ -128,6 +128,14 @@ assert.equal(bridgePathForTool('pcb_pour_manage'), '/bridge/jlceda/pcb/pour-mana
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/pour-manage', { action: 'read' }), true);
 for (const action of ['create', 'modify', 'delete', 'rebuild'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/pour-manage', { action }), false);
+await dispatcher.dispatch({ name: 'pcb_routing_edit', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/routing-edit');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_routing_edit', { action: 'read' }) + 2000);
+assert.equal(bridgePathForTool('pcb_routing_edit'), '/bridge/jlceda/pcb/routing-edit');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/routing-edit', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/routing-edit', { action }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -512,6 +520,34 @@ for (const input of [
   { action: 'rebuild', primitiveId: 'pour-1', all: true },
 ]) {
   assert.equal(pcbPourSchema.safeParse(input).success, false, `pcb_pour_manage should reject ${JSON.stringify(input)}`);
+}
+const pcbRoutingDefinition = definitions.find((definition) => definition.name === 'pcb_routing_edit');
+assert.ok(pcbRoutingDefinition);
+const pcbRoutingSchema = z.fromJSONSchema(pcbRoutingDefinition.inputSchema);
+assert.equal(pcbRoutingDefinition.inputSchema.$defs.lineProperty.minProperties, 1);
+for (const input of [
+  { action: 'read' },
+  { action: 'read', kind: 'via', primitiveId: 'v1' },
+  { action: 'create', kind: 'arc', net: 'GND', layer: 1, startX: 0, startY: 0, endX: 10, endY: 5, arcAngle: 90, interactiveMode: 1 },
+  { action: 'create', kind: 'polyline', net: 'GND', layer: 2, polygonSource: [0, 0, 'L', 10, 0, 10, 10], lineWidth: 0.3 },
+  { action: 'modify', kind: 'line', primitiveId: 'l1', property: { startX: 1, lineWidth: 0.2 } },
+  { action: 'modify', kind: 'arc', primitiveId: 'a1', property: { arcAngle: -90, interactiveMode: 2 } },
+  { action: 'modify', kind: 'polyline', primitiveId: 'p1', property: { polygonSource: [0, 0, 'L', 5, 5] } },
+  { action: 'modify', kind: 'via', primitiveId: 'v1', property: { diameter: 0.6, holeDiameter: 0.3 } },
+  { action: 'delete', kind: 'via', primitiveId: 'v1' },
+]) {
+  assert.equal(pcbRoutingSchema.safeParse(input).success, true, `pcb_routing_edit should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'read', kind: 'line' },
+  { action: 'create', kind: 'line', net: 'GND', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0 },
+  { action: 'create', kind: 'arc', net: 'GND', layer: 1, startX: 0, startY: 0, endX: 10, endY: 5 },
+  { action: 'create', kind: 'polyline', net: 'GND', layer: 3, polygonSource: [0, 0, 'L', 10, 0] },
+  { action: 'modify', kind: 'via', primitiveId: 'v1', property: { viaType: 1 } },
+  { action: 'modify', kind: 'arc', primitiveId: 'a1', property: { polygonSource: [0, 0, 'L', 10, 0] } },
+  { action: 'delete', kind: 'via' },
+]) {
+  assert.equal(pcbRoutingSchema.safeParse(input).success, false, `pcb_routing_edit should reject ${JSON.stringify(input)}`);
 }
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);

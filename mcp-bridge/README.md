@@ -22,6 +22,8 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `pcb_pour_manage` 将 JSON 轮廓源数组交给原生 `pcb_MathPolygon.createPolygon`，再创建或修改当前 PCB 的单个覆铜边框；`read` 返回不截断的边框状态与填充 ID、边框关联、填充数量和几何摘要，`delete` 删除单个边框。创建或修改不会自动重建填充；`rebuild` 是单独的写操作，可指定一个边框或明确重建全板。EDA 3.2.181 的原生 `create` 和 `modify` 均可能自动调整覆铜优先级；工具会比较请求值及写前、写后状态，发现偏差时返回 `applied:true`、`verified:false`、`before/after/sideEffects`。单件重建未生成目标填充、删除后仍有关联填充时会报告 `verified:false` 和已读回状态，不会误报成功或未知提交。写后回读失败或原生结果不明时隔离写入并要求同板回读全部边框和填充摘要。
 
+`pcb_routing_edit` 可一次读取当前 PCB 铜层的全部直线、圆弧、折线和过孔，或按类型及图元 ID 精确读取；非铜层图形不作为走线返回。`create` 通过原生 API 创建圆弧，或将 JSON `polygonSource` 转为多边形后创建折线；直线和过孔的创建仍可用 `pcb_connectivity_action`。`modify` 和 `delete` 只作用于指定类型的单个图元。修改后核对目标属性；删除后从同类 `getAll` 的完整 ID 列表核对目标消失，避免原生 `get(id)` 返回不完整删除占位对象时误报未知提交。其他结果不明时要求回读全板布线与网络。
+
 `pcb_connectivity_action` 可在指定网络上创建 PCB 直线走线或通孔。`line_create` 需要 `net`、`layer`、`startX/startY`、`endX/endY` 和 `lineWidth`；`via_create` 需要 `net`、`x/y`、`holeDiameter` 和 `diameter`，单位为 EDA 当前画布数据单位。默认先确认网络已存在；明确传入 `allowNewNet:true` 可在独立 PCB 上创建新网络。直线目标层必须是已启用、未锁定的 `SIGNAL` 或 `PLANE` 铜层。写入后使用原生单 ID 查询核对网络和几何；原生调用超时、缺少返回 ID 或回读失败时报告 `commitUnknown:true`，等待受控恢复核对 PCB 布线状态后再写入。
 
 `bridge_select_client` 在已连接的 EDA 页面客户端之间选择 MCP 路由目标。显式选择待命页前会进行约 1.5 秒双向队列探活；旧扩展不支持该选择流程，请先升级 Bridge。它不会切换同一个 EDA 进程中的可见标签页；如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。

@@ -50,7 +50,10 @@ function pcbRoutingPrimitive(primitive: unknown, kind: string): Record<string, u
 	const net = state('Net');
 	if (typeof net !== 'string')
 		return undefined;
-	const entry: Record<string, unknown> = { primitiveId, net };
+	const primitiveLock = state('PrimitiveLock');
+	if (typeof primitiveLock !== 'boolean')
+		return undefined;
+	const entry: Record<string, unknown> = { primitiveId, net, primitiveLock };
 	if (kind === 'via') {
 		for (const field of ['X', 'Y', 'HoleDiameter', 'Diameter']) {
 			const value = state(field);
@@ -88,9 +91,13 @@ function pcbRoutingPrimitive(primitive: unknown, kind: string): Record<string, u
 	}
 	if (kind === 'arc') {
 		const angle = state('ArcAngle');
-		if (typeof angle !== 'number' || !Number.isFinite(angle))
+		const interactiveMode = state('InteractiveMode');
+		if (typeof angle !== 'number' || !Number.isFinite(angle)
+			|| typeof interactiveMode !== 'number' || !Number.isFinite(interactiveMode)) {
 			return undefined;
+		}
 		entry.arcAngle = angle;
+		entry.interactiveMode = interactiveMode;
 	}
 	return entry;
 }

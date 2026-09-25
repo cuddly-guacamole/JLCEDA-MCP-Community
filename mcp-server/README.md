@@ -46,6 +46,8 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_pour_manage` 的 `read` 返回当前 PCB 全部覆铜边框和已填充区域的 ID、关联、填充数量及几何摘要。`create` 接受已有网络、铜层及 `polygonSource` 数组，例如 `["R",100,200,300,400,0,0]`；`modify` 可更改单个边框的轮廓与设置，`delete` 删除单个边框。EDA 3.2.181 的原生创建和修改都可能调整覆铜优先级；完整回读发现请求值或未请求字段发生偏差时返回 `applied:true`、`verified:false`、`before/after/sideEffects`，写入状态已明确，无需执行未知提交恢复。`rebuild` 只在明确调用时重建指定边框或全板填充，必须核对完整返回集合和写后状态；单件重建未生成目标填充、删除后仍有关联填充时返回 `verified:false` 和已读回状态。原生重建报错也可能已改变填充，遇到 `commitUnknown:true` 时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/pour-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部边框和填充摘要；诊断要求宿主重启时先重启原宿主。
 
+`pcb_routing_edit` 的 `read` 可完整返回当前 PCB 铜层的直线、圆弧、折线和过孔，也可用 `kind` 与 `primitiveId` 精确读取；非铜层图形不作为走线返回。`create` 支持圆弧和折线，后者接受可序列化的 `polygonSource`；直线和过孔的创建使用 `pcb_connectivity_action`。`modify`、`delete` 按类型和 ID 操作单个图元；删除后以同类 `getAll` 的 ID 列表确认目标消失。写入结果不明时，使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/api/invoke"`、`readbackPayload:{"apiFullName":"eda.pcb_PrimitiveLine.getAll","args":[]}`；Server 会继续读取圆弧、折线、过孔和网络，并核对原 PCB。诊断要求宿主重启时先重启原宿主。
+
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 
 `component_place` 启动或检查，以及 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID、位号及 BOM 属性）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。
