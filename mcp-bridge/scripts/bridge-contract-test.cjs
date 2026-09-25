@@ -29,6 +29,9 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', {})
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/netlabel/place', { timeoutMs: 420000 }), 420000);
 assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', { timeoutMs: 600001 }), /600000/);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/documents-manage', { operation: 'list', projectUuid: 'project-1' }), true);
+for (const operation of ['create', 'copy', 'rename'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/documents-manage', { operation, projectUuid: 'project-1' }), false);
 for (const action of [undefined, 'status', 'selection', 'primitive_by_id', 'primitives_in_region', 'convert_canvas_to_data', 'navigate_to_coordinates', 'navigate_to_region', 'zoom_to_board_outline'])
 	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', action === undefined ? {} : { action }), true);
 for (const action of ['select_primitives', 'clear_selection', 'save', 'start_ratline', 'stop_ratline', 'clear_routing', 'import_changes', 'import_auto_route_json', 'import_auto_route_ses', 'import_auto_layout_json'])
