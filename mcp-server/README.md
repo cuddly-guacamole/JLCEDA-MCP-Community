@@ -52,7 +52,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_board_outline_manage` 的 `read` 返回当前 PCB 板框层 11 的直线、圆弧和折线，或按 `kind` 与 `primitiveId` 读取单个图元。`create` 使用板框层与空网络，EDA 回读也可能为 `null`；`modify` 和 `delete` 仅接受板框层图元，折线接受可序列化的 `polygonSource`；一段轮廓无需独立闭合。写后回读同板图元；创建未新增图元时返回 `applied:false`，新增图元与请求不符时返回 `applied:true`、实际图元和差异。结果不明时用 `bridge_recover_client action=readback` 指定无参数 `eda.pcb_PrimitiveLine.getAll`，Server 会补读圆弧、折线、过孔和网络，再由调用者核对板框变化；诊断要求宿主重启时先重启原宿主。
 
-`pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域。`create` 指定层、`polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 修改单个区域，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
+`pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 可用单轮廓或多轮廓 `polygonSource` 修改现有区域，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
 
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 

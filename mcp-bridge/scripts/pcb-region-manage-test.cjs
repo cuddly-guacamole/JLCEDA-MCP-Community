@@ -10,6 +10,7 @@ const { toSerializableAsync } = require('../src/utils.ts');
 
 const path = '/bridge/jlceda/pcb/region-manage';
 const source = ['R', 100, 200, 300, 400, 0, 0];
+const complexSource = [source, ['R', 140, 240, 180, 280, 0, 0]];
 const regions = new Map();
 let page = 'pcb-1';
 let serial = 1;
@@ -38,7 +39,10 @@ async function main() {
 	globalThis.eda = {
 		dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: page }; } },
 		pcb_Layer: { async getAllLayers() { return [{ id: 1, layerStatus: 1, locked: layerLocked }, { id: 12, layerStatus: 1, locked: false }]; } },
-		pcb_MathPolygon: { createPolygon(value) { return { getSource: () => value }; } },
+		pcb_MathPolygon: {
+			createPolygon(value) { return { getSource: () => value }; },
+			createComplexPolygon(value) { return { getSource: () => value }; },
+		},
 		pcb_PrimitiveRegion: {
 			async getAll() { return [...regions.values()].map(primitive); },
 			async get(id) { return regions.has(id) ? primitive(regions.get(id)) : undefined; },
@@ -75,6 +79,24 @@ async function main() {
 	assert.deepEqual(serialized.regions[0].ruleType, [2]);
 	assert.equal((await handlePcbRegionManageTask({ action: 'read', primitiveId: 'old-0' })).found, true);
 	assert.equal((await handlePcbRegionManageTask({ action: 'read', primitiveId: 'missing' })).found, false);
+	regions.set('complex', state('complex', { polygonSource: complexSource }));
+	const complexRead = await toSerializableAsync(await handlePcbRegionManageTask({ action: 'read' }));
+	assert.equal(complexRead.regionCount, 131);
+	assert.deepEqual(complexRead.regions.find(region => region.primitiveId === 'complex').polygonSource, complexSource);
+	const complexModified = await handlePcbRegionManageTask({ action: 'modify', primitiveId: 'complex', property: { polygonSource: [source, ['R', 145, 245, 185, 285, 0, 0]] } });
+	assert.equal(complexModified.verified, true);
+	assert.deepEqual(complexModified.region.polygonSource[1], ['R', 145, 245, 185, 285, 0, 0]);
+	const createSingle = globalThis.eda.pcb_PrimitiveRegion.create;
+	globalThis.eda.pcb_PrimitiveRegion.create = async (...args) => {
+		const created = await createSingle(...args);
+		const value = regions.get(created.getState_PrimitiveId());
+		value.polygonSource = [value.polygonSource];
+		return created;
+	};
+	const normalized = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2] });
+	assert.equal(normalized.verified, true);
+	assert.deepEqual(normalized.region.polygonSource, [source]);
+	globalThis.eda.pcb_PrimitiveRegion.create = createSingle;
 
 	const created = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2, 5], regionName: '禁布区' });
 	assert.equal(created.verified, true);
@@ -91,6 +113,7 @@ async function main() {
 
 	const beforeRejected = writes;
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 3, polygonSource: source, ruleType: [2] }), /layer must/);
+	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: complexSource, ruleType: [2] }), /single polygon/);
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [] }), /at least one rule/);
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'modify', primitiveId: 'old-0', property: { net: 'GND' } }), /Unsupported/);
 	layerLocked = true;

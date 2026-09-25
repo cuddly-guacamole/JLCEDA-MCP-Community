@@ -2,11 +2,12 @@ import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSafeErrorMe
 
 type Action = 'read' | 'create' | 'modify' | 'delete';
 type PolygonSource = Array<'L' | 'ARC' | 'CARC' | 'C' | 'R' | 'CIRCLE' | number>;
+type RegionPolygonSource = PolygonSource | PolygonSource[];
 
 interface RegionState {
 	primitiveId: string;
 	layer: number;
-	polygonSource: PolygonSource;
+	polygonSource: RegionPolygonSource;
 	ruleType: number[];
 	regionName: string | null;
 	lineWidth: number;
@@ -38,13 +39,19 @@ function regionLayer(value: unknown): number {
 	return layer;
 }
 
-function polygonSource(value: unknown): PolygonSource {
+function singlePolygonSource(value: unknown): PolygonSource {
 	if (!Array.isArray(value) || value.length === 0 || value.some(item =>
 		!(typeof item === 'number' && Number.isFinite(item))
 		&& !(typeof item === 'string' && POLYGON_COMMANDS.has(item)))) {
-		throw new TypeError('polygonSource must be a non-empty polygon source array.');
+		throw new TypeError('polygonSource must contain non-empty polygon source arrays.');
 	}
 	return preserveBoundedArray([...value] as PolygonSource);
+}
+
+function polygonSource(value: unknown): RegionPolygonSource {
+	if (Array.isArray(value) && value.length > 0 && value.every(Array.isArray))
+		return preserveBoundedArray(value.map(singlePolygonSource));
+	return singlePolygonSource(value);
 }
 
 function ruleTypes(value: unknown): number[] {
@@ -170,15 +177,39 @@ function createProperty(payload: Record<string, unknown>): Record<string, unknow
 	}
 	if ((requested.ruleType as number[]).length === 0)
 		throw new TypeError('ruleType must contain at least one rule for PCB region creation.');
+	if (Array.isArray((requested.polygonSource as RegionPolygonSource)[0]))
+		throw new TypeError('PCB region creation requires a single polygon source; complex geometry can be set on an existing region.');
 	return requested;
 }
 
-function createPolygon(runtime: Record<string, unknown>, source: PolygonSource): unknown {
-	const mathApi = api(runtime, 'pcb_MathPolygon', ['createPolygon']);
-	const polygon = (mathApi.createPolygon as (source: PolygonSource) => unknown).call(mathApi, source);
+function createPolygon(runtime: Record<string, unknown>, source: RegionPolygonSource): unknown {
+	const complex = Array.isArray(source[0]);
+	const method = complex ? 'createComplexPolygon' : 'createPolygon';
+	const mathApi = api(runtime, 'pcb_MathPolygon', [method]);
+	const polygon = (mathApi[method] as (source: RegionPolygonSource) => unknown).call(mathApi, source);
 	if (polygon == null)
-		throw new TypeError('EDA pcb_MathPolygon.createPolygon rejected polygonSource.');
+		throw new TypeError(`EDA pcb_MathPolygon.${method} rejected polygonSource.`);
 	return polygon;
+}
+
+function samePolygonSource(actual: RegionPolygonSource, wanted: RegionPolygonSource): boolean {
+	if (Array.isArray(actual[0]) !== Array.isArray(wanted[0])) {
+		const nested = Array.isArray(actual[0]) ? actual as PolygonSource[] : wanted as PolygonSource[];
+		const flat = Array.isArray(actual[0]) ? wanted as PolygonSource : actual as PolygonSource;
+		return nested.length === 1 && samePolygonSource(nested[0], flat);
+	}
+	if (actual.length !== wanted.length)
+		return false;
+	return actual.every((item, index) => {
+		const expected = wanted[index];
+		if (Array.isArray(item) || Array.isArray(expected)) {
+			return Array.isArray(item) && Array.isArray(expected)
+				&& samePolygonSource(item as PolygonSource, expected as PolygonSource);
+		}
+		return typeof item === 'number' && typeof expected === 'number'
+			? Math.abs(item - expected) <= 1e-6
+			: item === expected;
+	});
 }
 
 function matchesRequested(actual: RegionState, requested: Record<string, unknown>): boolean {
@@ -189,11 +220,7 @@ function matchesRequested(actual: RegionState, requested: Record<string, unknown
 			return actual.ruleType.length === rules.length && rules.every(rule => actual.ruleType.includes(rule));
 		}
 		if (field === 'polygonSource') {
-			const source = wanted as PolygonSource;
-			return actual.polygonSource.length === source.length && source.every((item, index) =>
-				typeof item === 'number' && typeof actual.polygonSource[index] === 'number'
-					? Math.abs((actual.polygonSource[index] as number) - item) <= 1e-6
-					: actual.polygonSource[index] === item);
+			return samePolygonSource(actual.polygonSource, wanted as RegionPolygonSource);
 		}
 		return typeof observed === 'number' && typeof wanted === 'number'
 			? Math.abs(observed - wanted) <= 1e-6
@@ -243,7 +270,7 @@ export async function handlePcbRegionManageTask(payload: unknown): Promise<unkno
 	await verifyLayer(runtime, regionLayer(requested?.layer ?? before!.layer));
 	const nativeProperty = requested === undefined ? undefined : { ...requested };
 	if (nativeProperty?.polygonSource) {
-		nativeProperty.complexPolygon = createPolygon(runtime, nativeProperty.polygonSource as PolygonSource);
+		nativeProperty.complexPolygon = createPolygon(runtime, nativeProperty.polygonSource as RegionPolygonSource);
 		delete nativeProperty.polygonSource;
 	}
 	await assertSamePage(runtime, currentPage);

@@ -217,7 +217,9 @@ export async function toSerializableAsync(value: unknown, depth = 0, seen?: Weak
 		return `[Function ${typeof functionName === 'string' && functionName.length > 0 ? functionName : 'anonymous'}]`;
 	}
 
-	if (depth >= 4) {
+	// A handler-owned bounded array may contain one further polygon contour
+	// array. Keep that contour intact in complete PCB region snapshots.
+	if (depth >= 4 && !(depth === 4 && Array.isArray(value) && shouldPreserveBoundedArray(value))) {
 		return '[MaxDepthExceeded]';
 	}
 

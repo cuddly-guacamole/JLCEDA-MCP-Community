@@ -1786,15 +1786,18 @@ export class EdaBridgeServer {
       || Number(value.regionCount) < 0 || value.regionCount !== value.regions.length) {
       throw new Error('PCB region state readback was incomplete or from another page; writes remain blocked.');
     }
+    const validSinglePolygon = (source: unknown): boolean => Array.isArray(source) && source.length > 0
+      && source.every(item => (typeof item === 'number' && Number.isFinite(item))
+        || (typeof item === 'string' && ['L', 'ARC', 'CARC', 'C', 'R', 'CIRCLE'].includes(item)));
+    const validPolygon = (source: unknown): boolean => validSinglePolygon(source)
+      || (Array.isArray(source) && source.length > 0 && source.every(validSinglePolygon));
     const ids = new Set<string>();
     for (const region of value.regions) {
       if (!isRecord(region) || !optionalString(region.primitiveId)
         || ids.has(region.primitiveId as string)
         || !Number.isSafeInteger(region.layer)
         || (![1, 2, 12].includes(Number(region.layer)) && !(Number(region.layer) >= 15 && Number(region.layer) <= 44))
-        || !Array.isArray(region.polygonSource) || region.polygonSource.length === 0
-        || region.polygonSource.some(item => (typeof item !== 'number' || !Number.isFinite(item))
-          && (typeof item !== 'string' || !['L', 'ARC', 'CARC', 'C', 'R', 'CIRCLE'].includes(item)))
+        || !validPolygon(region.polygonSource)
         || !Array.isArray(region.ruleType) || region.ruleType.some(item => ![2, 5, 6, 7, 8, 9].includes(item))
         || (region.regionName !== null && typeof region.regionName !== 'string')
         || !Number.isFinite(region.lineWidth) || typeof region.primitiveLock !== 'boolean') {

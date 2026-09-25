@@ -923,7 +923,7 @@
   },
   {
     "name": "pcb_region_manage",
-    "description": "完整读取当前 PCB 的禁止区域与约束区域，或按 ID 读取单个区域；创建、修改、删除单个区域。轮廓使用 polygonSource，规则编号 2/5/6/7/8/9。写后回读；未知提交须在同一 PCB 完整回读全部区域。",
+    "description": "完整读取当前 PCB 的禁止区域与约束区域，或按 ID 读取单个区域；创建、修改、删除单个区域。创建使用单轮廓 polygonSource，修改也支持多轮廓；规则编号 2/5/6/7/8/9。写后回读；未知提交须在同一 PCB 完整回读全部区域。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -952,8 +952,9 @@
         "rule": { "type": "integer", "enum": [2, 5, 6, 7, 8, 9] },
         "ruleType": { "type": "array", "items": { "$ref": "#/$defs/rule" } },
         "polygonSource": { "type": "array", "minItems": 1, "items": { "anyOf": [{ "type": "string", "enum": ["L", "ARC", "CARC", "C", "R", "CIRCLE"] }, { "type": "number" }] } },
+        "complexPolygonSource": { "anyOf": [{ "$ref": "#/$defs/polygonSource" }, { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/polygonSource" } }] },
         "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 },
-        "property": { "type": "object", "minProperties": 1, "properties": { "layer": { "$ref": "#/$defs/layer" }, "polygonSource": { "$ref": "#/$defs/polygonSource" }, "ruleType": { "$ref": "#/$defs/ruleType" }, "regionName": { "type": "string" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false }
+        "property": { "type": "object", "minProperties": 1, "properties": { "layer": { "$ref": "#/$defs/layer" }, "polygonSource": { "$ref": "#/$defs/complexPolygonSource" }, "ruleType": { "$ref": "#/$defs/ruleType" }, "regionName": { "type": "string" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false }
       },
       "additionalProperties": false
     }

@@ -2291,10 +2291,11 @@ try {
     await assert.rejects(regionServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /region state readback was incomplete/);
     readback = { ...snapshot, regions: [{ ...region, ruleType: [3] }] };
     await assert.rejects(regionServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /region readback was incomplete/);
-    readback = snapshot;
+    const complexRegion = { ...region, polygonSource: [region.polygonSource, ['R', 20, 20, 40, 40, 0, 0]] };
+    readback = { ...snapshot, regions: [complexRegion] };
     const verified = await regionServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
     assert.equal(verified.readbackVerified, true);
-    assert.deepEqual(verified.readback.regions, [region]);
+    assert.deepEqual(verified.readback.regions, [complexRegion]);
     assert.equal(verified.writesRemainBlocked, false);
   } finally {
     oldRegionClient?.socket.close();
