@@ -192,6 +192,10 @@ function formatComponentTitle(component: ComponentPlaceItem): string {
 	return `${component.libraryUuid}/${component.uuid}`;
 }
 
+function isUnknownPlacementStartResult(errorMessage: string): boolean {
+	return /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i.test(errorMessage);
+}
+
 function resolvePlaceComponentApi(): PlaceComponentApi {
 	const edaGlobal = getEdaRuntime();
 	if (!edaGlobal || typeof edaGlobal !== 'object') {
@@ -506,11 +510,16 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 		};
 	}
 	catch (error: unknown) {
+		const errorMessage = toSafeErrorMessage(error);
+		const commitUnknown = isUnknownPlacementStartResult(errorMessage);
+		if (commitUnknown)
+			requirePlacementModeExit();
 		await cleanupPlaceSession(sessionId);
 
 		return {
 			ok: false,
-			error: toSafeErrorMessage(error),
+			error: errorMessage,
+			...(commitUnknown ? { commitUnknown: true, readbackRequired: true, nativeCallSettled: false } : {}),
 		};
 	}
 }
