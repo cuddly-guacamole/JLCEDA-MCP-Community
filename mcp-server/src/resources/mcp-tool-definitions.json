@@ -1380,6 +1380,17 @@
     }
   },
   {
+    "name": "editor_navigate",
+    "description": "在当前工程中打开或激活指定原理图图页/PCB，并精确回读工程、文档、图页与标签身份。先用 project_info 获取文档 UUID；激活已有标签还需其 tabId。切换结果不明时按目标文档回读，不要盲目重试。",
+    "inputSchema": {
+      "type": "object",
+      "oneOf": [
+        { "type": "object", "properties": { "operation": { "const": "open" }, "projectUuid": { "type": "string", "minLength": 1 }, "documentUuid": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["operation", "projectUuid", "documentUuid"], "additionalProperties": false },
+        { "type": "object", "properties": { "operation": { "const": "activate" }, "projectUuid": { "type": "string", "minLength": 1 }, "documentUuid": { "type": "string", "minLength": 1 }, "tabId": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["operation", "projectUuid", "documentUuid", "tabId"], "additionalProperties": false }
+      ]
+    }
+  },
+  {
     "name": "pcb_documents_manage",
     "description": "列出当前工程全部 PCB，或在同工程内创建、复制、重命名 PCB。写入须 confirm:true，完成后核对工程 UUID、PCB UUID 和完整目录；重命名要求目标 PCB 已在 EDA 打开。暂不提供删除。",
     "inputSchema": {

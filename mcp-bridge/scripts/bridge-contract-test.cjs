@@ -30,6 +30,7 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/netlabel/place', { timeout
 assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', { timeoutMs: 600001 }), /600000/);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/documents-manage', { operation: 'list', projectUuid: 'project-1' }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/editor/navigate', { operation: 'open', projectUuid: 'project-1', documentUuid: 'page-1' }), false);
 for (const operation of ['create', 'copy', 'rename'])
 	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/documents-manage', { operation, projectUuid: 'project-1' }), false);
 for (const action of [undefined, 'status', 'selection', 'primitive_by_id', 'primitives_in_region', 'convert_canvas_to_data', 'navigate_to_coordinates', 'navigate_to_region', 'zoom_to_board_outline'])

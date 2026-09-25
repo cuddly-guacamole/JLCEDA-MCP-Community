@@ -65,6 +65,8 @@ interface RecoveryDiagnostic {
   mutating: boolean;
   pageBound: boolean;
   targetProjectUuid?: string;
+  targetDocumentUuid?: string;
+  targetTabId?: string;
   targetSchematicUuid?: string;
   targetSchematicMayBeEmpty?: boolean;
   targetSchematicPageUuid?: string;
@@ -197,7 +199,7 @@ function schematicPageMutationTarget(path: string, payload: unknown): Pick<Recov
 }
 
 function knownProjectTargetUuid(path: string, payload: unknown): string | undefined {
-  if (path === '/bridge/jlceda/pcb/documents-manage' && isRecord(payload))
+  if ((path === '/bridge/jlceda/pcb/documents-manage' || path === '/bridge/jlceda/editor/navigate') && isRecord(payload))
     return optionalString(payload.projectUuid);
   if (path !== '/bridge/jlceda/api/invoke' || !isRecord(payload)
     || typeof payload.apiFullName !== 'string'
@@ -1339,6 +1341,9 @@ export class EdaBridgeServer {
       ...(mutating && pending.path === '/bridge/jlceda/api/invoke'
         ? { hostRestartRequired: !nativeCallSettled } : {}),
       ...(targetProjectUuid ? { targetProjectUuid } : {}),
+      ...(mutating && pending.path === '/bridge/jlceda/editor/navigate' && isRecord(pending.payload)
+        ? { targetDocumentUuid: optionalString(pending.payload.documentUuid), targetTabId: optionalString(pending.payload.tabId), hostRestartRequired: !nativeCallSettled }
+        : {}),
       ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
       ...(mutating && pending.path === '/bridge/jlceda/pcb/component-edit'
         ? { requiredReadback: 'pcb_component_state' as const, hostRestartRequired: !nativeCallSettled }
@@ -1648,7 +1653,7 @@ export class EdaBridgeServer {
       throw new Error('expectedPageUuid does not match the verified execution-time page identity; writes remain blocked.');
     const expectedDocumentUuid = session.diagnostic.pageBound
       ? executionContext?.documentUuid ?? optionalString(payload.expectedDocumentUuid)
-      : optionalString(payload.expectedDocumentUuid);
+      : session.diagnostic.targetDocumentUuid ?? optionalString(payload.expectedDocumentUuid);
     const expectedProjectUuid = session.diagnostic.targetProjectUuid
       ?? (session.diagnostic.pageBound || session.diagnostic.requiredReadback === 'schematic_project_review'
         || session.diagnostic.requiredReadback === 'schematic_page_inventory'
@@ -1740,6 +1745,12 @@ export class EdaBridgeServer {
     const identity = extractReadbackIdentity(identityReadback, expectedPageKind);
     if (expectedDocumentUuid && identity.documentUuid !== expectedDocumentUuid) {
       throw new Error('Readback documentUuid does not match expectedDocumentUuid; writes remain blocked.');
+    }
+    if (session.diagnostic.targetTabId) {
+      const identityRecord = isRecord(identityReadback) ? identityReadback : {};
+      const document = isRecord(identityRecord.currentDocumentInfo) ? identityRecord.currentDocumentInfo : undefined;
+      if (optionalString(document?.tabId) !== session.diagnostic.targetTabId)
+        throw new Error('Readback tabId does not match the requested editor tab; writes remain blocked.');
     }
     if (expectedProjectUuid && identity.projectUuid !== expectedProjectUuid) {
       throw new Error('Readback projectUuid does not match expectedProjectUuid; writes remain blocked.');
