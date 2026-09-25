@@ -34,7 +34,7 @@ export interface DesignatorRestoreResult {
 async function readSnapshot(api: DesignatorApi): Promise<DesignatorSnapshot> {
 	if (!api.getAll)
 		throw new TypeError('sch_PrimitiveComponent.getAll API 不可用。');
-	const components = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+	const components = await Promise.resolve(api.getAll.call(api.context, null, false));
 	if (!Array.isArray(components))
 		throw new TypeError('sch_PrimitiveComponent.getAll 未返回器件列表。');
 	const states = new Map<string, ComponentState>();
@@ -83,7 +83,16 @@ function readOtherProperty(component: unknown): Record<string, string | number |
 
 /** Read current-page designators before starting a placement. */
 export async function readSchematicDesignators(api: DesignatorApi): Promise<Map<string, string>> {
-	return new Map([...(await readSnapshot(api)).designators].filter(([, designator]) => designator));
+	return (await readSchematicComponentBaseline(api)).designators;
+}
+
+/** Read one current-page component snapshot for placement ID and designator baselines. */
+export async function readSchematicComponentBaseline(api: DesignatorApi): Promise<{ primitiveIds: Set<string>; designators: Map<string, string> }> {
+	const snapshot = await readSnapshot(api);
+	return {
+		primitiveIds: new Set(snapshot.states.keys()),
+		designators: new Map([...snapshot.designators].filter(([, designator]) => designator)),
+	};
 }
 
 /** Restore only existing components renumbered by one placement, then read back the page. */

@@ -321,6 +321,80 @@ async function main() {
 	assert.deepEqual(check.primitiveIds, ['placed-1']);
 	assert.equal(getPlacementModeWriteRejection('/bridge/jlceda/api/invoke', concurrentWrite), undefined);
 	const originalPlacementApi = globalThis.eda.sch_PrimitiveComponent;
+
+	// EDA can expose a committed symbol through getAll while its ID-only API
+	// still returns the pre-placement list. The object baseline must also cover
+	// existing symbols omitted by the ID-only API, including empty designators.
+	const delayedIds = ['known-existing'];
+	const delayedComponents = [primitive('known-existing', 'U4'), primitive('object-only-existing', '')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId(componentType, allPages) {
+			assert.equal(componentType, null);
+			assert.equal(allPages, false);
+			return [...delayedIds];
+		},
+		async getAll(componentType, allPages) {
+			assert.equal(componentType, null);
+			assert.equal(allPages, false);
+			return [...delayedComponents];
+		},
+		async placeComponentWithMouse() {
+			delayedComponents.push(placedPrimitive('committed-before-id-index'));
+			return true;
+		},
+	};
+	const delayedStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	assert.equal(delayedStart.ok, true);
+	const delayedWaiting = await handleComponentPlaceCheckTask({ sessionId: delayedStart.sessionId });
+	assert.equal(delayedWaiting.awaitingExit, true);
+	assert.deepEqual(delayedWaiting.candidatePrimitiveIds, ['committed-before-id-index']);
+	pressEscape();
+	const delayedCheck = await handleComponentPlaceCheckTask({ sessionId: delayedStart.sessionId });
+	assert.equal(delayedCheck.placed, true);
+	assert.deepEqual(delayedCheck.primitiveIds, ['committed-before-id-index']);
+	assert.equal(delayedCheck.userCancelled, false);
+
+	// An object visible during mouse preview must not be called placed when
+	// it disappears before Escape.
+	delayedComponents.pop();
+	const delayedCancelStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	assert.equal((await handleComponentPlaceCheckTask({ sessionId: delayedCancelStart.sessionId })).awaitingExit, true);
+	delayedComponents.pop();
+	pressEscape();
+	const delayedCancelled = await handleComponentPlaceCheckTask({ sessionId: delayedCancelStart.sessionId });
+	assert.equal(delayedCancelled.placed, false);
+	assert.equal(delayedCancelled.userCancelled, true);
+
+	// If the ID-only index sees just one of two committed symbols, the object
+	// read after exit must still find and remove the duplicate.
+	let indexedIds = ['known-existing'];
+	const partialComponents = [primitive('known-existing', 'U4')];
+	const partialDeleteTargets = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...indexedIds]; },
+		async getAll() { return [...partialComponents]; },
+		async delete(target) {
+			partialDeleteTargets.push(typeof target === 'string' ? 'id' : 'primitive');
+			if (typeof target === 'string')
+				return false;
+			partialComponents.splice(partialComponents.findIndex(component => component.getState_PrimitiveId() === target.getState_PrimitiveId()), 1);
+			return true;
+		},
+		async placeComponentWithMouse() {
+			indexedIds = ['known-existing', 'indexed-first'];
+			partialComponents.push(placedPrimitive('indexed-first'), placedPrimitive('object-second'));
+			return true;
+		},
+	};
+	const partialStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const partialCheck = await handleComponentPlaceCheckTask({ sessionId: partialStart.sessionId });
+	assert.equal(partialCheck.placed, true);
+	assert.equal(partialCheck.duplicate, false);
+	assert.deepEqual(partialCheck.primitiveIds, ['indexed-first']);
+	assert.deepEqual(partialCheck.removedDuplicateIds, ['object-second']);
+	assert.deepEqual(partialDeleteTargets, ['id', 'primitive']);
+	globalThis.eda.sch_PrimitiveComponent = originalPlacementApi;
 	const interactiveIds = ['existing-u'];
 	const interactiveBom = { Value: 'FM25V20A', Datasheet: 'https://example.test/f' };
 	let interactiveDesignator = 'U5';
