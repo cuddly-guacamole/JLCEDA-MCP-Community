@@ -36,6 +36,7 @@ import { handlePcbDocumentTask } from '../mcp/pcb-document-handler.ts';
 import { handlePcbDrcCheckTask } from '../mcp/pcb-drc-handler.ts';
 import { handlePcbLayerQueryTask } from '../mcp/pcb-layer-handler.ts';
 import { handlePcbPourManageTask } from '../mcp/pcb-pour-manage-handler.ts';
+import { handlePcbReadTask } from '../mcp/pcb-read-handler.ts';
 import { handlePcbRealtimeDrcTask } from '../mcp/pcb-realtime-drc-handler.ts';
 import { handlePcbRegionManageTask } from '../mcp/pcb-region-manage-handler.ts';
 import { handlePcbRoutingEditTask } from '../mcp/pcb-routing-edit-handler.ts';
@@ -82,6 +83,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/pcb/connectivity': handlePcbConnectivityTask,
 	'/bridge/jlceda/pcb/component-edit': handlePcbComponentEditTask,
 	'/bridge/jlceda/pcb/pour-manage': handlePcbPourManageTask,
+	'/bridge/jlceda/pcb/read': handlePcbReadTask,
 	'/bridge/jlceda/pcb/routing-edit': handlePcbRoutingEditTask,
 	'/bridge/jlceda/pcb/board-outline-manage': handlePcbBoardOutlineManageTask,
 	'/bridge/jlceda/pcb/region-manage': handlePcbRegionManageTask,

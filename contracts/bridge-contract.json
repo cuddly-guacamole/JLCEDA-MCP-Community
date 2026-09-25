@@ -310,6 +310,13 @@
 			"timeoutPolicy": "default"
 		},
 		{
+			"toolName": "pcb_read",
+			"path": "/bridge/jlceda/pcb/read",
+			"owner": "bridge",
+			"timeoutPolicy": "extended-read",
+			"readOnly": true
+		},
+		{
 			"toolName": "pcb_component_edit",
 			"path": "/bridge/jlceda/pcb/component-edit",
 			"owner": "bridge",
