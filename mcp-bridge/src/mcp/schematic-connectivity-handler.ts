@@ -1,3 +1,4 @@
+import { resolveContractTimeoutMs } from '../bridge/bridge-contract.ts';
 import { getEdaRuntime, getSyncState, isPlainObjectRecord } from '../utils.ts';
 import { handleSchematicReadTask } from './schematic-read-handler.ts';
 
@@ -9,6 +10,7 @@ const COORDINATE_EPSILON = 1e-6;
 const MAX_WIRE_LINE_COORDINATES = 512;
 const WIRE_READBACK_ATTEMPTS = 12;
 const WIRE_READBACK_INTERVAL_MS = 250;
+const WIRE_RESULT_RESERVE_MS = 1000;
 
 function unknownCommitAfterReadback(action: Exclude<ConnectivityAction, 'wire_preview'>, error: unknown, context: Record<string, unknown>): Record<string, unknown> {
 	return {
@@ -192,6 +194,25 @@ async function readWires(api: Record<string, unknown>): Promise<WireState[]> {
 	});
 }
 
+async function readWiresBeforeDeadline(api: Record<string, unknown>, deadline: number): Promise<WireState[] | null> {
+	const remainingMs = deadline - Date.now();
+	if (remainingMs <= 0)
+		return null;
+	let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			readWires(api),
+			new Promise<null>((resolve) => {
+				timeoutId = globalThis.setTimeout(() => resolve(null), remainingMs);
+			}),
+		]);
+	}
+	finally {
+		if (timeoutId !== undefined)
+			globalThis.clearTimeout(timeoutId);
+	}
+}
+
 function componentApi(eda: Record<string, unknown>): Record<string, unknown> {
 	const api = eda.sch_PrimitiveComponent;
 	if (!isPlainObjectRecord(api) || typeof api.getAll !== 'function')
@@ -338,6 +359,9 @@ function effectiveWireNets(wires: WireState[], components: ComponentState[], lab
 }
 
 async function handleWireAction(action: 'wire_preview' | 'wire_create', payload: Record<string, unknown>, eda: Record<string, unknown>): Promise<unknown> {
+	const readbackDeadline = action === 'wire_create'
+		? Date.now() + resolveContractTimeoutMs('/bridge/jlceda/schematic/connectivity', payload) - WIRE_RESULT_RESERVE_MS
+		: 0;
 	const line = payload.line;
 	if (Array.isArray(line) && line.length > MAX_WIRE_LINE_COORDINATES)
 		throw new RangeError(`line must contain at most ${MAX_WIRE_LINE_COORDINATES} coordinates.`);
@@ -398,9 +422,14 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		// EDA can resolve create before getAll exposes the returned wire. Wait for
 		// the new ID or a changed/removed existing wire before judging the commit.
 		for (let attempt = 0; attempt < WIRE_READBACK_ATTEMPTS; attempt++) {
-			if (attempt > 0)
+			if (attempt > 0) {
+				if (readbackDeadline - Date.now() <= WIRE_READBACK_INTERVAL_MS)
+					break;
 				await new Promise<void>(resolve => globalThis.setTimeout(resolve, WIRE_READBACK_INTERVAL_MS));
-			const after = await readWires(api);
+			}
+			const after = await readWiresBeforeDeadline(api, readbackDeadline);
+			if (!after)
+				break;
 			const afterIds = new Set(after.map(wire => wire.id));
 			changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
 			removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);

@@ -7,7 +7,7 @@ require('ts-node/register/transpile-only');
 const { handleSchematicConnectivityTask } = require('../src/mcp/schematic-connectivity-handler.ts');
 const { handleSchematicReadTask } = require('../src/mcp/schematic-read-handler.ts');
 const { getBridgeTaskHandler } = require('../src/runtime/bridge-handler-registry.ts');
-const { requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
+const { requiresHostRestartForResult, startTimedTask } = require('../src/runtime/task-timeout.ts');
 
 function wire(id, net, line) {
 	return {
@@ -225,6 +225,28 @@ async function main() {
 	assert.equal(unresolvedCreate.nativeCallSettled, true);
 	assert.equal(unresolvedCreate.returnedPrimitiveId, 'unresolved-native-id');
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, unresolvedCreate), false);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+
+	// A short Bridge timeout with slow getAll must leave enough time to report
+	// that the native create settled, even if the new ID never becomes visible.
+	let budgetReads = 0;
+	delayedWireApi.create = async () => wire('budget-native-id', 'NET_DELAYED', [3400, 1000, 3500, 1000]);
+	delayedWireApi.getAll = async () => {
+		budgetReads += 1;
+		await new Promise(resolve => setTimeout(resolve, 300));
+		return wires;
+	};
+	const budgetStartedAt = Date.now();
+	const budgetPayload = { action: 'wire_create', line: [3400, 1000, 3500, 1000], net: 'NET_DELAYED', timeoutMs: 5000 };
+	const budgetTask = startTimedTask(handleSchematicConnectivityTask(budgetPayload), '/bridge/jlceda/schematic/connectivity', 5000);
+	const budgetResult = await budgetTask.result;
+	assert.ok(Date.now() - budgetStartedAt < 5000, 'result must arrive before the Bridge task timeout');
+	assert.ok(budgetReads > 2 && budgetReads < 13, 'readback should poll, then stop at the task budget');
+	assert.equal(budgetResult.commitUnknown, true);
+	assert.equal(budgetResult.nativeCallSettled, true);
+	assert.equal(budgetResult.returnedPrimitiveId, 'budget-native-id');
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', budgetPayload, budgetResult), false);
 	delayedWireApi.create = originalCreate;
 	delayedWireApi.getAll = originalDelayedGetAll;
 
