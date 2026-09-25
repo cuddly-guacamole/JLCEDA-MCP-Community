@@ -44,7 +44,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_component_edit` 的 `read` 返回当前 PCB 全部器件的不截断状态。`create` 接受设备或封装的库引用、顶层或底层、坐标与可选角度；`modify` 按 ID 修改单个器件的层、坐标、角度、锁定状态、位号或 BOM 属性，`delete` 按 ID 删除单个器件。修改 `otherProperty` 时会保留未指定的已有键。每次写入后重新读取并核对当前 PCB。提交状态不明时，`bridge_recover_client action=readback` 必须使用 `readbackPath:"/bridge/jlceda/pcb/component-edit"` 和 `readbackPayload:{"action":"read"}`，核对同一 PCB 的完整器件快照；诊断要求宿主重启时先重启原宿主。
 
-`pcb_pour_manage` 的 `read` 返回当前 PCB 全部覆铜边框和已填充区域的 ID、关联、填充数量及几何摘要。`create` 接受已有网络、铜层及 `polygonSource` 数组，例如 `["R",100,200,300,400,0,0]`；`modify` 可更改单个边框的轮廓与设置，`delete` 删除单个边框。EDA 3.2.181 的原生创建和修改都可能调整覆铜优先级；完整回读发现请求值或未请求字段发生偏差时返回 `applied:true`、`verified:false`、`before/after/sideEffects`，写入状态已明确，无需执行未知提交恢复。`rebuild` 只在明确调用时重建指定边框或全板填充，必须核对完整返回集合和写后状态。原生重建报错也可能已改变填充，遇到 `commitUnknown:true` 时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/pour-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部边框和填充摘要；诊断要求宿主重启时先重启原宿主。
+`pcb_pour_manage` 的 `read` 返回当前 PCB 全部覆铜边框和已填充区域的 ID、关联、填充数量及几何摘要。`create` 接受已有网络、铜层及 `polygonSource` 数组，例如 `["R",100,200,300,400,0,0]`；`modify` 可更改单个边框的轮廓与设置，`delete` 删除单个边框。EDA 3.2.181 的原生创建和修改都可能调整覆铜优先级；完整回读发现请求值或未请求字段发生偏差时返回 `applied:true`、`verified:false`、`before/after/sideEffects`，写入状态已明确，无需执行未知提交恢复。`rebuild` 只在明确调用时重建指定边框或全板填充，必须核对完整返回集合和写后状态；单件重建未生成目标填充、删除后仍有关联填充时返回 `verified:false` 和已读回状态。原生重建报错也可能已改变填充，遇到 `commitUnknown:true` 时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/pour-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部边框和填充摘要；诊断要求宿主重启时先重启原宿主。
 
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 

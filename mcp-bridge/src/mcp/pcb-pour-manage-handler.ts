@@ -454,7 +454,29 @@ export async function handlePcbPourManageTask(payload: unknown): Promise<unknown
 			return { ok: true, action, scope: SCOPE, pageUuid, primitiveId, pour: modified, verified: true };
 		}
 		if (action === 'delete') {
-			if (nativeResult === false || after.pours.some(pour => pour.primitiveId === primitiveId))
+			const remainingPoured = after.poured.filter(item => item.pourPrimitiveId === primitiveId);
+			const boundaryExists = after.pours.some(pour => pour.primitiveId === primitiveId);
+			if (!boundaryExists && remainingPoured.length) {
+				return {
+					ok: false,
+					action,
+					scope: SCOPE,
+					pageUuid,
+					primitiveId,
+					reason: 'delete_left_associated_fill',
+					applied: true,
+					verified: false,
+					before: {
+						pour: before.pours.find(pour => pour.primitiveId === primitiveId),
+						poured: before.poured.filter(item => item.pourPrimitiveId === primitiveId),
+					},
+					after: {
+						pour: null,
+						poured: remainingPoured,
+					},
+				};
+			}
+			if (nativeResult === false || boundaryExists)
 				throw new Error('EDA pour still exists after delete.');
 			return { ok: true, action, scope: SCOPE, pageUuid, primitiveId, deleted: true, verified: true };
 		}
@@ -478,9 +500,20 @@ export async function handlePcbPourManageTask(payload: unknown): Promise<unknown
 			throw new Error('EDA rebuild returned a fill for a missing pour.');
 		if (payload.all === true && after.pours.some(item => !returnedPourIds.has(item.primitiveId)))
 			throw new Error('EDA rebuild did not return a fill for every pour.');
-		if (primitiveId && before.poured.some(item => item.pourPrimitiveId === primitiveId
-			&& !returnedPourIds.has(item.pourPrimitiveId))) {
-			throw new Error('EDA rebuild removed a previously filled pour without a replacement.');
+		if (primitiveId && !returnedPourIds.has(primitiveId)) {
+			const beforeTargetPoured = before.poured.filter(item => item.pourPrimitiveId === primitiveId);
+			return {
+				ok: false,
+				action,
+				scope: SCOPE,
+				...context,
+				reason: 'rebuild_no_target_fill',
+				applied: beforeTargetPoured.length > 0,
+				verified: false,
+				before: beforeTargetPoured,
+				after: observedPoured,
+				rebuildReturnedCount: returnedPoured.length,
+			};
 		}
 		for (const returned of returnedPoured) {
 			if (primitiveId && returned.pourPrimitiveId !== primitiveId)

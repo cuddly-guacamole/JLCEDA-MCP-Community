@@ -188,6 +188,12 @@ async function main() {
 	assert.deepEqual([created.ok, created.verified, created.primitiveId, created.pour.layer, created.pour.pourFillMethod], [true, true, 'new-1', 15, '45grid']);
 	assert.equal(created.pour.pourName, 'Ground');
 	assert.equal(poured.has('filled-new-1'), false, 'create does not rebuild copper automatically');
+	const nativeEmptyTargetRebuild = pourApi.rebuildCopperRegions;
+	pourApi.rebuildCopperRegions = async () => [];
+	const emptyNewTarget = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'new-1' });
+	assert.deepEqual([emptyNewTarget.ok, emptyNewTarget.applied, emptyNewTarget.verified, emptyNewTarget.commitUnknown], [false, false, false, undefined], 'rebuild of a newly created pour must not verify an empty fill set');
+	assert.equal(emptyNewTarget.reason, 'rebuild_no_target_fill');
+	pourApi.rebuildCopperRegions = nativeEmptyTargetRebuild;
 	const nativePriorityCreate = pourApi.create;
 	pourApi.create = async (...args) => {
 		const result = await nativePriorityCreate(...args);
@@ -256,6 +262,17 @@ async function main() {
 	poured.set('filled-new-1', secondFill);
 	pourApi.rebuildCopperRegions = nativeAllRebuild;
 	await assert.rejects(handlePcbPourManageTask({ action: 'rebuild', all: true, primitiveId: 'new-1' }), /either/);
+	const nativeDeleteWithFill = pourApi.delete;
+	const newPourBeforeDelete = pours.get('new-1');
+	pourApi.delete = async (id) => {
+		pours.delete(id);
+		return true;
+	};
+	const staleFillAfterDelete = await handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-1' });
+	assert.deepEqual([staleFillAfterDelete.ok, staleFillAfterDelete.applied, staleFillAfterDelete.verified, staleFillAfterDelete.commitUnknown], [false, true, false, undefined], 'deleting a boundary must not verify while its fill remains');
+	assert.deepEqual([staleFillAfterDelete.reason, staleFillAfterDelete.after.pour, staleFillAfterDelete.after.poured[0].pourPrimitiveId], ['delete_left_associated_fill', null, 'new-1']);
+	pours.set('new-1', newPourBeforeDelete);
+	pourApi.delete = nativeDeleteWithFill;
 	const deleted = await handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-1' });
 	assert.deepEqual([deleted.ok, deleted.deleted, deleted.verified], [true, true, true]);
 	await assert.rejects(handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-1' }), /does not exist/);
@@ -270,9 +287,16 @@ async function main() {
 	pourApi.rebuildCopperRegions = async () => [pouredPrimitive({ primitiveId: 'filled-1', pourPrimitiveId: 'another-pour', fills: [fill('a'), fill('b')] })];
 	const wrongAssociation = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
 	assert.deepEqual([wrongAssociation.commitUnknown, wrongAssociation.nativeCallSettled], [true, true]);
-	pourApi.rebuildCopperRegions = async () => [];
+	const fillsBeforeEmptyTarget = [...poured.entries()].filter(([, state]) => state.pourPrimitiveId === 'pour-1');
+	pourApi.rebuildCopperRegions = async () => {
+		for (const [id] of fillsBeforeEmptyTarget)
+			poured.delete(id);
+		return [];
+	};
 	const emptyWithExistingFill = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
-	assert.deepEqual([emptyWithExistingFill.commitUnknown, emptyWithExistingFill.nativeCallSettled], [true, true]);
+	assert.deepEqual([emptyWithExistingFill.ok, emptyWithExistingFill.applied, emptyWithExistingFill.verified, emptyWithExistingFill.commitUnknown], [false, true, false, undefined]);
+	for (const [id, state] of fillsBeforeEmptyTarget)
+		poured.set(id, state);
 	pourApi.rebuildCopperRegions = async () => {
 		throw new Error('Native rebuild failed internally');
 	};
