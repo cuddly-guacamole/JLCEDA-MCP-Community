@@ -146,10 +146,23 @@ function routingApi(runtime: Record<string, unknown>, kind: Kind, methods: strin
 
 async function getOne(runtime: Record<string, unknown>, kind: Kind, primitiveId: string, pageUuid: string): Promise<Primitive | undefined> {
 	const primitiveApi = routingApi(runtime, kind, ['get']);
-	const raw = await (primitiveApi.get as (id: string) => Promise<unknown>).call(primitiveApi, primitiveId);
+	let raw = await (primitiveApi.get as (id: string) => Promise<unknown>).call(primitiveApi, primitiveId);
 	await assertSamePage(runtime, pageUuid);
 	if (raw == null)
 		return undefined;
+	// After deletion, native get(id) can return an ID-only stale object. Confirm
+	// it still belongs to the current page before reading geometry from it.
+	const geometryGetter = kind === 'via' ? 'getState_X' : 'getState_Layer';
+	if (typeof (raw as Record<string, unknown>)[geometryGetter] !== 'function') {
+		const allApi = routingApi(runtime, kind, ['getAll']);
+		const all = await (allApi.getAll as () => Promise<unknown>).call(allApi);
+		if (!Array.isArray(all))
+			throw new TypeError(`EDA ${API_NAME[kind]}.getAll did not return an array.`);
+		await assertSamePage(runtime, pageUuid);
+		raw = all.find(item => readState(item, 'getState_PrimitiveId') === primitiveId);
+		if (!raw)
+			return undefined;
+	}
 	if (kind !== 'via' && !isCopperLayer(finiteNumber(readState(raw, 'getState_Layer'), 'EDA layer')))
 		return undefined;
 	return readPrimitive(kind, raw);
@@ -308,7 +321,7 @@ export async function handlePcbRoutingEditTask(payload: unknown): Promise<unknow
 	if (action === 'read') {
 		if (kind !== undefined) {
 			const primitive = await getOne(runtime, kind, primitiveId!, pageUuid);
-			return { ok: true, action, scope: SCOPE, pageUuid, kind, primitiveId, found: primitive !== undefined, primitive: primitive ?? null };
+			return { ok: true, action, scope: SCOPE, pageUuid, kind, primitiveId, found: primitive !== undefined, primitive: primitive ?? null, ...(primitive === undefined ? { reason: 'not_found' } : {}) };
 		}
 		const [lines, arcs, polylines, vias] = await Promise.all([
 			getAll(runtime, 'line'),
