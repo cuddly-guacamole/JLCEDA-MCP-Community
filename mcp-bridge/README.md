@@ -26,7 +26,7 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `pcb_routing_edit` 可一次读取当前 PCB 铜层的全部直线、圆弧、折线和过孔，或按类型及图元 ID 精确读取；非铜层图形不作为走线返回。`create` 通过原生 API 创建圆弧，或将 JSON `polygonSource` 转为多边形后创建折线；直线和过孔的创建仍可用 `pcb_connectivity_action`。`modify` 和 `delete` 只作用于指定类型的单个图元。修改后核对目标属性；删除后从同类 `getAll` 的完整 ID 列表核对目标消失，避免原生 `get(id)` 返回不完整删除占位对象时误报未知提交。其他结果不明时要求回读全板布线与网络。
 
-`pcb_board_outline_manage` 仅读取、创建、修改或删除板框层 11 上的直线、圆弧和折线；新建图元使用空网络。可按类型及图元 ID 定位单个板框图元；折线轮廓由 JSON `polygonSource` 转为原生多边形，多段板框不强制各自闭合。写后核对同一 PCB 的图元状态；结果不明时隔离写入并要求同板完整图元回读。
+`pcb_board_outline_manage` 仅读取、创建、修改或删除板框层 11 上的直线、圆弧和折线；新建图元使用空网络，EDA 也可能将其读为 `null`。可按类型及图元 ID 定位单个板框图元；折线轮廓由 JSON `polygonSource` 转为原生多边形，多段板框不强制各自闭合。写后核对同一 PCB 的图元状态；原生创建未新增图元时返回 `applied:false`，创建结果与请求不符时返回 `applied:true` 及实际图元；只有结果不明时才隔离写入并要求同板完整图元回读。
 
 `pcb_connectivity_action` 可在指定网络上创建 PCB 直线走线或通孔。`line_create` 需要 `net`、`layer`、`startX/startY`、`endX/endY` 和 `lineWidth`；`via_create` 需要 `net`、`x/y`、`holeDiameter` 和 `diameter`，单位为 EDA 当前画布数据单位。默认先确认网络已存在；明确传入 `allowNewNet:true` 可在独立 PCB 上创建新网络。直线目标层必须是已启用、未锁定的 `SIGNAL` 或 `PLANE` 铜层。写入后使用原生单 ID 查询核对网络和几何；原生调用超时、缺少返回 ID 或回读失败时报告 `commitUnknown:true`，等待受控恢复核对 PCB 布线状态后再写入。
 

@@ -80,7 +80,7 @@ function readPrimitive(kind: Kind, raw: unknown): Primitive {
 		lineWidth: numberValue(readState(raw, 'getState_LineWidth'), 'EDA lineWidth'),
 		primitiveLock: readState(raw, 'getState_PrimitiveLock'),
 	};
-	if (typeof common.net !== 'string' || typeof common.primitiveLock !== 'boolean')
+	if ((common.net !== null && typeof common.net !== 'string') || typeof common.primitiveLock !== 'boolean')
 		throw new TypeError('EDA board outline net or lock state is invalid.');
 	if (kind === 'polyline') {
 		const polygon = readState(raw, 'getState_Polygon');
@@ -114,6 +114,16 @@ async function getAll(runtime: Record<string, unknown>, kind: Kind): Promise<Pri
 	if (!Array.isArray(raw))
 		throw new TypeError(`EDA ${API_NAME[kind]}.getAll did not return an array.`);
 	return preserveBoundedArray(raw.map(item => readPrimitive(kind, item)).filter(item => item.layer === BOARD_OUTLINE_LAYER));
+}
+
+async function getAllPrimitiveIds(runtime: Record<string, unknown>, kind: Kind, expectedPage: string): Promise<string[]> {
+	const objectApi = primitiveApi(runtime, kind, ['getAll']);
+	const raw = await (objectApi.getAll as () => Promise<unknown>).call(objectApi);
+	if (!Array.isArray(raw))
+		throw new TypeError(`EDA ${API_NAME[kind]}.getAll did not return an array.`);
+	const ids = preserveBoundedArray(raw.map(item => requiredId(readState(item, 'getState_PrimitiveId'), 'EDA primitiveId')));
+	await assertSamePage(runtime, expectedPage);
+	return ids;
 }
 
 async function verifyBoardLayer(runtime: Record<string, unknown>): Promise<void> {
@@ -236,7 +246,7 @@ export async function handlePcbBoardOutlineManageTask(payload: unknown): Promise
 	const before = primitiveId ? await getOne(runtime, writeKind, primitiveId, currentPage) : undefined;
 	if (primitiveId && !before)
 		throw new TypeError(`PCB board outline ${writeKind} ${primitiveId} does not exist on the current page.`);
-	const beforeIds = action === 'create' ? (await getAll(runtime, writeKind)).map(item => item.primitiveId) : undefined;
+	const beforeIds = action === 'create' ? await getAllPrimitiveIds(runtime, writeKind, currentPage) : undefined;
 	if (beforeIds)
 		context.beforePrimitiveIds = beforeIds;
 	await verifyBoardLayer(runtime);
@@ -269,24 +279,50 @@ export async function handlePcbBoardOutlineManageTask(payload: unknown): Promise
 	try {
 		await assertSamePage(runtime, currentPage);
 		if (action === 'create') {
+			const afterIds = await getAllPrimitiveIds(runtime, writeKind, currentPage);
+			const addedIds = afterIds.filter(id => !beforeIds!.includes(id));
+			if (addedIds.length === 0) {
+				return { ok: false, action, scope: PATH_SCOPE, ...context, reason: 'native_create_no_effect', applied: false, verified: false, nativeCallSettled: true };
+			}
 			const all = await getAll(runtime, writeKind);
 			await assertSamePage(runtime, currentPage);
-			const added = all.filter(item => !beforeIds!.includes(item.primitiveId));
-			const returnedId = nativeResult == null ? undefined : requiredId(readState(nativeResult, 'getState_PrimitiveId'), 'EDA created primitiveId');
+			const added = all.filter(item => addedIds.includes(item.primitiveId));
+			const returnedId = nativeResult == null || nativeResult === false ? undefined : requiredId(readState(nativeResult, 'getState_PrimitiveId'), 'EDA created primitiveId');
 			const created = returnedId ? added.find(item => item.primitiveId === returnedId) : added.length === 1 ? added[0] : undefined;
-			if (!created || added.length !== 1 || created.net !== '' || !matchesRequested(created, requested!))
+			if (!created || addedIds.length !== 1 || added.length !== 1)
 				throw new Error('EDA did not read back exactly one matching new board outline primitive.');
+			const requestedMismatches = Object.entries(requested!).filter(([field, expected]) =>
+				!matchesRequested(created, { [field]: expected })).map(([field, expected]) => ({ field, expected, actual: created[field] }));
+			if (created.net !== '' && created.net !== null)
+				requestedMismatches.push({ field: 'net', expected: '', actual: created.net });
+			if (requestedMismatches.length) {
+				return {
+					ok: false,
+					action,
+					scope: PATH_SCOPE,
+					pageUuid: currentPage,
+					kind: writeKind,
+					primitiveId: created.primitiveId,
+					reason: 'create_readback_mismatch',
+					applied: true,
+					verified: false,
+					before: null,
+					after: created,
+					requestedMismatches,
+				};
+			}
 			return { ok: true, action, scope: PATH_SCOPE, pageUuid: currentPage, kind: writeKind, primitiveId: created.primitiveId, primitive: created, verified: true };
 		}
-		const observed = await getOne(runtime, writeKind, primitiveId!, currentPage);
-		if (action === 'modify') {
-			if (!observed || !matchesRequested(observed, requested!))
-				throw new Error('EDA board outline readback differs from the requested properties.');
-			return { ok: true, action, scope: PATH_SCOPE, pageUuid: currentPage, kind: writeKind, primitiveId, primitive: observed, verified: true };
+		if (action === 'delete') {
+			const ids = await getAllPrimitiveIds(runtime, writeKind, currentPage);
+			if (nativeResult === false || ids.includes(primitiveId!))
+				throw new Error('EDA board outline primitive still exists after delete.');
+			return { ok: true, action, scope: PATH_SCOPE, pageUuid: currentPage, kind: writeKind, primitiveId, deleted: true, verified: true };
 		}
-		if (nativeResult === false || observed !== undefined)
-			throw new Error('EDA board outline primitive still exists after delete.');
-		return { ok: true, action, scope: PATH_SCOPE, pageUuid: currentPage, kind: writeKind, primitiveId, deleted: true, verified: true };
+		const observed = await getOne(runtime, writeKind, primitiveId!, currentPage);
+		if (!observed || !matchesRequested(observed, requested!))
+			throw new Error('EDA board outline readback differs from the requested properties.');
+		return { ok: true, action, scope: PATH_SCOPE, pageUuid: currentPage, kind: writeKind, primitiveId, primitive: observed, verified: true };
 	}
 	catch (error: unknown) {
 		return unknownWrite(action, error, context, true);

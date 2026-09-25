@@ -153,6 +153,51 @@ async function main() {
 	globalThis.eda.pcb_PrimitiveLine.get = originalGet;
 
 	const originalArcCreate = globalThis.eda.pcb_PrimitiveArc.create;
+	for (const nativeResult of [null, false]) {
+		globalThis.eda.pcb_PrimitiveArc.create = async () => nativeResult;
+		const noEffect = await handlePcbBoardOutlineManageTask({ action: 'create', kind: 'arc', startX: 0, startY: 0, endX: 20, endY: 20, arcAngle: 90 });
+		assert.equal(noEffect.ok, false);
+		assert.equal(noEffect.applied, false);
+		assert.equal(noEffect.verified, false);
+		assert.equal(noEffect.reason, 'native_create_no_effect');
+		assert.equal(noEffect.commitUnknown, undefined);
+		assert.equal(requiresHostRestartForResult(path, {}, noEffect), false);
+	}
+	globalThis.eda.pcb_PrimitiveArc.create = originalArcCreate;
+	const originalPolylineCreate = globalThis.eda.pcb_PrimitivePolyline.create;
+	globalThis.eda.pcb_PrimitivePolyline.create = async (...args) => {
+		const result = await originalPolylineCreate(...args);
+		const created = items.polyline.get(result.getState_PrimitiveId());
+		created.net = null;
+		created.polygonSource = ['R', 697.55, -3717.55, 240, 160, 90, 0];
+		return result;
+	};
+	const wrongGeometry = await handlePcbBoardOutlineManageTask({ action: 'create', kind: 'polyline', polygonSource: ['R', 5000, 5400, 100, 100, 0, 0], lineWidth: 10 });
+	assert.equal(wrongGeometry.ok, false);
+	assert.equal(wrongGeometry.applied, true);
+	assert.equal(wrongGeometry.verified, false);
+	assert.equal(wrongGeometry.reason, 'create_readback_mismatch');
+	assert.equal(wrongGeometry.before, null);
+	assert.equal(wrongGeometry.after.net, null);
+	assert.deepEqual(wrongGeometry.after.polygonSource, ['R', 697.55, -3717.55, 240, 160, 90, 0]);
+	assert.equal(wrongGeometry.requestedMismatches[0].field, 'polygonSource');
+	assert.equal(wrongGeometry.commitUnknown, undefined);
+	assert.equal(requiresHostRestartForResult(path, {}, wrongGeometry), false);
+	globalThis.eda.pcb_PrimitivePolyline.create = originalPolylineCreate;
+	const originalPolylineDelete = globalThis.eda.pcb_PrimitivePolyline.delete;
+	globalThis.eda.pcb_PrimitivePolyline.delete = async () => true;
+	const stillPresent = await handlePcbBoardOutlineManageTask({ action: 'delete', kind: 'polyline', primitiveId: wrongGeometry.primitiveId });
+	assert.equal(stillPresent.commitUnknown, true);
+	globalThis.eda.pcb_PrimitivePolyline.delete = originalPolylineDelete;
+	const originalPolylineGet = globalThis.eda.pcb_PrimitivePolyline.get;
+	globalThis.eda.pcb_PrimitivePolyline.get = async id => items.polyline.has(id)
+		? originalPolylineGet(id)
+		: { getState_PrimitiveId: () => id };
+	const deletedWrongGeometry = await handlePcbBoardOutlineManageTask({ action: 'delete', kind: 'polyline', primitiveId: wrongGeometry.primitiveId });
+	assert.equal(deletedWrongGeometry.verified, true);
+	assert.equal(items.polyline.has(wrongGeometry.primitiveId), false);
+	globalThis.eda.pcb_PrimitivePolyline.get = originalPolylineGet;
+
 	globalThis.eda.pcb_PrimitiveArc.create = async (...args) => {
 		const result = await originalArcCreate(...args);
 		page = 'pcb-2';
