@@ -34,9 +34,9 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `pcb_board_outline_manage` 仅读取、创建、修改或删除板框层 11 上的直线、圆弧和折线；新建图元使用空网络，EDA 也可能将其读为 `null`。可按类型及图元 ID 定位单个板框图元；折线轮廓由 JSON `polygonSource` 转为原生多边形，多段板框不强制各自闭合。写后核对同一 PCB 的图元状态；原生创建未新增图元时返回 `applied:false`，创建结果与请求不符时返回 `applied:true` 及实际图元；只有结果不明时才隔离写入并要求同板完整图元回读。
 
-`pcb_region_manage` 完整读取 PCB 的禁止区域与约束区域，包括多轮廓区域，也可按 ID 读取、创建、修改和删除单个区域。创建使用单轮廓 `polygonSource`；修改现有区域可使用单轮廓或多轮廓数组。Bridge 在 EDA 内将 JSON 源转成原生多边形，并核对区域规则与轮廓；写入结果不明时要求同板完整区域回读。
+`pcb_region_manage` 完整读取 PCB 的禁止区域与约束区域，包括多轮廓区域，也可按 ID 读取、创建、修改和删除单个区域。原生创建和修改接口均只接受单轮廓 `polygonSource`；Bridge 在 EDA 内将 JSON 源转成原生多边形，并核对区域规则与轮廓；写入结果不明时要求同板完整区域回读。
 
-区域修改的完整回读若发现部分属性未生效，会返回 `applied`、`before/after` 与 `requestedMismatches`；删除按完整列表核对，避免原生单件 API 的删除后占位对象造成误报。
+区域创建的完整回读若确认未新增图元，会返回 `applied:false`；新增区域的属性与请求不同时返回 `applied:true`、`after` 与 `requestedMismatches`。区域修改若发现部分属性未生效，也会返回实际状态与未应用字段；删除按完整列表核对，避免原生单件 API 的删除后占位对象造成误报。
 
 `pcb_text_manage` 完整读取当前 PCB 的独立 String 与器件 Attribute，也可按类型、图元 ID 或父器件 ID 查询。独立文本可创建、修改、删除；现有器件属性可修改值、可见性与样式，写后重新 `get()` 验证。官方 `pcb_PrimitiveAttribute.create()` 不生效，故不暴露属性单独创建。未知提交要求同板完整文本与属性回读。
 

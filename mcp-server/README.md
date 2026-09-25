@@ -67,9 +67,9 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_read` 默认读取当前 PCB 的器件和网络；`sections` 可从 `components`、`pads`、`nets`、`routing`、`pours`、`outline`、`regions`、`text` 中选择，或传 `["all"]`。结果包含同一 `pageUuid`、`includedSections`、`omittedSections` 和所选部分的不截断数组及数量。`text` 包含独立文本与器件属性；`pads` 包括独立焊盘和器件焊盘的 ID、父器件 ID、层、焊盘号、位置、角度、网络及焊盘类型；逐件读取器件焊盘可能较慢，可调整 `timeoutMs`。复杂焊盘外形不在此语义快照中。任一所选部分读取失败或图页改变时整次调用失败。
 
-`pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 可用单轮廓或多轮廓 `polygonSource` 修改现有区域，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
+`pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 也仅接受单轮廓 `polygonSource`，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
 
-区域修改若部分属性未生效，工具返回 `applied`、`before/after`、`requestedMismatches` 和 `verified:false`，完整回读已确定结果时不会开启未知提交隔离。删除通过完整区域列表核对目标 ID。
+区域创建完整回读确认无新增图元时返回 `applied:false`；只新增一个但属性不符时返回 `applied:true`、`after`、`requestedMismatches` 和 `verified:false`。修改若部分属性未生效，也返回实际状态与未应用字段；完整回读已确定结果时不会开启未知提交隔离。删除通过完整区域列表核对目标 ID。
 
 `pcb_text_manage` 的无过滤 `read` 完整返回当前 PCB 的独立文本 String 和器件属性 Attribute；`kind` 可只读取一类，`primitiveId` 可精确读取，`parentPrimitiveId` 可读取指定器件的属性。`create`、`delete` 仅用于独立文本；创建至少提供层、坐标和内容，其余样式采用官方示例默认值。`modify` 可更改独立文本内容与样式，或传入属性 ID 和父器件 ID 修改已有器件属性的值、可见性与样式。官方 `pcb_PrimitiveAttribute.create()` 无效，因此本工具不提供单独创建属性。写入结果不明时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/text-manage"`、`readbackPayload:{"action":"read"}`，完整核对同一 PCB 的文本与属性；诊断要求时先重启原宿主。
 

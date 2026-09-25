@@ -5,6 +5,7 @@
 - `pcb_layer_manage action=set` 明确要求 `confirm:true`，阻止未确认的 PCB 叠层修改。
 - `pcb_layer_manage` 的完整读取和降层预检支持按 PCB 大小将桥接超时预算调整到 120 秒。
 - PCB 文档创建或复制已获得新 UUID 但目录回读失败时，恢复要求目录包含该 UUID，避免旧目录误解锁后重复创建。
+- `pcb_region_manage` 参数与原生区域创建、修改接口对齐为单轮廓；创建后已确认的无效或属性偏差不再进入未知提交隔离。
 - `pcb_region_manage` 完整回读已知部分修改或删除结果时不再误设未知提交隔离；工具描述补充实际返回字段。
 - 记录 `import_changes` 的未关联板预检结果：Bridge 不调用原生导入，Server 不进入待确认或未知提交隔离。
 - 配合 Bridge 修复交互放置已提交却返回 `placed:false`：原理图当前页对象回读可补足滞后的 ID 列表，Server 继续等待退出放置模式后处理下一器件。

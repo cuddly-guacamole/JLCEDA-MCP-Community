@@ -41,13 +41,13 @@ async function main() {
 		pcb_Layer: { async getAllLayers() { return [{ id: 1, layerStatus: 1, locked: layerLocked }, { id: 12, layerStatus: 1, locked: false }]; } },
 		pcb_MathPolygon: {
 			createPolygon(value) { return { getSource: () => value }; },
-			createComplexPolygon(value) { return { getSource: () => value }; },
 		},
 		pcb_PrimitiveRegion: {
 			async getAll() { return [...regions.values()].map(primitive); },
 			async get(id) { return regions.has(id) ? primitive(regions.get(id)) : undefined; },
 			async create(layer, polygon, ruleType, regionName, lineWidth, primitiveLock) {
 				writes += 1;
+				assert.equal(Array.isArray(polygon.getSource()[0]), false);
 				const id = `region-${serial++}`;
 				const value = state(id, { layer, polygonSource: polygon.getSource(), ruleType, regionName: regionName ?? null, lineWidth: lineWidth ?? 0.2, primitiveLock: primitiveLock ?? false });
 				regions.set(id, value);
@@ -57,6 +57,7 @@ async function main() {
 				writes += 1;
 				const patch = { ...property };
 				if (patch.complexPolygon) {
+					assert.equal(Array.isArray(patch.complexPolygon.getSource()[0]), false);
 					patch.polygonSource = patch.complexPolygon.getSource();
 					delete patch.complexPolygon;
 				}
@@ -83,9 +84,10 @@ async function main() {
 	const complexRead = await toSerializableAsync(await handlePcbRegionManageTask({ action: 'read' }));
 	assert.equal(complexRead.regionCount, 131);
 	assert.deepEqual(complexRead.regions.find(region => region.primitiveId === 'complex').polygonSource, complexSource);
-	const complexModified = await handlePcbRegionManageTask({ action: 'modify', primitiveId: 'complex', property: { polygonSource: [source, ['R', 145, 245, 185, 285, 0, 0]] } });
+	await assert.rejects(() => handlePcbRegionManageTask({ action: 'modify', primitiveId: 'complex', property: { polygonSource: [source, ['R', 145, 245, 185, 285, 0, 0]] } }), /single-polygon/);
+	const complexModified = await handlePcbRegionManageTask({ action: 'modify', primitiveId: 'complex', property: { polygonSource: source } });
 	assert.equal(complexModified.verified, true);
-	assert.deepEqual(complexModified.region.polygonSource[1], ['R', 145, 245, 185, 285, 0, 0]);
+	assert.deepEqual(complexModified.region.polygonSource, source);
 	const createSingle = globalThis.eda.pcb_PrimitiveRegion.create;
 	globalThis.eda.pcb_PrimitiveRegion.create = async (...args) => {
 		const created = await createSingle(...args);
@@ -96,6 +98,34 @@ async function main() {
 	const normalized = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2] });
 	assert.equal(normalized.verified, true);
 	assert.deepEqual(normalized.region.polygonSource, [source]);
+	globalThis.eda.pcb_PrimitiveRegion.create = createSingle;
+	globalThis.eda.pcb_PrimitiveRegion.create = async () => undefined;
+	const noEffect = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2] });
+	assert.equal(noEffect.ok, false);
+	assert.equal(noEffect.reason, 'native_create_no_effect');
+	assert.equal(noEffect.applied, false);
+	assert.equal(noEffect.commitUnknown, undefined);
+	assert.equal(requiresHostRestartForResult(path, {}, noEffect), false);
+	globalThis.eda.pcb_PrimitiveRegion.create = async (...args) => {
+		await createSingle(...args);
+		return undefined;
+	};
+	const createdWithoutNativeResult = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2] });
+	assert.equal(createdWithoutNativeResult.verified, true);
+	assert.equal(createdWithoutNativeResult.region.primitiveId, createdWithoutNativeResult.primitiveId);
+	globalThis.eda.pcb_PrimitiveRegion.create = async (...args) => {
+		const result = await createSingle(...args);
+		regions.get(result.getState_PrimitiveId()).regionName = 'native-name';
+		return undefined;
+	};
+	const createMismatch = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2], regionName: 'requested-name' });
+	assert.equal(createMismatch.ok, false);
+	assert.equal(createMismatch.reason, 'create_readback_mismatch');
+	assert.equal(createMismatch.applied, true);
+	assert.equal(createMismatch.verified, false);
+	assert.equal(createMismatch.commitUnknown, undefined);
+	assert.equal(createMismatch.after.primitiveId, createMismatch.primitiveId);
+	assert.deepEqual(createMismatch.requestedMismatches, [{ field: 'regionName', expected: 'requested-name', actual: 'native-name' }]);
 	globalThis.eda.pcb_PrimitiveRegion.create = createSingle;
 
 	const created = await handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [2, 5], regionName: '禁布区' });
@@ -139,7 +169,7 @@ async function main() {
 
 	const beforeRejected = writes;
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 3, polygonSource: source, ruleType: [2] }), /layer must/);
-	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: complexSource, ruleType: [2] }), /single polygon/);
+	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: complexSource, ruleType: [2] }), /single-polygon/);
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 1, polygonSource: source, ruleType: [] }), /at least one rule/);
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'modify', primitiveId: 'old-0', property: { net: 'GND' } }), /Unsupported/);
 	layerLocked = true;
