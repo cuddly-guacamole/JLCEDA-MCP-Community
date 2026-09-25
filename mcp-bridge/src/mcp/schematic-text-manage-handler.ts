@@ -20,14 +20,12 @@ interface TextState {
 interface TextApi extends Record<string, unknown> {
 	getAll: () => Promise<unknown>;
 	getAllPrimitiveId: () => Promise<unknown>;
-	get: (id: string) => Promise<unknown>;
 	create?: (...args: unknown[]) => Promise<unknown>;
-	modify?: (id: string, property: Record<string, unknown>) => Promise<unknown>;
 	delete?: (id: string) => Promise<unknown>;
 }
 
 const SCOPE = 'current_schematic_page';
-const FIELDS = new Set(['x', 'y', 'content', 'rotation', 'textColor', 'fontName', 'fontSize', 'bold', 'italic', 'underLine', 'alignMode']);
+const FIELDS = new Set(['x', 'y', 'content', 'rotation', 'textColor', 'fontName', 'fontSize', 'bold', 'italic', 'underLine']);
 const NATIVE_RESULT_UNKNOWN = /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i;
 
 function requiredId(value: unknown): string {
@@ -89,7 +87,7 @@ function readText(raw: unknown): TextState {
 
 function textApi(runtime: Record<string, unknown>): TextApi {
 	const api = runtime.sch_PrimitiveText;
-	if (!isPlainObjectRecord(api) || ['getAll', 'getAllPrimitiveId', 'get'].some(name => typeof api[name] !== 'function'))
+	if (!isPlainObjectRecord(api) || ['getAll', 'getAllPrimitiveId'].some(name => typeof api[name] !== 'function'))
 		throw new TypeError('EDA sch_PrimitiveText read API is unavailable. Open a schematic page first.');
 	return api as TextApi;
 }
@@ -127,20 +125,31 @@ async function allTexts(runtime: Record<string, unknown>, api: TextApi, page: st
 }
 
 async function oneText(runtime: Record<string, unknown>, api: TextApi, page: string, id: string): Promise<TextState | undefined> {
-	const ids = await api.getAllPrimitiveId();
-	if (!Array.isArray(ids) || ids.some(item => typeof item !== 'string'))
-		throw new TypeError('EDA schematic text ID list is unavailable.');
-	const found = ids.includes(id);
-	const raw = found ? await api.get(id) : undefined;
+	return (await allTexts(runtime, api, page)).find(text => text.primitiveId === id);
+}
+
+async function updateText(runtime: Record<string, unknown>, api: TextApi, page: string, id: string, property: Record<string, unknown>): Promise<unknown> {
+	const raw = await api.getAll();
+	if (!Array.isArray(raw))
+		throw new TypeError('EDA schematic text list is unavailable.');
+	const target = raw.find(item => state(item, 'PrimitiveId') === id);
+	if (!target)
+		throw new Error('EDA schematic text disappeared before modification.');
+	const toAsync = (target as Record<string, unknown>).toAsync;
+	if (typeof toAsync !== 'function')
+		throw new TypeError('EDA schematic text async edit API is unavailable.');
+	let draft: unknown = toAsync.call(target);
+	for (const [field, value] of Object.entries(property)) {
+		const setter = (draft as Record<string, unknown> | null)?.[`setState_${field[0].toUpperCase()}${field.slice(1)}`];
+		if (typeof setter !== 'function')
+			throw new TypeError(`EDA schematic text ${field} setter is unavailable.`);
+		draft = setter.call(draft, value) ?? draft;
+	}
 	await assertSamePage(runtime, page);
-	if (found && (raw === undefined || raw === null))
-		throw new Error('EDA schematic text ID list and get result disagree; retry after page load.');
-	if (raw === undefined || raw === null)
-		return undefined;
-	const text = readText(raw);
-	if (text.primitiveId !== id)
-		throw new Error('EDA schematic text get returned a different primitive ID.');
-	return text;
+	const done = (draft as Record<string, unknown> | null)?.done;
+	if (typeof done !== 'function')
+		throw new TypeError('EDA schematic text async commit API is unavailable.');
+	return await done.call(draft);
 }
 
 function requestedProperty(value: unknown): Record<string, unknown> {
@@ -148,6 +157,8 @@ function requestedProperty(value: unknown): Record<string, unknown> {
 		throw new TypeError('property must be a non-empty object.');
 	const property: Record<string, unknown> = {};
 	for (const [field, item] of Object.entries(value)) {
+		if (field === 'alignMode')
+			throw new TypeError('The current EDA API cannot reliably write schematic text alignMode.');
 		if (!FIELDS.has(field))
 			throw new TypeError(`Unsupported schematic text property: ${field}.`);
 		if (field === 'x' || field === 'y') {
@@ -161,11 +172,6 @@ function requestedProperty(value: unknown): Record<string, unknown> {
 		else if (field === 'fontSize') {
 			if (item !== null && finiteNumber(item, field) <= 0)
 				throw new TypeError('fontSize must be positive or null.');
-			property[field] = item;
-		}
-		else if (field === 'alignMode') {
-			if (typeof item !== 'number' || !Number.isInteger(item) || item < 1 || item > 9)
-				throw new TypeError('alignMode must be an integer from 1 through 9.');
 			property[field] = item;
 		}
 		else if (field === 'bold' || field === 'italic' || field === 'underLine') {
@@ -207,6 +213,8 @@ export async function handleSchematicTextManageTask(payload: unknown): Promise<u
 	const primitiveId = payload.primitiveId === undefined ? undefined : requiredId(payload.primitiveId);
 	if ((action === 'modify' || action === 'delete') && !primitiveId)
 		throw new TypeError('primitiveId is required.');
+	if (action === 'create' && payload.alignMode !== undefined)
+		throw new TypeError('The current EDA API cannot reliably write schematic text alignMode.');
 	const property = action === 'modify' ? requestedProperty(payload.property) : undefined;
 	const create = action === 'create'
 		? requestedProperty(Object.fromEntries([...FIELDS].filter(field => payload[field] !== undefined).map(field => [field, payload[field]])))
@@ -226,22 +234,26 @@ export async function handleSchematicTextManageTask(payload: unknown): Promise<u
 		const texts = await allTexts(runtime, api, page);
 		return { ok: true, action, scope: SCOPE, pageUuid: page, complete: true, textCount: texts.length, texts };
 	}
-	if (typeof api[action] !== 'function')
+	if (action !== 'modify' && typeof api[action] !== 'function')
 		throw new TypeError(`EDA sch_PrimitiveText.${action} is unavailable.`);
 	const before = primitiveId ? await oneText(runtime, api, page, primitiveId) : undefined;
 	if (primitiveId && !before)
 		throw new TypeError(`Schematic text ${primitiveId} does not exist on the current page.`);
 	const beforeIds = action === 'create' ? (await allTexts(runtime, api, page)).map(item => item.primitiveId) : undefined;
+	const expectedModified = action === 'modify' ? { ...before!, ...property! } : undefined;
 	const context: Record<string, unknown> = { pageUuid: page, ...(primitiveId ? { primitiveId } : {}) };
 	await assertSamePage(runtime, page);
 	let nativeResult: unknown;
 	try {
-		if (action === 'create')
-			nativeResult = await api.create!.call(api, create!.x, create!.y, create!.content, create!.rotation, create!.textColor, create!.fontName, create!.fontSize, create!.bold, create!.italic, create!.underLine, create!.alignMode);
-		else if (action === 'modify')
-			nativeResult = await api.modify!.call(api, primitiveId!, property!);
-		else
+		if (action === 'create') {
+			nativeResult = await api.create!.call(api, create!.x, create!.y, create!.content, create!.rotation ?? 0, create!.textColor ?? null, create!.fontName ?? null, create!.fontSize ?? null, create!.bold ?? false, create!.italic ?? false, create!.underLine ?? false, create!.alignMode);
+		}
+		else if (action === 'modify') {
+			nativeResult = await updateText(runtime, api, page, primitiveId!, property!);
+		}
+		else {
 			nativeResult = await api.delete!.call(api, primitiveId!);
+		}
 	}
 	catch (error: unknown) { return unknownWrite(action, error, context, false); }
 	try {
@@ -257,7 +269,7 @@ export async function handleSchematicTextManageTask(payload: unknown): Promise<u
 		}
 		const observed = await oneText(runtime, api, page, primitiveId!);
 		if (action === 'modify') {
-			if (!observed || !matches(observed, property!))
+			if (!observed || !matches(observed, expectedModified!))
 				throw new Error('EDA schematic text readback differs from the requested properties.');
 			return { ok: true, action, scope: SCOPE, pageUuid: page, primitiveId, text: observed, verified: true };
 		}

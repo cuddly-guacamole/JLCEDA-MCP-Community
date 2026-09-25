@@ -18,7 +18,7 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `schematic_wire_manage` 用完整当前页连接快照定位导线，`read` 输出不截断的导线 ID、几何、网络和样式。`modify` 更新单件正交路径、网络或样式；路径修改复用接触预览，网络改名限于未接触其他导线或显式网络标识的单件。`delete` 删除单件。写后重新读取并核对图页与目标；原生超时或回读无法确认时隔离后续写入，并通过 `schematic_read includeConnectivityPrimitives:true` 对原图页完整回读。
 
-`schematic_text_manage` 使用官方 `sch_PrimitiveText` 接口管理当前原理图页的独立文字标注。`read` 返回不截断的完整列表或单条文字；`create`、`modify` 和 `delete` 均核对图页、编辑器文档与写后目标状态。提交状态未知时隔离后续写入，使用本工具的无过滤 `read` 完整回读原图页文字。
+`schematic_text_manage` 使用官方 `sch_PrimitiveText` 接口管理当前原理图页的独立文字标注。`read` 返回不截断的完整列表或单条文字；`create`、`modify` 和 `delete` 均核对图页、编辑器文档与写后目标状态。修改经文字对象的异步属性提交，避免原生 `modify` 意外重设对齐方式。EDA 3.2.181 / API 0.3.15 的显式 `alignMode` 写入不可靠，本工具仅回读该值，拒绝写入。提交状态未知时隔离后续写入，使用本工具的无过滤 `read` 完整回读原图页文字。
 
 `schematic_read` 在普通读取和完整连接回读前后核对图页及编辑器文档 UUID，交叉比对器件列表与当前图元 ID 列表。复制页可能合法复用源页图元 ID，因此不依据跨页历史 ID 拒绝读取。当前身份或列表不一致时返回 `PAGE_NOT_READY`，等图页加载后重试；成功结果包含 `pageUuid`。
 

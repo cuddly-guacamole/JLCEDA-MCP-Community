@@ -648,7 +648,9 @@ for (const input of [
 for (const input of [
   { action: 'create', x: 100, y: 200 },
   { action: 'create', x: 100, y: 200, content: 'Note', rotation: 45 },
+  { action: 'create', x: 100, y: 200, content: 'Note', alignMode: 6 },
   { action: 'modify', primitiveId: 'text-1', property: { net: 'GND' } },
+  { action: 'modify', primitiveId: 'text-1', property: { alignMode: 6 } },
   { action: 'delete' },
 ])
   assert.equal(schematicTextSchema.safeParse(input).success, false, `schematic_text_manage should reject ${JSON.stringify(input)}`);
