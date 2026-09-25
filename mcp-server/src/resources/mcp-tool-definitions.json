@@ -789,7 +789,7 @@
   },
   {
     "name": "pcb_pour_manage",
-    "description": "读取当前 PCB 的全部覆铜边框和填充摘要，或创建、修改、删除覆铜边框及显式重建填充。原生 modify 可能自动重排优先级，未请求字段变化会返回 applied:true、verified:false 和 before/after/sideEffects；创建或修改不会自动重建。写入结果不明时先恢复并以 action=read 回读全部边框和填充摘要，避免重复操作。",
+    "description": "读取当前 PCB 的全部覆铜边框和填充摘要，或创建、修改、删除覆铜边框及显式重建填充。原生 create/modify 可能自动调整优先级，请求值或未请求字段偏差会返回 applied:true、verified:false 和 before/after/sideEffects；创建或修改不会自动重建。写入结果不明时先恢复并以 action=read 回读全部边框和填充摘要，避免重复操作。",
     "inputSchema": {
       "type": "object",
       "properties": {

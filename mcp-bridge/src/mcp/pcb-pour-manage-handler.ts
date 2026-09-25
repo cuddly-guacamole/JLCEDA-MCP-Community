@@ -362,8 +362,44 @@ export async function handlePcbPourManageTask(payload: unknown): Promise<unknown
 			const returnedId = nativeResult == null ? undefined : requiredId(readState(nativeResult, 'getState_PrimitiveId'), 'EDA created pour primitiveId');
 			const newPours = after.pours.filter(pour => !before.pours.some(old => old.primitiveId === pour.primitiveId));
 			const created = returnedId ? after.pours.find(pour => pour.primitiveId === returnedId) : newPours.length === 1 ? newPours[0] : undefined;
-			if (!created || newPours.length !== 1 || created.primitiveId !== newPours[0]?.primitiveId || !matchesRequested(created, requested!))
-				throw new Error('EDA did not read back exactly one matching new pour.');
+			if (!created || newPours.length !== 1 || created.primitiveId !== newPours[0]?.primitiveId)
+				throw new Error('EDA did not read back exactly one new pour.');
+			const requestedMismatches = Object.entries(requested!).filter(([field, expected]) =>
+				!matchesRequested(created, { [field]: expected })).map(([field, expected]) => ({
+				field,
+				expected,
+				actual: created[field as keyof PourState],
+			}));
+			const sideEffects: Array<{ primitiveId: string; field: string; before: unknown; after: unknown }>
+				= requestedMismatches.map(item => ({ primitiveId: created.primitiveId, field: item.field, before: item.expected, after: item.actual }));
+			for (const oldPour of before.pours) {
+				const newPour = after.pours.find(pour => pour.primitiveId === oldPour.primitiveId);
+				if (!newPour) {
+					sideEffects.push({ primitiveId: oldPour.primitiveId, field: 'primitiveId', before: oldPour.primitiveId, after: null });
+					continue;
+				}
+				for (const field of EDITABLE_FIELDS) {
+					const previous = oldPour[field as keyof PourState];
+					if (!matchesRequested(newPour, { [field]: previous }))
+						sideEffects.push({ primitiveId: oldPour.primitiveId, field, before: previous, after: newPour[field as keyof PourState] });
+				}
+			}
+			if (requestedMismatches.length || sideEffects.length) {
+				return {
+					ok: false,
+					action,
+					scope: SCOPE,
+					pageUuid,
+					primitiveId: created.primitiveId,
+					reason: 'create_readback_mismatch',
+					applied: true,
+					verified: false,
+					before: null,
+					after: created,
+					requestedMismatches,
+					sideEffects,
+				};
+			}
 			return { ok: true, action, scope: SCOPE, pageUuid, primitiveId: created.primitiveId, pour: created, verified: true };
 		}
 		if (action === 'modify') {

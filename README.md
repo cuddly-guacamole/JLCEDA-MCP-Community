@@ -22,7 +22,7 @@ PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔�
 - `pcb_drc_check`：读取 PCB 设计规则检查结果。
 - `pcb_net_query`：按条件和数量限制查询当前 PCB 网络；精确网络图元过滤使用官方 `EPCB_PrimitiveType` 枚举。
 - `pcb_component_edit`：完整读取当前 PCB 器件，或按库引用放置器件、按图元 ID 修改层、坐标、角度、锁定状态、位号和 BOM 属性及删除单件；写后核对同板状态，提交状态不明时需完整回读器件后再判断是否重试。
-- `pcb_pour_manage`：读取当前 PCB 的全部覆铜边框、填充关联和几何摘要，使用可序列化的轮廓源数组创建或修改单个覆铜边框，并可删除或明确重建填充。创建和修改后不会自动重建；若原生修改连带改变未请求字段，会明确返回写前、写后及副作用，不会误报完整成功。结果不明时需在同一 PCB 回读全部边框和填充摘要。
+- `pcb_pour_manage`：读取当前 PCB 的全部覆铜边框、填充关联和几何摘要，使用可序列化的轮廓源数组创建或修改单个覆铜边框，并可删除或明确重建填充。创建和修改后不会自动重建；若 EDA 自动调整优先级等字段，会明确返回请求值、写后状态及副作用，不会误报完整成功。结果不明时需在同一 PCB 回读全部边框和填充摘要。
 - `pcb_connectivity_action`：按当前 PCB 数据单位创建单条直线导线或过孔，并回读创建结果；需要已存在网络，或显式允许新网络。
 - `schematic_drc_check`、`pcb_constraints_query`、`project_info` 和 `netlist_compare`：提供设计审查和工程身份信息；`project_info` 可选返回受限的 Board 和 Panel 清单。
 - `eda_context`：在客户端支持时返回 JLCEDA/EasyEDA 版本、在线模式、编辑器版本、编译日期和当前画布数据单位。

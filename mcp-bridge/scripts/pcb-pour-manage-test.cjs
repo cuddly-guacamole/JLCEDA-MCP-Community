@@ -188,6 +188,26 @@ async function main() {
 	assert.deepEqual([created.ok, created.verified, created.primitiveId, created.pour.layer, created.pour.pourFillMethod], [true, true, 'new-1', 15, '45grid']);
 	assert.equal(created.pour.pourName, 'Ground');
 	assert.equal(poured.has('filled-new-1'), false, 'create does not rebuild copper automatically');
+	const nativePriorityCreate = pourApi.create;
+	pourApi.create = async (...args) => {
+		const result = await nativePriorityCreate(...args);
+		pours.get(result.getState_PrimitiveId()).pourPriority += 1;
+		return result;
+	};
+	const reorderedCreate = await handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 15, polygonSource: rectangle, pourName: 'Priority test', pourPriority: 31 });
+	assert.deepEqual([reorderedCreate.ok, reorderedCreate.applied, reorderedCreate.verified, reorderedCreate.commitUnknown], [false, true, false, undefined]);
+	assert.deepEqual([reorderedCreate.primitiveId, reorderedCreate.before, reorderedCreate.after.pourPriority], ['new-2', null, 32]);
+	assert.deepEqual(reorderedCreate.requestedMismatches, [{ field: 'pourPriority', expected: 31, actual: 32 }]);
+	assert.deepEqual(reorderedCreate.sideEffects, [{ primitiveId: 'new-2', field: 'pourPriority', before: 31, after: 32 }]);
+	assert.equal((await handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-2' })).verified, true, 'known create side effect must not isolate later writes');
+	pourApi.create = async (...args) => {
+		await nativePriorityCreate(...args);
+		return primitive(makePour('wrong-native-id'));
+	};
+	const wrongNativeId = await handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 15, polygonSource: rectangle });
+	assert.deepEqual([wrongNativeId.commitUnknown, wrongNativeId.nativeCallSettled], [true, true], 'conflicting native and readback IDs remain uncertain');
+	pours.delete('new-3');
+	pourApi.create = nativePriorityCreate;
 	const modified = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'new-1', property: { net: 'VCC', layer: 2, polygonSource: ['CIRCLE', 50, 60, 20], pourPriority: 3 } });
 	assert.deepEqual([modified.ok, modified.pour.net, modified.pour.layer, modified.pour.pourPriority], [true, 'VCC', 2, 3]);
 	assert.deepEqual(modified.pour.polygonSource, ['CIRCLE', 50, 60, 20]);
