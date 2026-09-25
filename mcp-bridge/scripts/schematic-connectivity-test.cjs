@@ -171,6 +171,7 @@ async function main() {
 	const created = await handleSchematicConnectivityTask({ action: 'wire_create', line: [50, -50, 50, 0], net: 'NET_A', allowedWireIds: ['wire-a'] });
 	assert.equal(created.ok, true);
 	assert.equal(created.returnedPrimitiveId, 'wire-1');
+	assert.equal(created.confirmedPrimitiveId, 'wire-1');
 	assert.deepEqual(created.changedWireIds, ['wire-1']);
 	assert.equal(created.readbackRequired, true);
 	assert.equal(created.nativeCallSettled, true);
@@ -215,6 +216,58 @@ async function main() {
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, delayedCreate), false);
 	delayedWireApi.create = originalCreate;
 	delayedWireApi.getAll = originalDelayedGetAll;
+
+	// Some EDA versions resolve create without returning a primitive. An unrelated
+	// change must not end polling; a unique matching path may confirm the write.
+	let noIdReads = 0;
+	let noIdStarted = false;
+	delayedWireApi.create = async () => {
+		noIdStarted = true;
+		return undefined;
+	};
+	delayedWireApi.getAll = async () => {
+		if (noIdStarted) {
+			noIdReads += 1;
+			if (noIdReads === 1)
+				wires.push(wire('no-id-unrelated', 'NET_OTHER', [4400, 1000, 4500, 1000]));
+			if (noIdReads === 3)
+				wires.push(wire('no-id-target', 'NET_DELAYED', [3700, 1000, 3600, 1000]));
+		}
+		return wires;
+	};
+	const noIdCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3600, 1000, 3700, 1000], net: 'NET_DELAYED' });
+	assert.equal(noIdReads, 3);
+	assert.equal(noIdCreate.ok, true);
+	assert.equal(noIdCreate.committed, true);
+	assert.equal(noIdCreate.commitUnknown, false);
+	assert.equal(noIdCreate.returnedPrimitiveId, '');
+	assert.equal(noIdCreate.confirmedPrimitiveId, 'no-id-target');
+	assert.deepEqual(noIdCreate.changedWireIds, ['no-id-unrelated', 'no-id-target']);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+	wires.splice(wires.findIndex(item => item.getState_PrimitiveId() === 'no-id-unrelated'), 1);
+	wires.splice(wires.findIndex(item => item.getState_PrimitiveId() === 'no-id-target'), 1);
+
+	let missingNoIdStarted = false;
+	delayedWireApi.create = async () => {
+		missingNoIdStarted = true;
+		return undefined;
+	};
+	delayedWireApi.getAll = async () => {
+		if (missingNoIdStarted && !wires.some(item => item.getState_PrimitiveId() === 'no-id-only-unrelated'))
+			wires.push(wire('no-id-only-unrelated', 'NET_OTHER', [4600, 1000, 4700, 1000]));
+		return wires;
+	};
+	const missingNoId = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3800, 1000, 3900, 1000], net: 'NET_DELAYED' });
+	assert.equal(missingNoId.ok, false);
+	assert.equal(missingNoId.committed, false, 'an unrelated wire cannot confirm a create with no returned ID');
+	assert.equal(missingNoId.commitUnknown, true);
+	assert.equal(missingNoId.nativeCallSettled, true);
+	assert.equal(missingNoId.confirmedPrimitiveId, null);
+	assert.deepEqual(missingNoId.changedWireIds, ['no-id-only-unrelated']);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+	wires.splice(wires.findIndex(item => item.getState_PrimitiveId() === 'no-id-only-unrelated'), 1);
 
 	let unresolvedReads = 0;
 	let unresolvedNativeStarted = false;

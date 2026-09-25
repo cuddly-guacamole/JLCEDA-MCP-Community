@@ -4,6 +4,8 @@
 
 原理图器件几何修改会核对有名网络和匿名导线连通组；引脚离开匿名导线或移至另一组时会报告连接变化。大图页可为 `schematic_read` 和 `bridge_recover_client` 设置最多 120 秒的 `timeoutMs`。
 
+导线创建会在任务预算内等待 EDA 图元列表同步；原生未返回导线 ID 时，只有唯一导线与请求路径及网络匹配才确认创建，结果中的 `confirmedPrimitiveId` 标识确认的图元。
+
 多页面连接时，首个页面未就绪会自动改选已就绪页面；显式选择或正在执行任务时不会自动切换。当前页写入使用执行时的实际图页身份进行恢复核对，提交状态不明时本机也立即阻止后续写入；跨图页的页面管理操作不能用当前图页回读解除隔离。使用本版新增操作及其恢复回读时，应同时安装 2.3.3 Bridge 和 Server。调用 `eda.pcb_PrimitiveComponent.getAll` 时可指定 `includeCompletePositions:true` 额外获取不截断的 `componentPositions`，通用 `result` 保持原有字段。
 
 交互放置启动、重复器件清理或坐标放置若无法核对结果，恢复时必须读取原图页不截断的器件 ID 列表；`api_invoke` 的当前页 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 可传 `args:[null,false]` 与 `includeCompleteSchematicComponentIds:true` 获取该列表。原生调用尚未确认结束时，先重启原 EDA 宿主。
