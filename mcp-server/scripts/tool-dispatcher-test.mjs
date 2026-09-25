@@ -144,6 +144,14 @@ assert.equal(bridgePathForTool('pcb_board_outline_manage'), '/bridge/jlceda/pcb/
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/board-outline-manage', { action: 'read' }), true);
 for (const action of ['create', 'modify', 'delete'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/board-outline-manage', { action }), false);
+await dispatcher.dispatch({ name: 'pcb_region_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/region-manage');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_region_manage', { action: 'read' }) + 2000);
+assert.equal(bridgePathForTool('pcb_region_manage'), '/bridge/jlceda/pcb/region-manage');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/region-manage', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/region-manage', { action }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -580,6 +588,27 @@ for (const input of [
   { action: 'delete', kind: 'via', primitiveId: 'v1' },
 ]) {
   assert.equal(boardOutlineSchema.safeParse(input).success, false, `pcb_board_outline_manage should reject ${JSON.stringify(input)}`);
+}
+const regionDefinition = definitions.find((definition) => definition.name === 'pcb_region_manage');
+assert.ok(regionDefinition);
+const regionSchema = z.fromJSONSchema(regionDefinition.inputSchema);
+for (const input of [
+  { action: 'read' },
+  { action: 'read', primitiveId: 'r1' },
+  { action: 'create', layer: 1, polygonSource: ['R', 0, 0, 100, 100, 0, 0], ruleType: [2, 5] },
+  { action: 'create', layer: 12, polygonSource: ['R', 0, 0, 100, 100, 0, 0], ruleType: [9], regionName: '电源规则' },
+  { action: 'modify', primitiveId: 'r1', property: { ruleType: [5], lineWidth: 0.2 } },
+  { action: 'delete', primitiveId: 'r1' },
+]) {
+  assert.equal(regionSchema.safeParse(input).success, true, `pcb_region_manage should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'create', layer: 3, polygonSource: ['R', 0, 0, 100, 100, 0, 0], ruleType: [2] },
+  { action: 'create', layer: 1, polygonSource: ['R', 0, 0, 100, 100, 0, 0], ruleType: [] },
+  { action: 'modify', primitiveId: 'r1', property: { net: 'GND' } },
+  { action: 'delete' },
+]) {
+  assert.equal(regionSchema.safeParse(input).success, false, `pcb_region_manage should reject ${JSON.stringify(input)}`);
 }
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);

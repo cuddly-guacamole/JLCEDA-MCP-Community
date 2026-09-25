@@ -70,7 +70,7 @@ interface RecoveryDiagnostic {
   targetSchematicPageUuid?: string;
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
-  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_routing_state' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state';
+  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_routing_state' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state';
   hostRestartRequired?: boolean;
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
@@ -321,6 +321,10 @@ function isPcbComponentStateReadbackRequest(path: string, payload: Record<string
 
 function isPcbPourStateReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
   return path === '/bridge/jlceda/pcb/pour-manage' && payload.action === 'read';
+}
+
+function isPcbRegionStateReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  return path === '/bridge/jlceda/pcb/region-manage' && payload.action === 'read' && payload.primitiveId === undefined;
 }
 
 function isPcbAutoRoutingRequest(path: string, payload: unknown): boolean {
@@ -889,6 +893,7 @@ export class EdaBridgeServer {
             || (message.result.ok === true && message.result.verified === true)))
           || ((diagnostic.requiredReadback === 'pcb_component_state'
             || diagnostic.requiredReadback === 'pcb_pour_state'
+            || diagnostic.requiredReadback === 'pcb_region_state'
             || diagnostic.requiredReadback === 'schematic_component_ids'
             || diagnostic.requiredReadback === 'schematic_component_state'
             || diagnostic.requiredReadback === 'schematic_connectivity_primitives')
@@ -1298,6 +1303,9 @@ export class EdaBridgeServer {
       ...(mutating && pending.path === '/bridge/jlceda/pcb/pour-manage'
         ? { requiredReadback: 'pcb_pour_state' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
+      ...(mutating && pending.path === '/bridge/jlceda/pcb/region-manage'
+        ? { requiredReadback: 'pcb_region_state' as const, hostRestartRequired: !nativeCallSettled }
+        : {}),
       ...((isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
         || isPcbConnectivityMutation(pending.path ?? '', pending.payload)
         || isPcbRoutingEditMutation(pending.path ?? '', pending.payload)
@@ -1443,6 +1451,10 @@ export class EdaBridgeServer {
       && !isPcbPourStateReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('PCB pour management requires pcb_pour_manage action=read for complete current-page recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_region_state'
+      && !isPcbRegionStateReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('PCB region management requires pcb_region_manage action=read without primitiveId for complete current-page recovery readback.');
+    }
     if (session.diagnostic.requiredReadback === 'pcb_routing_state'
       && !isPcbRoutingReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error(`${pcbRoutingWriteLabel} requires eda.pcb_PrimitiveLine.getAll with no arguments for recovery readback.`);
@@ -1484,6 +1496,10 @@ export class EdaBridgeServer {
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
       throw new Error('PCB pour write has no verified execution-time PCB page identity; writes remain blocked.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_region_state'
+      && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
+      throw new Error('PCB region write has no verified execution-time PCB page identity; writes remain blocked.');
+    }
     if (session.diagnostic.requiredReadback === 'pcb_routing_state'
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
       throw new Error(`${pcbRoutingWriteLabel} has no verified execution-time PCB page identity; writes remain blocked.`);
@@ -1495,6 +1511,8 @@ export class EdaBridgeServer {
           ? 'Unverified PCB component edit'
         : session.diagnostic.requiredReadback === 'pcb_pour_state'
           ? 'Unverified PCB pour write'
+        : session.diagnostic.requiredReadback === 'pcb_region_state'
+          ? 'Unverified PCB region write'
         : session.diagnostic.requiredReadback === 'schematic_component_state'
           ? 'Unverified schematic component edit'
         : session.diagnostic.requiredReadback === 'schematic_connectivity_primitives'
@@ -1561,7 +1579,8 @@ export class EdaBridgeServer {
     session.targetSocket = target.socket;
     if (session.diagnostic.requiredReadback === 'pcb_routing_state'
       || session.diagnostic.requiredReadback === 'pcb_component_state'
-      || session.diagnostic.requiredReadback === 'pcb_pour_state') {
+      || session.diagnostic.requiredReadback === 'pcb_pour_state'
+      || session.diagnostic.requiredReadback === 'pcb_region_state') {
       if (!expectedPageUuid)
         throw new Error('PCB write has no verified execution-time PCB page identity; writes remain blocked.');
       const beforeRoutingReadback = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
@@ -1595,6 +1614,8 @@ export class EdaBridgeServer {
       this.validateCompletePcbComponentState(readback, session.diagnostic);
     if (session.diagnostic.requiredReadback === 'pcb_pour_state')
       this.validateCompletePcbPourState(readback, session.diagnostic);
+    if (session.diagnostic.requiredReadback === 'pcb_region_state')
+      this.validateCompletePcbRegionState(readback, session.diagnostic);
     const routingSnapshot = session.diagnostic.requiredReadback === 'pcb_routing_state'
       ? await this.readCompletePcbRoutingState(readback, targetClientId, timeoutMs)
       : undefined;
@@ -1755,6 +1776,33 @@ export class EdaBridgeServer {
       pouredIds.add(filled.primitiveId as string);
     }
     return value.pours.length + value.poured.length;
+  }
+
+  private validateCompletePcbRegionState(value: unknown, diagnostic: RecoveryDiagnostic): number {
+    if (!isRecord(value) || value.ok !== true || value.action !== 'read'
+      || value.scope !== 'current_pcb_page' || value.complete !== true
+      || diagnostic.context?.pageKind !== 'pcb' || value.pageUuid !== diagnostic.context.pageUuid
+      || !Array.isArray(value.regions) || !Number.isSafeInteger(value.regionCount)
+      || Number(value.regionCount) < 0 || value.regionCount !== value.regions.length) {
+      throw new Error('PCB region state readback was incomplete or from another page; writes remain blocked.');
+    }
+    const ids = new Set<string>();
+    for (const region of value.regions) {
+      if (!isRecord(region) || !optionalString(region.primitiveId)
+        || ids.has(region.primitiveId as string)
+        || !Number.isSafeInteger(region.layer)
+        || (![1, 2, 12].includes(Number(region.layer)) && !(Number(region.layer) >= 15 && Number(region.layer) <= 44))
+        || !Array.isArray(region.polygonSource) || region.polygonSource.length === 0
+        || region.polygonSource.some(item => (typeof item !== 'number' || !Number.isFinite(item))
+          && (typeof item !== 'string' || !['L', 'ARC', 'CARC', 'C', 'R', 'CIRCLE'].includes(item)))
+        || !Array.isArray(region.ruleType) || region.ruleType.some(item => ![2, 5, 6, 7, 8, 9].includes(item))
+        || (region.regionName !== null && typeof region.regionName !== 'string')
+        || !Number.isFinite(region.lineWidth) || typeof region.primitiveLock !== 'boolean') {
+        throw new Error('PCB region readback was incomplete; writes remain blocked.');
+      }
+      ids.add(region.primitiveId as string);
+    }
+    return value.regions.length;
   }
 
   private assertSchematicIdentity(value: unknown, documentUuid: string | undefined, projectUuid: string | undefined, pageUuid: string): void {

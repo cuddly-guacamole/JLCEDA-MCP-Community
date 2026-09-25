@@ -340,6 +340,16 @@
 			}
 		},
 		{
+			"toolName": "pcb_region_manage",
+			"path": "/bridge/jlceda/pcb/region-manage",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "pcb_drc_check",
 			"path": "/bridge/jlceda/pcb/drc-check",
 			"owner": "bridge",
