@@ -5,8 +5,8 @@
 ## 发布检查表
 
 1. 保持 mcp-bridge/extension.json.uuid 不变。JLCEDA 会按 UUID 将后续上传归入同一扩展命名空间。
-2. 按需递增 mcp-bridge/extension.json、mcp-bridge/package.json 和 mcp-server/package.json 中的版本。
-3. 更新 mcp-bridge/CHANGELOG.md，并确认 README 说明安装、配置、安全假设、上游署名和支持渠道。
+2. 同步递增 mcp-bridge/extension.json、两个包的 package.json 与 package-lock.json 中的版本。
+3. 更新两个包的 CHANGELOG.md，并确认 README 说明安装、配置、安全假设、上游署名和支持渠道。
 4. 执行：
 
    ```powershell
