@@ -1143,6 +1143,128 @@ try {
   unverifiedWriteServer.close();
   unverifiedWriteServer = undefined;
 
+  for (const action of ['wire_create', 'netport_create', 'netport_move']) {
+    const connectivityRecoveryPort = await reservePort();
+    const connectivityRecoveryServer = new EdaBridgeServer(connectivityRecoveryPort);
+    let oldClient;
+    let freshClient;
+    try {
+      await connectivityRecoveryServer.start();
+      const recoveryUrl = `ws://127.0.0.1:${connectivityRecoveryPort}/bridge/ws${tokenQuery}`;
+      oldClient = await registerEda(recoveryUrl, `connectivity-${action}-old`, {
+        documentUuid: 'connectivity-document', projectUuid: 'connectivity-project', pageKind: 'schematic', pageUuid: 'connectivity-page',
+      });
+      oldClient.socket.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        oldClient.socket.send(JSON.stringify({
+          type: 'bridge/task-started', clientId: `connectivity-${action}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+          context: { documentUuid: 'connectivity-document', projectUuid: 'connectivity-project', pageKind: 'schematic', pageUuid: 'connectivity-page' },
+        }));
+        oldClient.socket.send(JSON.stringify({
+          type: 'bridge/result', clientId: `connectivity-${action}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm,
+          result: { ok: false, action, commitUnknown: true },
+        }));
+      });
+      const writePayload = action === 'wire_create'
+        ? { action, line: [0, 0, 10, 0] }
+        : action === 'netport_create'
+          ? { action, net: 'SIG', x: 10, y: 0 }
+          : { action, id: 'port-1', x: 10, y: 0 };
+      assert.equal((await connectivityRecoveryServer.request('/bridge/jlceda/schematic/connectivity', writePayload, 2000)).commitUnknown, true);
+      const diagnostic = (await connectivityRecoveryServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `connectivity-${action}-old`).quarantine.diagnostics[0];
+      assert.equal(diagnostic.requiredReadback, 'schematic_connectivity_primitives', `${action} needs primitive readback`);
+      assert.equal(diagnostic.context.pageUuid, 'connectivity-page');
+      const recovery = await connectivityRecoveryServer.request('/bridge/admin/recover-client', {
+        action: 'recover', confirm: true, requestId: diagnostic.requestId,
+      }, 2000);
+      oldClient.socket.close();
+      await waitUntil(async () => (await connectivityRecoveryServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `connectivity-${action}-old`)?.ready === false);
+      freshClient = await registerEda(recoveryUrl, `connectivity-${action}-fresh`, {
+        documentUuid: 'connectivity-document', projectUuid: 'connectivity-project', pageKind: 'schematic', pageUuid: 'connectivity-page',
+      });
+      const primitives = {
+        scope: 'current_schematic_page', complete: true, pageUuid: 'connectivity-page',
+        wireCount: 1, wires: [{ primitiveId: 'wire-1', net: 'SIG', line: [0, 0, 10, 0] }],
+        netPortCount: 1, netPorts: [{ primitiveId: 'port-1', net: 'SIG', x: 10, y: 0 }],
+        netLabelCount: 0, netLabels: [],
+      };
+      const semantic = { componentCount: 0, networkCount: 0, components: [], networks: [] };
+      let readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify(primitives) };
+      attachTaskResponder(freshClient.socket, `connectivity-${action}-fresh`, message => message.path === '/bridge/jlceda/context'
+        ? {
+            currentDocumentInfo: { uuid: 'connectivity-document', parentProjectUuid: 'connectivity-project' },
+            currentProjectInfo: { uuid: 'connectivity-project' },
+            currentSchematicPageInfo: { uuid: 'connectivity-page' },
+          }
+        : message.path === '/bridge/jlceda/schematic/read'
+          ? readbackResult
+          : { source: 'connectivity-fresh', path: message.path });
+      const readbackRequest = {
+        action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+        clientId: `connectivity-${action}-fresh`,
+        readbackPath: '/bridge/jlceda/schematic/read',
+        readbackPayload: { includeConnectivityPrimitives: true },
+      };
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', {
+        ...readbackRequest, readbackPath: '/bridge/jlceda/context', readbackPayload: {},
+      }, 2000), /requires schematic_read with includeConnectivityPrimitives=true/);
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', {
+        ...readbackRequest, readbackPayload: {},
+      }, 2000), /requires schematic_read with includeConnectivityPrimitives=true/);
+      readbackResult = { ok: false, error: 'netlist read failed' };
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /netlist read failed/);
+      readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify({ ...primitives, wireCount: 2 }) };
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /connectivity readback was incomplete/);
+      readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify({ ...primitives, pageUuid: 'other-page' }) };
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /from another page/);
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/jlceda/schematic/connectivity', writePayload, 2000), /writes are blocked pending recovery readback/);
+      readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify(primitives) };
+      const verified = await connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000);
+      assert.equal(verified.readbackVerified, true);
+      assert.equal(JSON.parse(verified.readback.connectivityPrimitivesSnapshot).wireCount, 1);
+      assert.deepEqual(await connectivityRecoveryServer.request('/bridge/test/write-after-connectivity-readback', {}, 2000), {
+        source: 'connectivity-fresh', path: '/bridge/test/write-after-connectivity-readback',
+      });
+    } finally {
+      oldClient?.socket.close();
+      freshClient?.socket.close();
+      connectivityRecoveryServer.close();
+    }
+  }
+
+  const connectivityTimeoutPort = await reservePort();
+  const connectivityTimeoutServer = new EdaBridgeServer(connectivityTimeoutPort);
+  let connectivityTimeoutClient;
+  try {
+    await connectivityTimeoutServer.start();
+    connectivityTimeoutClient = await registerEda(`ws://127.0.0.1:${connectivityTimeoutPort}/bridge/ws${tokenQuery}`, 'connectivity-timeout', {
+      documentUuid: 'timeout-document', projectUuid: 'timeout-project', pageKind: 'schematic', pageUuid: 'timeout-page',
+    });
+    connectivityTimeoutClient.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      connectivityTimeoutClient.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'connectivity-timeout',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'timeout-document', projectUuid: 'timeout-project', pageKind: 'schematic', pageUuid: 'timeout-page' },
+      }));
+    });
+    await assert.rejects(connectivityTimeoutServer.request('/bridge/jlceda/schematic/connectivity', {
+      action: 'wire_create', line: [0, 0, 10, 0],
+    }, 100), /timeout/);
+    const timeoutDiagnostic = (await connectivityTimeoutServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'connectivity-timeout').quarantine.diagnostics[0];
+    assert.equal(timeoutDiagnostic.requiredReadback, 'schematic_connectivity_primitives', 'execution timeout needs the same complete readback');
+  } finally {
+    connectivityTimeoutClient?.socket.close();
+    connectivityTimeoutServer.close();
+  }
+
   const projectWritePort = await reservePort();
   const projectWriteServer = new EdaBridgeServer(projectWritePort);
   let projectWriteOld;
@@ -1230,6 +1352,7 @@ try {
     await assert.rejects(legacyWriteServer.request('/bridge/admin/recover-client', {
       action: 'readback', confirm: true, recoveryId: legacyRecovery.recoveryId,
       clientId: 'legacy-write-fresh', expectedDocumentUuid: 'legacy-document', expectedPageUuid: 'legacy-page',
+      readbackPath: '/bridge/jlceda/schematic/read', readbackPayload: { includeConnectivityPrimitives: true },
     }, 2000), /no verified execution-time page identity/);
   } finally {
     legacyWriteOld?.socket.close();

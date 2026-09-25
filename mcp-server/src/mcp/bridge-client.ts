@@ -61,7 +61,7 @@ interface RecoveryDiagnostic {
   targetSchematicPageUuid?: string;
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
-  requiredReadback?: 'pcb_component_positions' | 'schematic_project_review' | 'schematic_page_inventory';
+  requiredReadback?: 'pcb_component_positions' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives';
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
   uncertaintyReason?: string;
@@ -197,6 +197,27 @@ function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
     && isRecord(payload)
     && typeof payload.apiFullName === 'string'
     && payload.apiFullName.trim().toLowerCase() === 'eda.sch_primitivecomponent.delete';
+}
+
+function isSchematicConnectivityMutation(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/schematic/connectivity'
+    && isRecord(payload)
+    && (payload.action === 'wire_create' || payload.action === 'netport_create' || payload.action === 'netport_move');
+}
+
+function isSchematicConnectivityReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  return path === '/bridge/jlceda/schematic/read' && payload.includeConnectivityPrimitives === true;
+}
+
+function validWireLine(value: unknown): boolean {
+  const flat = (part: unknown): boolean => Array.isArray(part) && part.length >= 4 && part.length % 2 === 0
+    && part.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate));
+  if (flat(value)) return true;
+  if (!Array.isArray(value) || value.length === 0) return false;
+  if (value.every(part => Array.isArray(part) && part.length === 2
+    && part.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate))))
+    return value.length >= 2;
+  return value.every(flat);
 }
 
 function hasMutatingRecoveryDiagnostics(diagnostics: Iterable<RecoveryDiagnostic>): boolean {
@@ -1112,6 +1133,8 @@ export class EdaBridgeServer {
       ...(targetProjectUuid ? { targetProjectUuid } : {}),
       ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
       ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
+      ...(mutating && isSchematicConnectivityMutation(pending.path ?? '', pending.payload)
+        ? { requiredReadback: 'schematic_connectivity_primitives' as const } : {}),
       ...(mutating && isTargetedSchematicPageMutation(pending.path ?? '', pending.payload)
         ? { requiredReadback: 'schematic_page_inventory' as const, ...schematicPageMutationTarget(pending.path ?? '', pending.payload) } : {}),
       uncertaintyReason,
@@ -1236,6 +1259,10 @@ export class EdaBridgeServer {
       && !isSchematicPageInventoryReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Schematic page mutation requires eda.dmt_Schematic.getAllSchematicPagesInfo with no arguments for recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'schematic_connectivity_primitives'
+      && !isSchematicConnectivityReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Schematic connectivity mutation requires schematic_read with includeConnectivityPrimitives=true for recovery readback.');
+    }
     if (session.diagnostic.requiredReadback === 'pcb_component_positions'
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
       throw new Error('Timed-out PCB autoLayout has no verified execution-time PCB page identity; writes remain blocked.');
@@ -1307,6 +1334,8 @@ export class EdaBridgeServer {
       this.validateCompletePcbComponents(readback);
     if (session.diagnostic.requiredReadback === 'schematic_page_inventory')
       this.validateCompleteSchematicPages(readback, session.diagnostic);
+    if (session.diagnostic.requiredReadback === 'schematic_connectivity_primitives')
+      this.validateCompleteSchematicConnectivity(readback, session.diagnostic);
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
       : await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
@@ -1408,6 +1437,53 @@ export class EdaBridgeServer {
       throw new Error('Source schematic page is absent from the page inventory; writes remain blocked.');
     }
     return pages.length;
+  }
+
+  private validateCompleteSchematicConnectivity(value: unknown, diagnostic: RecoveryDiagnostic): void {
+    let primitives: unknown;
+    let semantic: unknown;
+    try {
+      if (!isRecord(value) || value.ok !== true
+        || typeof value.connectivityPrimitivesSnapshot !== 'string'
+        || typeof value.schematicCircuitSnapshot !== 'string')
+        throw new Error('missing readback');
+      primitives = JSON.parse(value.connectivityPrimitivesSnapshot);
+      semantic = JSON.parse(value.schematicCircuitSnapshot);
+    } catch {
+      throw new Error('Schematic connectivity readback was incomplete; writes remain blocked.');
+    }
+    if (!isRecord(primitives) || primitives.scope !== 'current_schematic_page' || primitives.complete !== true
+      || primitives.pageUuid !== diagnostic.context?.pageUuid
+      || diagnostic.context?.pageKind !== 'schematic'
+      || !Array.isArray(primitives.wires) || !Array.isArray(primitives.netPorts) || !Array.isArray(primitives.netLabels)
+      || !Number.isSafeInteger(primitives.wireCount) || primitives.wireCount !== primitives.wires.length
+      || !Number.isSafeInteger(primitives.netPortCount) || primitives.netPortCount !== primitives.netPorts.length
+      || !Number.isSafeInteger(primitives.netLabelCount) || primitives.netLabelCount !== primitives.netLabels.length
+      || !isRecord(semantic) || !Array.isArray(semantic.components) || !Array.isArray(semantic.networks)
+      || semantic.componentCount !== semantic.components.length || semantic.networkCount !== semantic.networks.length) {
+      throw new Error('Schematic connectivity readback was incomplete or from another page; writes remain blocked.');
+    }
+    const ids = new Set<string>();
+    for (const wire of primitives.wires) {
+      if (!isRecord(wire) || !optionalString(wire.primitiveId) || ids.has(wire.primitiveId as string)
+        || typeof wire.net !== 'string' || !validWireLine(wire.line))
+        throw new Error('Schematic wire readback was incomplete; writes remain blocked.');
+      ids.add(wire.primitiveId as string);
+    }
+    for (const port of primitives.netPorts) {
+      if (!isRecord(port) || !optionalString(port.primitiveId) || ids.has(port.primitiveId as string)
+        || !optionalString(port.net) || !Number.isFinite(port.x) || !Number.isFinite(port.y))
+        throw new Error('Schematic NetPort readback was incomplete; writes remain blocked.');
+      ids.add(port.primitiveId as string);
+    }
+    for (const label of primitives.netLabels) {
+      if (!isRecord(label) || !optionalString(label.primitiveId) || ids.has(label.primitiveId as string)
+        || typeof label.parentWireId !== 'string' || typeof label.net !== 'string'
+        || (label.x !== null && !Number.isFinite(label.x))
+        || (label.y !== null && !Number.isFinite(label.y)))
+        throw new Error('Schematic NET attribute readback was incomplete; writes remain blocked.');
+      ids.add(label.primitiveId as string);
+    }
   }
 
   private async readCompletePcbNets(clientId: string, timeoutMs: number): Promise<number> {

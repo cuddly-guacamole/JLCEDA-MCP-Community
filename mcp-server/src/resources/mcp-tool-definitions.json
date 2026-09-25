@@ -47,7 +47,7 @@
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "待确认 PCB 导入进入 recover/readback 流程时，确认原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "原理图当前页器件 ID 可用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 恢复必须用 {\"apiFullName\":\"eda.pcb_PrimitiveComponent.getAll\",\"args\":[]}；仅允许明确列出的只读 API 参数。" }
+        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}，完整回读当前页导线、NetPort、NET 属性及语义网表；一般原理图器件 ID 可用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 恢复必须用 {\"apiFullName\":\"eda.pcb_PrimitiveComponent.getAll\",\"args\":[]}。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -177,10 +177,13 @@
   },
   {
     "name": "schematic_read",
-    "description": "读取当前原理图页面的完整电路语义快照。",
+    "description": "读取当前原理图页面的完整电路语义快照。受控恢复可选 includeConnectivityPrimitives=true，同时完整回读导线 ID/几何、NetPort ID/坐标/网络及 NET 属性；方向属性无法由当前 EDA API 验证。",
     "inputSchema": {
       "type": "object",
-      "properties": {}
+      "properties": {
+        "includeConnectivityPrimitives": { "type": "boolean", "default": false, "description": "仅在连接图元写入结果未知后的受控恢复中使用；返回完整的当前页连接图元 JSON 快照。" }
+      },
+      "additionalProperties": false
     }
   },
   {

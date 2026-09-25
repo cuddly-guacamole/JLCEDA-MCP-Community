@@ -12,6 +12,105 @@
 
 import { getSyncState, safeCall } from '../utils';
 
+function requiredState<T>(primitive: unknown, getter: string): T {
+	const method = primitive && typeof primitive === 'object' ? (primitive as Record<string, unknown>)[getter] : undefined;
+	if (typeof method !== 'function')
+		throw new Error(`原理图连接图元回读不完整：${getter} 不可用。`);
+	const value = method.call(primitive) as T | null | undefined;
+	if (value === undefined || value === null)
+		throw new Error(`原理图连接图元回读不完整：${getter} 未返回状态。`);
+	return value;
+}
+
+function validWireLine(value: unknown): boolean {
+	const flat = (part: unknown): boolean => Array.isArray(part) && part.length >= 4 && part.length % 2 === 0
+		&& part.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate));
+	if (flat(value))
+		return true;
+	if (!Array.isArray(value) || value.length === 0)
+		return false;
+	if (value.every(part => Array.isArray(part) && part.length === 2
+		&& part.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate)))) {
+		return value.length >= 2;
+	}
+	return value.every(flat);
+}
+
+interface ConnectivityPrimitiveSnapshot {
+	scope: 'current_schematic_page';
+	complete: true;
+	pageUuid: string;
+	wireCount: number;
+	wires: Array<{ primitiveId: string; net: string; line: unknown }>;
+	netPortCount: number;
+	netPorts: Array<{ primitiveId: string; net: string; x: number; y: number }>;
+	netLabelCount: number;
+	netLabels: Array<{ primitiveId: string; parentWireId: string; net: string; x: number | null; y: number | null }>;
+}
+
+async function readCurrentPageUuid(): Promise<string> {
+	const page = await eda.dmt_Schematic.getCurrentSchematicPageInfo();
+	if (!page || typeof page.uuid !== 'string' || !page.uuid.trim())
+		throw new Error('原理图连接图元回读无法确认当前图页。');
+	return page.uuid.trim();
+}
+
+async function readConnectivityPrimitives(pageUuid: string): Promise<ConnectivityPrimitiveSnapshot> {
+	const rawWires = await eda.sch_PrimitiveWire.getAll();
+	const rawNetPorts = await eda.sch_PrimitiveComponent.getAll('netport' as ESCH_PrimitiveComponentType, false);
+	const rawAttributes = await eda.sch_PrimitiveAttribute.getAll();
+	if (!Array.isArray(rawWires) || !Array.isArray(rawNetPorts) || !Array.isArray(rawAttributes))
+		throw new Error('原理图连接图元回读不完整：导线、器件或网络属性列表不是数组。');
+	const wires = rawWires.map((wire) => {
+		const primitiveId = requiredState<string>(wire, 'getState_PrimitiveId');
+		const line = requiredState<unknown>(wire, 'getState_Line');
+		if (typeof primitiveId !== 'string' || !primitiveId.trim() || !validWireLine(line))
+			throw new Error('原理图连接图元回读不完整：导线 ID 或几何缺失。');
+		return {
+			primitiveId,
+			// Unnamed wires legitimately have no cached net name; NET attributes are listed below.
+			net: getSyncState<string>(wire, 'getState_Net', ''),
+			line,
+		};
+	});
+	const netPorts = rawNetPorts.map((component) => {
+		const primitiveId = requiredState<string>(component, 'getState_PrimitiveId');
+		const net = requiredState<string>(component, 'getState_Net');
+		const x = requiredState<number>(component, 'getState_X');
+		const y = requiredState<number>(component, 'getState_Y');
+		if (typeof primitiveId !== 'string' || !primitiveId.trim() || typeof net !== 'string' || !net.trim()
+			|| !Number.isFinite(x) || !Number.isFinite(y)) {
+			throw new Error('原理图连接图元回读不完整：NetPort ID 或坐标缺失。');
+		}
+		return { primitiveId, net, x, y };
+	});
+	const netLabels = rawAttributes.filter(attribute => getSyncState<string>(attribute, 'getState_Key', '') === 'NET').map((attribute) => {
+		const primitiveId = requiredState<string>(attribute, 'getState_PrimitiveId');
+		const x = getSyncState<unknown>(attribute, 'getState_X', null);
+		const y = getSyncState<unknown>(attribute, 'getState_Y', null);
+		if (typeof primitiveId !== 'string' || !primitiveId.trim())
+			throw new Error('原理图连接图元回读不完整：网络标签 ID 缺失。');
+		return {
+			primitiveId,
+			parentWireId: getSyncState<string>(attribute, 'getState_ParentPrimitiveId', ''),
+			net: requiredState<string>(attribute, 'getState_Value'),
+			x: typeof x === 'number' && Number.isFinite(x) ? x : null,
+			y: typeof y === 'number' && Number.isFinite(y) ? y : null,
+		};
+	});
+	return {
+		scope: 'current_schematic_page',
+		complete: true,
+		pageUuid,
+		wireCount: wires.length,
+		wires,
+		netPortCount: netPorts.length,
+		netPorts,
+		netLabelCount: netLabels.length,
+		netLabels,
+	};
+}
+
 // 引脚连接点坐标键，用于在坐标→网络名映射中查找。
 // 使用 Math.round 消除 EDA 坐标中的浮点精度误差（如 324.99999999999994 vs 325）。
 function buildPinCoordinateKey(x: number, y: number): string {
@@ -137,9 +236,9 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 			continue;
 		const primitiveId = getSyncState<string>(rawComponent, 'getState_PrimitiveId', '');
 		const pinsRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveId)));
-		if (pinsRaw !== undefined && !Array.isArray(pinsRaw))
-			return { ok: false, error: `器件 ${designator} 的引脚列表格式异常。` };
-		const pins = Array.isArray(pinsRaw) ? pinsRaw : [];
+		if (!Array.isArray(pinsRaw))
+			return { ok: false, error: `器件 ${designator} 的引脚列表读取失败或格式异常。` };
+		const pins = pinsRaw;
 		pinsByComponentId.set(primitiveId, pins);
 		for (const rawPin of pins) {
 			connectionPoints.push({
@@ -158,6 +257,8 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 	// 收集所有导线，构建坐标邻接图，同时将有网络名的导线端点作为种子。
 	const wireAdjacencyGraph: Map<string, Set<string>> = new Map();
 	const wireListRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveWire.getAll()));
+	if (!Array.isArray(wireListRaw))
+		return { ok: false, error: '导线列表获取失败，sch_PrimitiveWire.getAll 未返回数组。' };
 	if (Array.isArray(wireListRaw)) {
 		// 先收集全部导线端点，下一轮才可将 T 形支线接到主线中段。
 		const wireVertices: Array<{ x: number; y: number }> = [];
@@ -321,13 +422,40 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 
 /**
  * 处理原理图语义读取任务。
- * @param _payload 任务参数（当前未使用）。
+ * @param payload 可选完整连接图元回读参数。
  * @returns 读取结果，含完整电路语义快照。
  */
-export async function handleSchematicReadTask(_payload: unknown): Promise<unknown> {
+export async function handleSchematicReadTask(payload: unknown): Promise<unknown> {
+	const includeConnectivityPrimitives = payload && typeof payload === 'object' && 'includeConnectivityPrimitives' in payload
+		&& (payload as { includeConnectivityPrimitives?: unknown }).includeConnectivityPrimitives === true;
+	let pageUuid: string | undefined;
+	if (includeConnectivityPrimitives) {
+		try {
+			pageUuid = await readCurrentPageUuid();
+		}
+		catch (error: unknown) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
 	const result = await readSchematicCircuit();
 	if (!result.ok) {
 		return { ok: false, error: result.error };
+	}
+	if (includeConnectivityPrimitives && pageUuid) {
+		try {
+			const connectivityPrimitives = await readConnectivityPrimitives(pageUuid);
+			if (await readCurrentPageUuid() !== pageUuid)
+				throw new Error('原理图连接图元回读时图页已切换。');
+			return {
+				ok: true,
+				schematicCircuitSnapshot: result.data,
+				// A JSON string preserves every item through Bridge serialization, which otherwise caps arrays at 120.
+				connectivityPrimitivesSnapshot: JSON.stringify(connectivityPrimitives),
+			};
+		}
+		catch (error: unknown) {
+			return { ok: false, error: error instanceof Error ? error.message : String(error) };
+		}
 	}
 
 	return {

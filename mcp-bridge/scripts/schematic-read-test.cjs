@@ -5,6 +5,7 @@ process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', modu
 require('ts-node/register/transpile-only');
 
 const { handleSchematicReadTask } = require('../src/mcp/schematic-read-handler.ts');
+const { toSerializable } = require('../src/utils.ts');
 
 const existingComponent = {
 	getState_PrimitiveId: () => 'old-page-component',
@@ -91,6 +92,79 @@ async function main() {
 	];
 	const tJunction = JSON.parse((await handleSchematicReadTask({})).schematicCircuitSnapshot);
 	assert.deepEqual(tJunction.networks.find(network => network.networkName === 'SIG').connectedPinRefs, ['SIG.1', 'U1.1'], 'a T junction must carry a NetPort name through the branch to its pin');
+
+	const wires = Array.from({ length: 121 }, (_, index) => ({
+		getState_PrimitiveId: () => `wire-${index}`,
+		getState_Line: () => [index * 20, 0, index * 20 + 10, 0],
+		getState_Net: () => index === 0 ? 'SIG' : undefined,
+	}));
+	const label = {
+		getState_PrimitiveId: () => 'label-1',
+		getState_Key: () => 'NET',
+		getState_ParentPrimitiveId: () => 'wire-0',
+		getState_Value: () => 'SIG',
+		getState_X: () => 5,
+		getState_Y: () => 0,
+	};
+	globalThis.eda.dmt_Schematic = {
+		async getCurrentSchematicPageInfo() {
+			return { uuid: currentPage };
+		},
+	};
+	globalThis.eda.sch_PrimitiveWire.getAll = async () => wires;
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
+		? [{
+				getState_PrimitiveId: () => 'net-port',
+				getState_Net: () => 'SIG',
+				getState_X: () => 0,
+				getState_Y: () => 0,
+			}]
+		: [netPort, device];
+	globalThis.eda.sch_PrimitiveAttribute = {
+		async getAll() {
+			return [label];
+		},
+	};
+	const completeReadback = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	assert.equal(completeReadback.ok, true);
+	const serialized = toSerializable(completeReadback);
+	const primitiveSnapshot = JSON.parse(serialized.connectivityPrimitivesSnapshot);
+	assert.equal(primitiveSnapshot.pageUuid, 'P2');
+	assert.equal(primitiveSnapshot.wireCount, 121, 'recovery must retain more than the normal 120-item serialization cap');
+	assert.equal(primitiveSnapshot.wires.length, 121);
+	assert.deepEqual(primitiveSnapshot.wires[120].line, [2400, 0, 2410, 0]);
+	assert.deepEqual(primitiveSnapshot.netPorts, [{ primitiveId: 'net-port', net: 'SIG', x: 0, y: 0 }]);
+	assert.deepEqual(primitiveSnapshot.netLabels, [{ primitiveId: 'label-1', parentWireId: 'wire-0', net: 'SIG', x: 5, y: 0 }]);
+	assert.equal(primitiveSnapshot.wires[1].net, '', 'unnamed wires may return undefined net');
+	assert.equal(completeReadback.schematicCircuitSnapshot !== undefined, true);
+
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
+		? [{
+				getState_PrimitiveId: () => 'net-port',
+				getState_Net: () => undefined,
+				getState_X: () => 0,
+				getState_Y: () => 0,
+			}]
+		: [netPort, device];
+	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'NetPort network must be readable');
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
+		? [{
+				getState_PrimitiveId: () => 'net-port',
+				getState_Net: () => 'SIG',
+				getState_X: () => 0,
+				getState_Y: () => 0,
+			}]
+		: [netPort, device];
+	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = (() => {
+		let calls = 0;
+		return async () => ({ uuid: ++calls === 1 ? 'P2' : 'P3' });
+	})();
+	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'page switch during readback must fail');
+	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = async () => ({ uuid: currentPage });
+	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = async () => undefined;
+	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'failed pin read must not clear recovery');
+	globalThis.eda.sch_PrimitiveWire.getAll = async () => undefined;
+	assert.equal((await handleSchematicReadTask({})).ok, false, 'failed wire read must not produce a partial semantic snapshot');
 	console.log('schematic_read current-page test passed');
 }
 
