@@ -34,7 +34,12 @@ function primitive(state) {
 
 async function main() {
 	let pageUuid = 'page-1';
-	const wires = [{ getState_Line: () => [400, 500, 410, 500], getState_Net: () => 'FOREIGN' }];
+	const wires = [
+		{ getState_PrimitiveId: () => 'foreign', getState_Line: () => [400, 500, 410, 500], getState_Net: () => 'FOREIGN' },
+		{ getState_PrimitiveId: () => 'unnamed-a', getState_Line: () => [300, 400, 310, 400], getState_Net: () => null },
+		{ getState_PrimitiveId: () => 'unnamed-b', getState_Line: () => [500, 400, 510, 400], getState_Net: () => '' },
+		{ getState_PrimitiveId: () => 'unnamed-b-extension', getState_Line: () => [510, 400, 520, 400], getState_Net: () => '' },
+	];
 	const parts = new Map([
 		['r1', {
 			primitiveId: 'r1',
@@ -107,7 +112,7 @@ async function main() {
 			},
 			async modify(id, property) {
 				callCount += 1;
-				assert.equal(id, 'r1');
+				assert.ok(parts.has(id));
 				const current = parts.get(id);
 				Object.assign(current, property);
 				return primitive(current);
@@ -170,6 +175,14 @@ async function main() {
 	assert.equal(unintendedNet.committed, true);
 	assert.equal(unintendedNet.commitUnknown, true);
 	assert.deepEqual(unintendedNet.pinNetworkChanges, [{ pinNumber: '1', before: '', after: 'FOREIGN' }]);
+	const differentUnnamedWire = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 505 } });
+	assert.equal(differentUnnamedWire.reason, 'pin_network_changed');
+	assert.deepEqual(differentUnnamedWire.pinNetworkChanges, [{ pinNumber: '1', before: '', after: '', beforeWireGroups: ['unnamed-a'], afterWireGroups: ['unnamed-b'] }]);
+	const sameUnnamedGroup = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 515 } });
+	assert.equal(sameUnnamedGroup.ok, true, 'moving between touching unnamed wires keeps the same network');
+	const detachedUnnamedWire = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 550 } });
+	assert.equal(detachedUnnamedWire.reason, 'pin_network_changed');
+	assert.deepEqual(detachedUnnamedWire.pinNetworkChanges, [{ pinNumber: '1', before: '', after: '', beforeWireGroups: ['unnamed-b'], afterWireGroups: [] }]);
 	const deleted = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'r1' });
 	assert.equal(deleted.ok, true);
 	assert.equal(deleted.deleted, true);
@@ -177,6 +190,41 @@ async function main() {
 	assert.equal((await handleSchematicComponentEditTask({ action: 'read' })).componentCount, 1);
 	const absent = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'r1' });
 	assert.equal(absent.reason, 'component_not_found');
+	const originalDocumentInfo = globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo;
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'another-page' });
+	const beforeUnsyncedDelete = callCount;
+	await assert.rejects(
+		handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'c1' }),
+		/not synchronized/,
+	);
+	assert.equal(callCount, beforeUnsyncedDelete);
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = originalDocumentInfo;
+	const sourceParts = new Map([['shared', { ...parts.get('c1'), primitiveId: 'shared', x: 501 }]]);
+	const copiedParts = new Map([['shared', { ...parts.get('c1'), primitiveId: 'shared', x: 601 }]]);
+	const componentApi = globalThis.eda.sch_PrimitiveComponent;
+	const originalGetAll = componentApi.getAll;
+	const originalGetAllIds = componentApi.getAllPrimitiveId;
+	const originalGet = componentApi.get;
+	const originalDelete = componentApi.delete;
+	componentApi.getAll = async () => [...(pageUuid === 'copied-page' ? copiedParts : sourceParts).values()].map(primitive);
+	componentApi.getAllPrimitiveId = async () => [...(pageUuid === 'copied-page' ? copiedParts : sourceParts).keys()];
+	componentApi.get = async () => primitive(sourceParts.get('shared'));
+	componentApi.delete = async (target) => {
+		const id = target.getState_PrimitiveId();
+		(target.getState_X() === 601 ? copiedParts : sourceParts).delete(id);
+		return true;
+	};
+	pageUuid = 'copied-page';
+	const copiedDelete = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'shared' });
+	assert.equal(copiedDelete.verified, true);
+	assert.equal(copiedDelete.before.x, 601, 'the target object comes from the active copy');
+	assert.equal(copiedParts.has('shared'), false);
+	assert.equal(sourceParts.has('shared'), true, 'the source page keeps its shared ID');
+	pageUuid = 'page-1';
+	componentApi.getAll = originalGetAll;
+	componentApi.getAllPrimitiveId = originalGetAllIds;
+	componentApi.get = originalGet;
+	componentApi.delete = originalDelete;
 
 	globalThis.eda.sch_PrimitiveComponent.modify = async () => {
 		throw new Error('RPC Call modify Timed Out');
@@ -188,18 +236,21 @@ async function main() {
 	globalThis.eda.sch_PrimitiveComponent.modify = async (id, patch) => {
 		Object.assign(parts.get(id), patch);
 	};
-	const originalGet = globalThis.eda.sch_PrimitiveComponent.get;
-	let getCount = 0;
-	globalThis.eda.sch_PrimitiveComponent.get = async (...args) => {
-		getCount += 1;
-		if (getCount === 1)
-			return originalGet(...args);
-		throw new Error('post-write read unavailable');
+	const liveGetAll = globalThis.eda.sch_PrimitiveComponent.getAll;
+	let postWriteReadFails = false;
+	globalThis.eda.sch_PrimitiveComponent.getAll = async (...args) => {
+		if (postWriteReadFails)
+			throw new Error('post-write read unavailable');
+		return liveGetAll(...args);
+	};
+	globalThis.eda.sch_PrimitiveComponent.modify = async (id, patch) => {
+		Object.assign(parts.get(id), patch);
+		postWriteReadFails = true;
 	};
 	const readbackFailure = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 25 } });
 	assert.deepEqual([readbackFailure.commitUnknown, readbackFailure.readbackRequired, readbackFailure.nativeCallSettled], [true, true, true]);
 	assert.equal(requiresHostRestartForResult(path, { action: 'modify' }, readbackFailure), false);
-	globalThis.eda.sch_PrimitiveComponent.get = originalGet;
+	globalThis.eda.sch_PrimitiveComponent.getAll = liveGetAll;
 	globalThis.eda.sch_PrimitiveComponent.modify = async (id, patch) => {
 		Object.assign(parts.get(id), patch);
 		pageUuid = 'page-2';

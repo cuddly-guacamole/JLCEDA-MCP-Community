@@ -118,8 +118,11 @@ async function allTexts(runtime: Record<string, unknown>, api: TextApi, page: st
 		throw new TypeError('EDA sch_PrimitiveText did not return complete text and ID arrays.');
 	const texts = raw.map(readText);
 	const ids = new Set(rawIds as string[]);
-	if (texts.length !== ids.size || texts.some(item => !ids.has(item.primitiveId)))
+	if (texts.length !== ids.size || rawIds.length !== ids.size
+		|| new Set(texts.map(item => item.primitiveId)).size !== texts.length
+		|| texts.some(item => !ids.has(item.primitiveId))) {
 		throw new Error('Current-page schematic text list changed during read; retry after page load.');
+	}
 	await assertSamePage(runtime, page);
 	return preserveBoundedArray(texts);
 }
@@ -241,7 +244,7 @@ export async function handleSchematicTextManageTask(payload: unknown): Promise<u
 			return { ok: true, action, scope: SCOPE, pageUuid: page, primitiveId: created.primitiveId, text: created, verified: true };
 		}
 		const observed = await oneText(runtime, api, page, primitiveId!);
-		if (nativeResult === false || observed)
+		if (observed)
 			throw new Error('EDA schematic text still exists after delete.');
 		return { ok: true, action, scope: SCOPE, pageUuid: page, primitiveId, deleted: true, verified: true };
 	}

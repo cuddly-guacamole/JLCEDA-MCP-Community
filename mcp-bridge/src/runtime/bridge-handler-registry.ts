@@ -16,6 +16,7 @@ import { handleEdaContextTask } from '../mcp/context-handler.ts';
 import { handleDesignArchiveExportTask } from '../mcp/design-archive-export-handler.ts';
 import { handleDesignCompareTask } from '../mcp/design-compare-handler.ts';
 import { handleDesignSourceExportTask } from '../mcp/design-source-export-handler.ts';
+import { handleEditorNavigateTask } from '../mcp/editor-navigate-handler.ts';
 import { handleApiInvokeTask } from '../mcp/invoke-handler.ts';
 import { handleLibraryClassificationTask } from '../mcp/library-classification-handler.ts';
 import { handleLibraryPreviewTask } from '../mcp/library-preview-handler.ts';
@@ -72,6 +73,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/component/select': handleComponentSelectTask,
 	'/bridge/jlceda/canvas/snapshot': handleCanvasSnapshotTask,
 	'/bridge/jlceda/context': handleEdaContextTask,
+	'/bridge/jlceda/editor/navigate': handleEditorNavigateTask,
 	'/bridge/jlceda/netlabel/modify': handleNetLabelModifyTask,
 	'/bridge/jlceda/netlabel/place': handleNetLabelPlaceTask,
 	'/bridge/jlceda/pcb/drc-check': handlePcbDrcCheckTask,

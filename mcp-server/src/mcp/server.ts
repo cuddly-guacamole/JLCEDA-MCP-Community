@@ -12,6 +12,7 @@ function createToolInputSchema(
   if (name === 'bridge_recover_client') {
     const common = {
       confirm: z.literal(true),
+      timeoutMs: z.number().int().min(5000).max(120000).default(60000),
       requestId: z.string().min(1).optional(),
       recoveryId: z.string().min(1).optional(),
       clientId: z.string().min(1).optional(),
@@ -27,6 +28,7 @@ function createToolInputSchema(
         '/bridge/jlceda/schematic/component-edit',
         '/bridge/jlceda/schematic/text-manage',
         '/bridge/jlceda/pcb/component-edit',
+        '/bridge/jlceda/pcb/documents-manage',
         '/bridge/jlceda/pcb/pour-manage',
         '/bridge/jlceda/pcb/region-manage',
         '/bridge/jlceda/pcb/text-manage',

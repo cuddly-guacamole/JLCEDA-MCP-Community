@@ -11,7 +11,7 @@
 
 import type { DesignatorChange } from './component-designator-restore';
 import { getEdaRuntime, getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
-import { readSchematicDesignators, restoreChangedSchematicDesignators } from './component-designator-restore';
+import { readSchematicComponentBaseline, restoreChangedSchematicDesignators } from './component-designator-restore';
 
 interface ComponentPlaceItem {
 	uuid: string;
@@ -64,6 +64,7 @@ interface ActivePlaceSession {
 	followMouseTipApi: FollowMouseTipApi | null;
 	placeApi: PlaceComponentApi;
 	createdAt: number;
+	lastObjectReadAt: number;
 	placementExited: boolean;
 	cancelHandler: ((event: Event) => void) | null;
 	escapeHandler: ((event: Event) => void) | null;
@@ -255,7 +256,7 @@ async function cleanupExactPlacementDuplicates(
 		return { primitiveIds, warning: '检测到多个新增器件，但当前 EDA 未提供删除 API；请检查重叠器件。' };
 	try {
 		await assertPlaceSessionPage(session.pageUuid);
-		const all = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+		const all = await Promise.resolve(api.getAll.call(api.context, null, false));
 		await assertPlaceSessionPage(session.pageUuid);
 		if (!Array.isArray(all))
 			throw new TypeError('EDA 未返回器件列表。');
@@ -282,11 +283,15 @@ async function cleanupExactPlacementDuplicates(
 	let postDeleteReadbackFailed = false;
 	const readCurrentIds = async (): Promise<string[]> => {
 		await assertPlaceSessionPage(session.pageUuid);
-		const ids = await Promise.resolve(api.getAllPrimitiveId.call(api.context, undefined, false));
+		const ids = await Promise.resolve(api.getAllPrimitiveId.call(api.context, null, false));
 		await assertPlaceSessionPage(session.pageUuid);
 		if (!Array.isArray(ids))
 			throw new TypeError('EDA 未返回当前器件 ID 列表。');
-		return ids;
+		const components = await Promise.resolve(api.getAll.call(api.context, null, false));
+		await assertPlaceSessionPage(session.pageUuid);
+		if (!Array.isArray(components))
+			throw new TypeError('EDA 未返回当前器件列表。');
+		return [...new Set([...ids, ...components.map(component => getSyncState(component, 'getState_PrimitiveId', ''))])];
 	};
 	for (const id of extraIds) {
 		let stage: 'delete' | 'readback' = 'delete';
@@ -299,7 +304,7 @@ async function cleanupExactPlacementDuplicates(
 			if (currentIds.includes(id)) {
 				// Some EDA versions accept an ID but only delete the live primitive object.
 				await assertPlaceSessionPage(session.pageUuid);
-				const livePrimitives = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+				const livePrimitives = await Promise.resolve(api.getAll.call(api.context, null, false));
 				await assertPlaceSessionPage(session.pageUuid);
 				if (!Array.isArray(livePrimitives))
 					throw new TypeError('EDA 未返回当前器件列表。');
@@ -485,8 +490,11 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const tipText = `请在原理图中放置器件：${formatComponentTitle(component)}`;
 	const pageUuid = await readCurrentSchematicPageUuid();
 	// 必须先取基线，再把器件绑定到鼠标。用户可能在 API 返回后立即点击。
-	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, undefined, false)));
-	const baselineDesignators = await readSchematicDesignators(placeApi);
+	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, null, false)));
+	const baseline = await readSchematicComponentBaseline(placeApi);
+	for (const id of baseline.primitiveIds)
+		referenceIds.add(id);
+	const baselineDesignators = baseline.designators;
 	await assertPlaceSessionPage(pageUuid);
 	if (placeSessionGeneration !== startGeneration || placementModeNeedsExit) {
 		return { ok: false, error: '连接在准备器件放置时中断；请核对当前图页后再重试。' };
@@ -506,6 +514,7 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 		followMouseTipApi,
 		placeApi,
 		createdAt: Date.now(),
+		lastObjectReadAt: 0,
 		placementExited: false,
 		cancelHandler: null,
 		escapeHandler: null,
@@ -591,9 +600,22 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 
 	try {
 		await assertPlaceSessionPage(session.pageUuid);
-		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context, undefined, false));
+		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context, null, false));
 		await assertPlaceSessionPage(session.pageUuid);
-		const observedPrimitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
+		let observedPrimitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
+		if (session.placementExited || (observedPrimitiveIds.length === 0 && Date.now() - session.lastObjectReadAt >= 1000)) {
+			// Some EDA builds expose a committed component through getAll before
+			// getAllPrimitiveId catches up. Compare with the same object-list baseline.
+			const components = await Promise.resolve(session.placeApi.getAll.call(session.placeApi.context, null, false));
+			await assertPlaceSessionPage(session.pageUuid);
+			if (!Array.isArray(components))
+				throw new TypeError('EDA 未返回当前器件列表。');
+			session.lastObjectReadAt = Date.now();
+			const objectPrimitiveIds = components
+				.map(component => getSyncState(component, 'getState_PrimitiveId', ''))
+				.filter(id => id && !session.referenceIds.has(id));
+			observedPrimitiveIds = [...new Set([...observedPrimitiveIds, ...objectPrimitiveIds])];
+		}
 		if (observedPrimitiveIds.length > 0) {
 			if (!session.placementExited) {
 				return {

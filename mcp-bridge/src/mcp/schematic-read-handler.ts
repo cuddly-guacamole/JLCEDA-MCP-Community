@@ -63,6 +63,7 @@ async function readCurrentComponentIdsOnly(): Promise<{ ok: true; componentIds: 
 		return { ok: false, error: '器件列表获取失败，sch_PrimitiveComponent.getAll 未返回数组。' };
 	return { ok: true, componentIds: await assertCurrentComponentIds(components) };
 }
+
 function requiredState<T>(primitive: unknown, getter: string): T {
 	const method = primitive && typeof primitive === 'object' ? (primitive as Record<string, unknown>)[getter] : undefined;
 	if (typeof method !== 'function')
@@ -103,10 +104,11 @@ interface ConnectivityPrimitiveSnapshot {
 
 async function readConnectivityPrimitives(pageUuid: string): Promise<ConnectivityPrimitiveSnapshot> {
 	const rawWires = await eda.sch_PrimitiveWire.getAll();
+	const wireIds = await eda.sch_PrimitiveWire.getAllPrimitiveId();
 	const rawNetPorts = await eda.sch_PrimitiveComponent.getAll('netport' as ESCH_PrimitiveComponentType, false);
 	const rawNetFlags = await eda.sch_PrimitiveComponent.getAll('netflag' as ESCH_PrimitiveComponentType, false);
 	const rawAttributes = await eda.sch_PrimitiveAttribute.getAll();
-	if (!Array.isArray(rawWires) || !Array.isArray(rawNetPorts) || !Array.isArray(rawNetFlags) || !Array.isArray(rawAttributes))
+	if (!Array.isArray(rawWires) || !Array.isArray(wireIds) || !Array.isArray(rawNetPorts) || !Array.isArray(rawNetFlags) || !Array.isArray(rawAttributes))
 		throw new Error('原理图连接图元回读不完整：导线、器件或网络属性列表不是数组。');
 	const wires = rawWires.map((wire) => {
 		const primitiveId = requiredState<string>(wire, 'getState_PrimitiveId');
@@ -120,6 +122,13 @@ async function readConnectivityPrimitives(pageUuid: string): Promise<Connectivit
 			line,
 		};
 	});
+	const wireIdSet = new Set(wireIds);
+	if (wireIds.some(id => typeof id !== 'string' || !id) || wireIds.length !== wireIdSet.size
+		|| wireIdSet.size !== wires.length
+		|| new Set(wires.map(wire => wire.primitiveId)).size !== wires.length
+		|| wires.some(wire => !wireIdSet.has(wire.primitiveId))) {
+		throw new PageNotReadyError('当前原理图导线列表与图元 ID 列表不一致，图页可能尚未加载完成，请重试。');
+	}
 	const netPorts = rawNetPorts.map((component) => {
 		const primitiveId = requiredState<string>(component, 'getState_PrimitiveId');
 		const net = requiredState<string>(component, 'getState_Net');

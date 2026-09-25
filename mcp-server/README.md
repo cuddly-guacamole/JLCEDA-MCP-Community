@@ -2,21 +2,25 @@
 
 ## 2.3.2
 
+`bridge_recover_client` 的完整回读不再被固定 15 秒截断；可设置 `timeoutMs`，大原理图最多 120 秒。`schematic_read` 同样支持最长 120 秒的读取预算。
+
 本版本使用共享 Bridge 路由清单，增加内部请求超时、重复 `requestId` 检查、消息大小限制和有限挂起请求队列。`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
 
 工具分发异常和 Bridge 上报的结构化诊断日志会输出到 Server 的 stderr。分发异常记录工具、Bridge 路由、可用的错误码与异常堆栈，并附带版本及构建日期水印；构建日期在打包时固定。
 
 `component_select` 的关键词与精确属性搜索、`design_compare` 的网表/原理图/PCB 比较现在都能通过 Server 的输入校验并进入 Bridge。
 
-`component_place` 等待用户按 Esc 或右键退出当前放置模式后才启动下一件；完全重叠的重复图元经核对后清理，并透传新增与清理的图元 ID。已有器件位号被 EDA 改动时，会保留 BOM 属性并尝试恢复原位号，结果列于 `restoredDesignators`；未恢复、失联或超时则停止批次，不自动重试未知是否已提交的操作。
+`component_place` 等待用户按 Esc 或右键退出当前放置模式后才启动下一件；Bridge 会把当前页器件对象与 ID 列表一起核对，避免 ID 列表更新较慢时漏报已提交器件。完全重叠的重复图元经核对后清理，并透传新增与清理的图元 ID。已有器件位号被 EDA 改动时，会保留 BOM 属性并尝试恢复原位号，结果列于 `restoredDesignators`；未恢复、失联或超时则停止批次，不自动重试未知是否已提交的操作。
 
 `component_place_auto` 按坐标逐件创建；若 EDA 改变已有器件或本批次此前放置器件的位号，会保留 BOM 属性并尝试一次恢复。恢复失败时停止后续放置，返回位号变化及已放置器件的当前位号。
 
-`bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
+`bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页；进程内打开或激活文档使用 `editor_navigate`。
 
-`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。跨页器件删除需以全工程 `schematic_review` 回读；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。完整安全恢复要求 Bridge 与 Server 均升级到 2.3.2；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
+`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。原理图器件批量删除绑定执行时的当前图页，恢复时以 `schematic_read includeConnectivityPrimitives:true` 回读原页；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。完整安全恢复要求 Bridge 与 Server 均升级到 2.3.2；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 
 PCB `import_changes` 返回 `pending_confirmation` 后，Server 将其列为全局写入阻断诊断。用户在原 EDA 对话框应用或取消并确认关闭后，使用诊断中的 `requestId` 调用 `bridge_recover_client`，传入 `action:"resolve_import"`、`confirm:true`、`resolution:"applied"` 或 `"cancelled"`。Server 核对原连接及 PCB 文档/图页，完整读回器件和网络；Bridge 收到同页解除确认后才恢复写入。只读查询在此期间仍可用，但 EDA API 不提供确认框完成事件，读回本身不能证明对话框已关闭。无法确认时以 `action:"recover"` 建立恢复会话，重启原 EDA 宿主，再用全新连接、`hostRestartConfirmed:true`、无参数 `eda.pcb_PrimitiveComponent.getAll` 做 `action:"readback"`；Server 还会分页读取完整网络名称。
+
+Bridge 会在当前 PCB 与编辑器文档身份尚未同步时返回 `pcb_page_not_ready`，在 PCB 未归属板时返回 `pcb_not_associated_with_board`；两者均不执行 `import_changes` 原生调用，也不会进入导入确认或写入恢复流程。
 
 恢复时必须从 `bridge_clients` 选择具体超时写操作的 `requestId`；`readbackPath` 与 `readbackPayload` 始终只能描述只读操作，恢复目标客户端在首次回读后锁定。多个未解决的超时写操作会继续保持写阻断，直到各自收到迟到结果或完成受控恢复；未确认完成的写诊断不会因 TTL 自动放行写入。
 
@@ -39,7 +43,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生调用超时以及写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。诊断包含 `hostRestartRequired:true` 时先重启原宿主并传 `hostRestartConfirmed:true`；读回失败继续隔离，只查 `/context` 不会解除。
 
-`schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对器件列表和当前图元 ID。复制页可以合法复用源页图元 ID；若读取期间身份或列表未同步，则返回 `PAGE_NOT_READY`，等待加载后重试。成功结果包含 `pageUuid`。
+`schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对当前页器件对象与图元 ID 列表；设置 `includeConnectivityPrimitives:true` 时还比对导线对象与 ID 列表。若读取期间身份或列表未同步，则返回 `PAGE_NOT_READY`，等待加载后重试。复制页可以合法复用源页图元 ID。不要把未同步的快照用于放置或解除写入隔离；成功结果包含 `pageUuid`。
 
 ## 工具说明
 
@@ -53,6 +57,8 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_component_edit` 的 `read` 返回当前原理图页全部普通器件的完整状态；`modify` 用 `primitiveId` 和 `property` 修改单个器件的位置、方向、位号或属性，`delete` 按 ID 删除一个器件。`property.otherProperty` 与已有 BOM 扩展属性合并；其余未指定字段保持原值。写入后核对目标 ID 和请求的状态变化；几何修改还比较目标器件各引脚网络。`pin_network_changed` 会列出误接引脚并隔离写入，恢复时需对同页执行 `schematic_read`，设置 `includeConnectivityPrimitives:true`，核对连接图元和语义网表后修正。其他 `commitUnknown:true` 使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/schematic/component-edit"`、`readbackPayload:{"action":"read"}`，完整读回执行时的原图页；诊断要求宿主重启时先重启原 EDA 宿主。
 
+需要一次调用批量删除时，`api_invoke` 可传 `apiFullName:"eda.sch_PrimitiveComponent.delete"`、`args:[["ID1","ID2"]]`。Bridge 将数组拆成单个原生删除，并按执行时的当前图页逐项回读，返回 `deletedIds` 和 `failedIds`；复制图页与原页可共享 ID，不会把原页的同名 ID 当作当前页残留。`schematic_read` 也依据图页和编辑器文档身份、当前页对象与 ID 列表的一致性核验，不把共享 ID 当作切页失败。
+
 `pcb_component_edit` 的 `read` 返回当前 PCB 全部器件的不截断状态。`create` 接受设备或封装的库引用、顶层或底层、坐标与可选角度；`modify` 按 ID 修改单个器件的层、坐标、角度、锁定状态、位号或 BOM 属性，`delete` 按 ID 删除单个器件。修改 `otherProperty` 时会保留未指定的已有键。每次写入后重新读取并核对当前 PCB。提交状态不明时，`bridge_recover_client action=readback` 必须使用 `readbackPath:"/bridge/jlceda/pcb/component-edit"` 和 `readbackPayload:{"action":"read"}`，核对同一 PCB 的完整器件快照；诊断要求宿主重启时先重启原宿主。
 
 `pcb_pour_manage` 的 `read` 返回当前 PCB 全部覆铜边框和已填充区域的 ID、关联、填充数量及几何摘要。`create` 接受已有网络、铜层及 `polygonSource` 数组，例如 `["R",100,200,300,400,0,0]`；`modify` 可更改单个边框的轮廓与设置，`delete` 删除单个边框。EDA 3.2.181 的原生创建和修改都可能调整覆铜优先级；完整回读发现请求值或未请求字段发生偏差时返回 `applied:true`、`verified:false`、`before/after/sideEffects`，写入状态已明确，无需执行未知提交恢复。`rebuild` 只在明确调用时重建指定边框或全板填充，必须核对完整返回集合和写后状态；单件重建未生成目标填充、删除后仍有关联填充时返回 `verified:false` 和已读回状态。原生重建报错也可能已改变填充，遇到 `commitUnknown:true` 时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/pour-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部边框和填充摘要；诊断要求宿主重启时先重启原宿主。
@@ -63,9 +69,9 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_read` 默认读取当前 PCB 的器件和网络；`sections` 可从 `components`、`pads`、`nets`、`routing`、`pours`、`outline`、`regions`、`text` 中选择，或传 `["all"]`。结果包含同一 `pageUuid`、`includedSections`、`omittedSections` 和所选部分的不截断数组及数量。`text` 包含独立文本与器件属性；`pads` 包括独立焊盘和器件焊盘的 ID、父器件 ID、层、焊盘号、位置、角度、网络及焊盘类型；逐件读取器件焊盘可能较慢，可调整 `timeoutMs`。复杂焊盘外形不在此语义快照中。任一所选部分读取失败或图页改变时整次调用失败。
 
-`pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 可用单轮廓或多轮廓 `polygonSource` 修改现有区域，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
+`pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 也仅接受单轮廓 `polygonSource`，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
 
-区域修改若部分属性未生效，工具返回 `applied`、`before/after`、`requestedMismatches` 和 `verified:false`，完整回读已确定结果时不会开启未知提交隔离。删除通过完整区域列表核对目标 ID。
+区域创建完整回读确认无新增图元时返回 `applied:false`；只新增一个但属性不符时返回 `applied:true`、`after`、`requestedMismatches` 和 `verified:false`。修改若部分属性未生效，也返回实际状态与未应用字段；完整回读已确定结果时不会开启未知提交隔离。删除通过完整区域列表核对目标 ID。
 
 `pcb_text_manage` 的无过滤 `read` 完整返回当前 PCB 的独立文本 String 和器件属性 Attribute；`kind` 可只读取一类，`primitiveId` 可精确读取，`parentPrimitiveId` 可读取指定器件的属性。`create`、`delete` 仅用于独立文本；创建至少提供层、坐标和内容，其余样式采用官方示例默认值。`modify` 可更改独立文本内容与样式，或传入属性 ID 和父器件 ID 修改已有器件属性的值、可见性与样式。官方 `pcb_PrimitiveAttribute.create()` 无效，因此本工具不提供单独创建属性。写入结果不明时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/text-manage"`、`readbackPayload:{"action":"read"}`，完整核对同一 PCB 的文本与属性；诊断要求时先重启原宿主。
 
@@ -87,11 +93,13 @@ Server 提供 `schematic_document_action`，用于受限地检查原理图坐标
 
 `pcb_documents_manage` 以 `project_info` 或 `bridge_clients` 返回的当前工程 `projectUuid` 为目标：`operation:list` 完整返回该工程 PCB 的 UUID、名称和所属板子；`create` 可省略 `boardName` 新建游离 PCB，`copy` 按已有 `pcbUuid` 复制，`rename` 改名。三种写入均需 `confirm:true`，并在 EDA 工作区同步后按 PCB UUID 和工程目录回读；改名仅对 EDA 中已打开的目标 PCB 生效，工具不会自行切换图页。未知提交使用 `bridge_recover_client`，指定 `readbackPath:"/bridge/jlceda/pcb/documents-manage"`、`readbackPayload:{"operation":"list","projectUuid":"原工程 UUID"}`；旧宿主尚有未完成原生调用时先重启。暂不提供 PCB 删除。
 
+`editor_navigate` 接受当前工程的 `projectUuid` 与原理图图页或 PCB 的 `documentUuid`。`operation:open` 打开或激活该文档；`operation:activate` 还需已打开的 `tabId`，可由 `eda.dmt_EditorControl.getSplitScreenTree` 获取。工具先核对目标属于当前工程，再调用编辑器 API，在 `timeoutMs` 预算内核对工程、文档、图页和标签 ID。返回 `commitUnknown:true` 时先查看 `bridge_clients` 的诊断，使用 `bridge_recover_client` 恢复，并以目标 `documentUuid`、原工程 `projectUuid` 和 `readbackPath:"/bridge/jlceda/context"` 验证当前页；诊断要求时先重启原 EDA 宿主。不要在结果不明时盲目重试导航。
+
 `eda_context` 在客户端支持时返回客户端版本、连接模式、编辑器版本、编译日期和当前画布数据单位。`eda_canvas_snapshot` 可在不改变文档或视图的情况下返回受限的画布图像。
 
 `workspace_query` 查询当前工作区、团队以及受限的工程和文件夹列表。`design_source_export` 和 `design_archive_export` 分别读取受限的源文件预览和原生设计归档元数据；完整文本或 Base64 数据都需要明确授权并受大小限制。
 
-`library_preview` 可生成符号/封装预览图，`library_classification_query` 可浏览官方库分类树。`project_info` 可选返回受限的 Board 和 Panel 清单。
+`library_preview` 可生成符号/封装预览图，`library_classification_query` 可浏览官方库分类树。`project_info` 在 PCB 页仍可列出当前工程全部原理图图页，也可选返回受限的 Board 和 Panel 清单。
 
 Server 提供 PCB DRC、网络查询、库搜索、制造查询和受保护的文档操作。设备 `library_search` 支持 0.4.15 精确属性、官方单个/批量 LCSC C 编号映射和精确 UUID 获取；符号、封装、3D 模型、可复用模块和 Panel 库使用各自支持的 API。仿真模型搜索支持 Ngspice/SimulIDE 过滤，但官方模型读取 API 需要私有部署，因此不公开。制造导出包含官方飞针测试文件，PCB 专用自动布局/自动布线 MCP 工具仍未启用；EDA BETA API 可经 `api_invoke` 调用，结果需用器件位置、导线、过孔和 DRC 读回确认。
 

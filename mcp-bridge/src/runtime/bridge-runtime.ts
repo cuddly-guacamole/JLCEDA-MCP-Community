@@ -491,14 +491,24 @@ export function enqueueTask(task: { requestId: string; path: string; payload: un
 				&& isPlainObjectRecord(task.payload)
 				&& typeof task.payload.apiFullName === 'string'
 				&& task.payload.apiFullName.trim().toLowerCase() === 'eda.pcb_document.autolayout';
+			const schematicDeleteTask = task.path === '/bridge/jlceda/api/invoke'
+				&& isPlainObjectRecord(task.payload)
+				&& typeof task.payload.apiFullName === 'string'
+				&& task.payload.apiFullName.trim().toLowerCase() === 'eda.sch_primitivecomponent.delete';
 			const executionContext = readOnly
 				? undefined
 				: autoLayoutTask
 					? await readPcbAutoLayoutTaskContext()
 					: await readBridgeClientContext(writeTaskPageKind(task.path, task.payload));
-			const handlerPayload = autoLayoutTask
-				? { ...(task.payload as Record<string, unknown>), expectedPcbUuid: executionContext!.pageUuid }
-				: task.payload;
+			let handlerPayload: unknown = task.payload;
+			if (autoLayoutTask) {
+				handlerPayload = { ...(task.payload as Record<string, unknown>), expectedPcbUuid: executionContext!.pageUuid };
+			}
+			else if (schematicDeleteTask) {
+				if (!executionContext?.pageUuid || executionContext.pageUuid !== executionContext.documentUuid)
+					throw new Error('Current schematic page and editor document are not synchronized; deletion was not started.');
+				handlerPayload = { ...(task.payload as Record<string, unknown>), expectedSchematicDeletePageUuid: executionContext.pageUuid };
+			}
 			if (taskGeneration !== transportGeneration || transport !== currentTransport)
 				throw new Error('Bridge connection changed before the EDA task started.');
 			if (currentRole !== 'active')

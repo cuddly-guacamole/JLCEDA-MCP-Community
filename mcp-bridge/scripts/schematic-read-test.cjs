@@ -60,7 +60,10 @@ globalThis.eda = {
 			}];
 		},
 	},
-	sch_PrimitiveWire: { async getAll() { return []; } },
+	sch_PrimitiveWire: {
+		async getAll() { return []; },
+		async getAllPrimitiveId() { return (await this.getAll()).map(wire => wire.getState_PrimitiveId()); },
+	},
 	sch_PrimitiveAttribute: { async getAll() { return []; } },
 	sch_Drc: { async check() { return true; } },
 };
@@ -100,6 +103,36 @@ async function main() {
 	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = originalGetAllIds;
 	currentPage = 'P1';
 	assert.equal(await readCount(), 1);
+	// A copied page legitimately reuses source primitive IDs; consistent current-page APIs must remain readable.
+	const originalWireGetAll = globalThis.eda.sch_PrimitiveWire.getAll;
+	const sharedWire = {
+		getState_PrimitiveId: () => 'shared-wire',
+		getState_Line: () => [100, 100, 200, 100],
+		getState_Net: () => '',
+	};
+	globalThis.eda.sch_PrimitiveWire.getAll = async () => [sharedWire];
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type ? [] : [existingComponent];
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['old-page-component'];
+	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, true);
+	await handleApiInvokeTask({ apiFullName: 'eda.dmt_EditorControl.activateDocument', args: ['P4'] });
+	const copiedConnectivityPage = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	assert.equal(copiedConnectivityPage.ok, true, JSON.stringify(copiedConnectivityPage));
+	assert.equal(copiedConnectivityPage.pageUuid, 'P4');
+	assert.equal(JSON.parse(copiedConnectivityPage.schematicCircuitSnapshot).componentCount, 1);
+	assert.equal(JSON.parse(copiedConnectivityPage.connectivityPrimitivesSnapshot).wireCount, 1);
+	const originalWireGetAllIds = globalThis.eda.sch_PrimitiveWire.getAllPrimitiveId;
+	globalThis.eda.sch_PrimitiveWire.getAll = async () => [sharedWire, sharedWire];
+	globalThis.eda.sch_PrimitiveWire.getAllPrimitiveId = async () => ['shared-wire', 'other-wire'];
+	const duplicateWireObjects = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	assert.equal(duplicateWireObjects.errorCode, 'PAGE_NOT_READY', 'duplicate wire objects must not match distinct current-page IDs');
+	globalThis.eda.sch_PrimitiveWire.getAll = async () => [sharedWire];
+	globalThis.eda.sch_PrimitiveWire.getAllPrimitiveId = async () => ['shared-wire', 'shared-wire'];
+	const duplicateWireIds = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	assert.equal(duplicateWireIds.errorCode, 'PAGE_NOT_READY', 'duplicate ID list entries must not match current-page wire objects');
+	globalThis.eda.sch_PrimitiveComponent.getAll = originalGetAll;
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = originalGetAllIds;
+	globalThis.eda.sch_PrimitiveWire.getAll = originalWireGetAll;
+	globalThis.eda.sch_PrimitiveWire.getAllPrimitiveId = originalWireGetAllIds;
 	currentPage = 'P2';
 	const emptyPage = await handleSchematicReadTask({});
 	assert.equal(emptyPage.ok, true);

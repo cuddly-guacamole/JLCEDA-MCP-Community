@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
-import { BRIDGE_PROTOCOL_VERSION, isReadOnlyBridgeRequest, operationForPath, validateBridgeClientMessage } from './bridge-contract.js';
+import { BRIDGE_CONTRACT, BRIDGE_PROTOCOL_VERSION, isReadOnlyBridgeRequest, operationForPath, validateBridgeClientMessage } from './bridge-contract.js';
 import { BRIDGE_MAX_PAYLOAD_BYTES, decodeBridgeMessage, sendBridgeJson, tokensMatch } from './bridge-wire.js';
 
 export function formatInternalClientEndpoint(port: number): string {
@@ -65,13 +65,15 @@ interface RecoveryDiagnostic {
   mutating: boolean;
   pageBound: boolean;
   targetProjectUuid?: string;
+  targetDocumentUuid?: string;
+  targetTabId?: string;
   targetSchematicUuid?: string;
   targetSchematicMayBeEmpty?: boolean;
   targetSchematicPageUuid?: string;
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
   targetPcbUuid?: string;
-  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_text_state' | 'pcb_layer_state' | 'pcb_routing_state' | 'pcb_document_inventory' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state' | 'schematic_text_state';
+  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_text_state' | 'pcb_layer_state' | 'pcb_routing_state' | 'pcb_document_inventory' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state' | 'schematic_text_state';
   hostRestartRequired?: boolean;
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
@@ -145,8 +147,6 @@ function isPageBoundWrite(path: string, payload: unknown): boolean {
     return false;
   if (path === '/bridge/jlceda/api/invoke' && isRecord(payload) && typeof payload.apiFullName === 'string') {
     const apiFullName = payload.apiFullName.trim().toLowerCase();
-    if (apiFullName === 'eda.sch_primitivecomponent.delete')
-      return false;
     return apiFullName.startsWith('eda.sch_') || apiFullName.startsWith('eda.pcb_');
   }
   return path.startsWith('/bridge/jlceda/pcb/')
@@ -197,7 +197,7 @@ function schematicPageMutationTarget(path: string, payload: unknown): Pick<Recov
 }
 
 function knownProjectTargetUuid(path: string, payload: unknown): string | undefined {
-  if (path === '/bridge/jlceda/pcb/documents-manage' && isRecord(payload))
+  if ((path === '/bridge/jlceda/pcb/documents-manage' || path === '/bridge/jlceda/editor/navigate') && isRecord(payload))
     return optionalString(payload.projectUuid);
   if (path !== '/bridge/jlceda/api/invoke' || !isRecord(payload)
     || typeof payload.apiFullName !== 'string'
@@ -206,7 +206,7 @@ function knownProjectTargetUuid(path: string, payload: unknown): string | undefi
   return optionalString(payload.args[0]);
 }
 
-function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
+function isSchematicComponentDelete(path: string, payload: unknown): boolean {
   return path === '/bridge/jlceda/api/invoke'
     && isRecord(payload)
     && typeof payload.apiFullName === 'string'
@@ -214,7 +214,8 @@ function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
 }
 
 function isSchematicConnectivityMutation(path: string, payload: unknown): boolean {
-  return path === '/bridge/jlceda/netlabel/place'
+  return isSchematicComponentDelete(path, payload)
+    || path === '/bridge/jlceda/netlabel/place'
 	|| (path === '/bridge/jlceda/schematic/wire-manage'
 		&& isRecord(payload) && (payload.action === 'modify' || payload.action === 'delete'))
     || (path === '/bridge/jlceda/schematic/connectivity'
@@ -1339,6 +1340,9 @@ export class EdaBridgeServer {
       ...(mutating && pending.path === '/bridge/jlceda/api/invoke'
         ? { hostRestartRequired: !nativeCallSettled } : {}),
       ...(targetProjectUuid ? { targetProjectUuid } : {}),
+      ...(mutating && pending.path === '/bridge/jlceda/editor/navigate' && isRecord(pending.payload)
+        ? { targetDocumentUuid: optionalString(pending.payload.documentUuid), targetTabId: optionalString(pending.payload.tabId), hostRestartRequired: !nativeCallSettled }
+        : {}),
       ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
       ...(mutating && pending.path === '/bridge/jlceda/pcb/component-edit'
         ? { requiredReadback: 'pcb_component_state' as const, hostRestartRequired: !nativeCallSettled }
@@ -1369,7 +1373,6 @@ export class EdaBridgeServer {
         ? { requiredReadback: 'pcb_routing_state' as const,
             hostRestartRequired: !nativeCallSettled || isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) }
         : {}),
-      ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
       ...(mutating && isSchematicPlacementWrite(pending.path ?? '')
         ? { requiredReadback: 'schematic_component_ids' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
@@ -1540,10 +1543,6 @@ export class EdaBridgeServer {
       && !isPcbRoutingReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error(`${pcbRoutingWriteLabel} requires eda.pcb_PrimitiveLine.getAll with no arguments for recovery readback.`);
     }
-    if (session.diagnostic.requiredReadback === 'schematic_project_review'
-      && readbackPath !== '/bridge/jlceda/schematic/review') {
-      throw new Error('Cross-page schematic component deletion requires schematic_review of the whole project for recovery readback.');
-    }
     if (session.diagnostic.requiredReadback === 'schematic_component_ids'
       && !isSchematicComponentIdReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Schematic placement requires current-page eda.sch_PrimitiveComponent.getAllPrimitiveId with args [null, false] for recovery readback.');
@@ -1648,9 +1647,9 @@ export class EdaBridgeServer {
       throw new Error('expectedPageUuid does not match the verified execution-time page identity; writes remain blocked.');
     const expectedDocumentUuid = session.diagnostic.pageBound
       ? executionContext?.documentUuid ?? optionalString(payload.expectedDocumentUuid)
-      : optionalString(payload.expectedDocumentUuid);
+      : session.diagnostic.targetDocumentUuid ?? optionalString(payload.expectedDocumentUuid);
     const expectedProjectUuid = session.diagnostic.targetProjectUuid
-      ?? (session.diagnostic.pageBound || session.diagnostic.requiredReadback === 'schematic_project_review'
+      ?? (session.diagnostic.pageBound
         || session.diagnostic.requiredReadback === 'schematic_page_inventory'
         ? executionContext?.projectUuid : undefined)
       ?? optionalString(payload.expectedProjectUuid);
@@ -1692,14 +1691,19 @@ export class EdaBridgeServer {
     }
     const requiresPcbPositions = session.diagnostic.requiredReadback === 'pcb_component_positions'
       || session.diagnostic.pendingNativeConfirmation;
-    const effectiveReadbackPayload = requiresPcbPositions
+    let effectiveReadbackPayload = requiresPcbPositions
       ? { ...readbackPayload, includeCompletePositions: true }
       : session.diagnostic.requiredReadback === 'pcb_routing_state'
         ? { ...readbackPayload, includeCompleteRouting: true }
         : session.diagnostic.requiredReadback === 'schematic_component_ids'
           ? { ...readbackPayload, includeCompleteSchematicComponentIds: true }
         : readbackPayload;
-    const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+    const readbackPolicy = BRIDGE_CONTRACT.timeoutPolicies[operationForPath(readbackPath)?.timeoutPolicy ?? 'default'];
+    // The main readback may scan a whole page. Leave one second for the Bridge result to reach the server.
+    const bridgeReadbackBudget = Math.min(readbackPolicy.maxMs, timeoutMs - 1_000);
+    if (readbackPolicy.allowOverride && bridgeReadbackBudget > readbackPolicy.defaultMs)
+      effectiveReadbackPayload = { ...effectiveReadbackPayload, timeoutMs: bridgeReadbackBudget };
+    const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, timeoutMs, undefined, true, targetClientId);
     if (isRecord(readback) && readback.ok === false) {
       const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
         || readbackPath === '/bridge/jlceda/schematic/drc-check';
@@ -1740,6 +1744,12 @@ export class EdaBridgeServer {
     const identity = extractReadbackIdentity(identityReadback, expectedPageKind);
     if (expectedDocumentUuid && identity.documentUuid !== expectedDocumentUuid) {
       throw new Error('Readback documentUuid does not match expectedDocumentUuid; writes remain blocked.');
+    }
+    if (session.diagnostic.targetTabId) {
+      const identityRecord = isRecord(identityReadback) ? identityReadback : {};
+      const document = isRecord(identityRecord.currentDocumentInfo) ? identityRecord.currentDocumentInfo : undefined;
+      if (optionalString(document?.tabId) !== session.diagnostic.targetTabId)
+        throw new Error('Readback tabId does not match the requested editor tab; writes remain blocked.');
     }
     if (expectedProjectUuid && identity.projectUuid !== expectedProjectUuid) {
       throw new Error('Readback projectUuid does not match expectedProjectUuid; writes remain blocked.');

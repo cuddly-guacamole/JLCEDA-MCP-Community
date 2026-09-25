@@ -1823,61 +1823,72 @@ try {
     legacyWriteServer.close();
   }
 
-  const crossPageDeletePort = await reservePort();
-  const crossPageDeleteServer = new EdaBridgeServer(crossPageDeletePort);
-  let crossPageDeleteOld;
-  let crossPageDeleteFresh;
+  const currentPageDeletePort = await reservePort();
+  const currentPageDeleteServer = new EdaBridgeServer(currentPageDeletePort);
+  let currentPageDeleteOld;
+  let currentPageDeleteFresh;
   try {
-    await crossPageDeleteServer.start();
-    const crossPageUrl = `ws://127.0.0.1:${crossPageDeletePort}/bridge/ws${tokenQuery}`;
-    crossPageDeleteOld = await registerEda(crossPageUrl, 'cross-page-delete-old', {
-      documentUuid: 'page-a-document', projectUuid: 'cross-page-project', pageKind: 'schematic', pageUuid: 'page-a',
+    await currentPageDeleteServer.start();
+    const currentPageUrl = `ws://127.0.0.1:${currentPageDeletePort}/bridge/ws${tokenQuery}`;
+    currentPageDeleteOld = await registerEda(currentPageUrl, 'current-page-delete-old', {
+      documentUuid: 'page-a', projectUuid: 'current-page-project', pageKind: 'schematic', pageUuid: 'page-a',
     });
-    crossPageDeleteOld.socket.on('message', data => {
+    currentPageDeleteOld.socket.on('message', data => {
       const message = JSON.parse(data.toString());
       if (message.type !== 'bridge/task') return;
-      crossPageDeleteOld.socket.send(JSON.stringify({
-        type: 'bridge/task-started', clientId: 'cross-page-delete-old',
+      currentPageDeleteOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'current-page-delete-old',
         requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
-        context: { documentUuid: 'page-a-document', projectUuid: 'cross-page-project', pageKind: 'schematic', pageUuid: 'page-a' },
+        context: { documentUuid: 'page-a', projectUuid: 'current-page-project', pageKind: 'schematic', pageUuid: 'page-a' },
       }));
-      crossPageDeleteOld.socket.send(JSON.stringify({
-        type: 'bridge/result', clientId: 'cross-page-delete-old',
+      currentPageDeleteOld.socket.send(JSON.stringify({
+        type: 'bridge/result', clientId: 'current-page-delete-old',
         requestId: message.requestId, leaseTerm: message.leaseTerm,
-        result: { commitUnknown: true, nativeCallSettled: false, uncertainIds: ['component-on-page-b'] },
+        result: { commitUnknown: true, nativeCallSettled: false, uncertainIds: ['component-on-page-a'] },
       }));
     });
-    await crossPageDeleteServer.request('/bridge/jlceda/api/invoke', {
-      apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['component-on-page-b'],
+    await currentPageDeleteServer.request('/bridge/jlceda/api/invoke', {
+      apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['component-on-page-a'],
     }, 2000);
-    const crossPageDiagnostic = (await crossPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
-    assert.equal(crossPageDiagnostic.pageBound, false);
-    assert.equal(crossPageDiagnostic.requiredReadback, 'schematic_project_review');
-    assert.equal(crossPageDiagnostic.hostRestartRequired, true);
-    const crossPageRecovery = await crossPageDeleteServer.request('/bridge/admin/recover-client', {
-      action: 'recover', confirm: true, requestId: crossPageDiagnostic.requestId,
+    const currentPageDiagnostic = (await currentPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(currentPageDiagnostic.pageBound, true);
+    assert.equal(currentPageDiagnostic.requiredReadback, 'schematic_connectivity_primitives');
+    assert.equal(currentPageDiagnostic.hostRestartRequired, true);
+    const currentPageRecovery = await currentPageDeleteServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: currentPageDiagnostic.requestId,
     }, 2000);
-    crossPageDeleteOld.socket.close();
-    await waitUntil(async () => (await crossPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients
-      .find(client => client.clientId === 'cross-page-delete-old')?.ready === false);
-    crossPageDeleteFresh = await registerEda(crossPageUrl, 'cross-page-delete-fresh', {
-      documentUuid: 'page-b-document', projectUuid: 'cross-page-project', pageKind: 'schematic', pageUuid: 'page-b',
+    currentPageDeleteOld.socket.close();
+    await waitUntil(async () => (await currentPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'current-page-delete-old')?.ready === false);
+    currentPageDeleteFresh = await registerEda(currentPageUrl, 'current-page-delete-fresh', {
+      documentUuid: 'page-a', projectUuid: 'current-page-project', pageKind: 'schematic', pageUuid: 'page-a',
     });
-    attachTaskResponder(crossPageDeleteFresh.socket, 'cross-page-delete-fresh', message => message.path === '/bridge/jlceda/schematic/review'
-      ? { ok: true, netlistText: 'whole-project-netlist' }
-      : { currentDocumentInfo: { uuid: 'page-b-document', parentProjectUuid: 'cross-page-project' }, currentProjectInfo: { uuid: 'cross-page-project' }, currentSchematicPageInfo: { uuid: 'page-b' } });
-    const crossPageReadback = {
-      action: 'readback', confirm: true, recoveryId: crossPageRecovery.recoveryId,
-      clientId: 'cross-page-delete-fresh', hostRestartConfirmed: true, readbackPath: '/bridge/jlceda/schematic/review',
+    attachTaskResponder(currentPageDeleteFresh.socket, 'current-page-delete-fresh', message => message.path === '/bridge/jlceda/schematic/read'
+      ? {
+          ok: true, pageUuid: 'page-a',
+          schematicCircuitSnapshot: JSON.stringify({ componentCount: 0, networkCount: 0, components: [], networks: [] }),
+          connectivityPrimitivesSnapshot: JSON.stringify({
+            scope: 'current_schematic_page', complete: true, pageUuid: 'page-a',
+            wireCount: 0, wires: [], netPortCount: 0, netPorts: [], netFlagCount: 0, netFlags: [], netLabelCount: 0, netLabels: [],
+          }),
+        }
+      : { currentDocumentInfo: { uuid: 'page-a', parentProjectUuid: 'current-page-project' }, currentProjectInfo: { uuid: 'current-page-project' }, currentSchematicPageInfo: { uuid: 'page-a' } });
+    const currentPageReadback = {
+      action: 'readback', confirm: true, recoveryId: currentPageRecovery.recoveryId,
+      clientId: 'current-page-delete-fresh', hostRestartConfirmed: true, readbackPath: '/bridge/jlceda/schematic/read',
+      readbackPayload: { includeConnectivityPrimitives: true },
     };
-    await assert.rejects(crossPageDeleteServer.request('/bridge/admin/recover-client', {
-      ...crossPageReadback, readbackPath: '/bridge/jlceda/context',
-    }, 2000), /requires schematic_review of the whole project/);
-    assert.equal((await crossPageDeleteServer.request('/bridge/admin/recover-client', crossPageReadback, 2000)).readbackVerified, true);
+    await assert.rejects(currentPageDeleteServer.request('/bridge/admin/recover-client', {
+      ...currentPageReadback, readbackPath: '/bridge/jlceda/context',
+    }, 2000), /requires schematic_read with includeConnectivityPrimitives=true/);
+    await assert.rejects(currentPageDeleteServer.request('/bridge/admin/recover-client', {
+      ...currentPageReadback, expectedPageUuid: 'page-b',
+    }, 2000), /expectedPageUuid does not match/);
+    assert.equal((await currentPageDeleteServer.request('/bridge/admin/recover-client', currentPageReadback, 2000)).readbackVerified, true);
   } finally {
-    crossPageDeleteOld?.socket.close();
-    crossPageDeleteFresh?.socket.close();
-    crossPageDeleteServer.close();
+    currentPageDeleteOld?.socket.close();
+    currentPageDeleteFresh?.socket.close();
+    currentPageDeleteServer.close();
   }
 
   const placementCheckPort = await reservePort();
@@ -2094,12 +2105,13 @@ try {
       const snapshot = { ok: true, action: 'read', scope: 'current_schematic_page', complete: true,
         pageUuid: 'component-page', componentCount: 1, components: [component] };
       let readback = snapshot;
+      let expectedLongReadback = false;
       attachTaskResponder(freshClient.socket, `component-edit-${editAction}-fresh`, message => {
         if (message.path === '/bridge/jlceda/context')
           return { currentDocumentInfo: { uuid: 'component-document', parentProjectUuid: 'component-project' },
             currentProjectInfo: { uuid: 'component-project' }, currentSchematicPageInfo: { uuid: 'component-page' } };
         assert.equal(message.path, '/bridge/jlceda/schematic/component-edit');
-        assert.deepEqual(message.payload, { action: 'read' });
+        assert.deepEqual(message.payload, expectedLongReadback ? { action: 'read', timeoutMs: 39000 } : { action: 'read' });
         return readback;
       });
       const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
@@ -2118,7 +2130,8 @@ try {
       readback = { ...snapshot, components: [{ ...component, x: null }] };
       await assert.rejects(editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /component state readback was incomplete/);
       readback = snapshot;
-      const verified = await editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+      expectedLongReadback = true;
+      const verified = await editServer.request('/bridge/admin/recover-client', recoveryReadback, 40000);
       assert.equal(verified.readbackVerified, true);
       assert.deepEqual(verified.readback.components, [component]);
       assert.equal(verified.writesRemainBlocked, false);

@@ -43,7 +43,7 @@ function singlePolygonSource(value: unknown): PolygonSource {
 	if (!Array.isArray(value) || value.length === 0 || value.some(item =>
 		!(typeof item === 'number' && Number.isFinite(item))
 		&& !(typeof item === 'string' && POLYGON_COMMANDS.has(item)))) {
-		throw new TypeError('polygonSource must contain non-empty polygon source arrays.');
+		throw new TypeError('polygonSource must be a non-empty single-polygon array of finite numbers and official polygon commands.');
 	}
 	return preserveBoundedArray([...value] as PolygonSource);
 }
@@ -141,7 +141,7 @@ function requestedProperty(value: unknown): Record<string, unknown> {
 			result.layer = regionLayer(item);
 		}
 		else if (field === 'polygonSource') {
-			result.polygonSource = polygonSource(item);
+			result.polygonSource = singlePolygonSource(item);
 		}
 		else if (field === 'ruleType') {
 			result.ruleType = ruleTypes(item);
@@ -174,18 +174,14 @@ function createProperty(payload: Record<string, unknown>): Record<string, unknow
 	}
 	if ((requested.ruleType as number[]).length === 0)
 		throw new TypeError('ruleType must contain at least one rule for PCB region creation.');
-	if (Array.isArray((requested.polygonSource as RegionPolygonSource)[0]))
-		throw new TypeError('PCB region creation requires a single polygon source; complex geometry can be set on an existing region.');
 	return requested;
 }
 
-function createPolygon(runtime: Record<string, unknown>, source: RegionPolygonSource): unknown {
-	const complex = Array.isArray(source[0]);
-	const method = complex ? 'createComplexPolygon' : 'createPolygon';
-	const mathApi = api(runtime, 'pcb_MathPolygon', [method]);
-	const polygon = (mathApi[method] as (source: RegionPolygonSource) => unknown).call(mathApi, source);
+function createPolygon(runtime: Record<string, unknown>, source: PolygonSource): unknown {
+	const mathApi = api(runtime, 'pcb_MathPolygon', ['createPolygon']);
+	const polygon = (mathApi.createPolygon as (source: PolygonSource) => unknown).call(mathApi, source);
 	if (polygon == null)
-		throw new TypeError(`EDA pcb_MathPolygon.${method} rejected polygonSource.`);
+		throw new TypeError('EDA pcb_MathPolygon.createPolygon rejected polygonSource.');
 	return polygon;
 }
 
@@ -267,20 +263,19 @@ export async function handlePcbRegionManageTask(payload: unknown): Promise<unkno
 	await verifyLayer(runtime, regionLayer(requested?.layer ?? before!.layer));
 	const nativeProperty = requested === undefined ? undefined : { ...requested };
 	if (nativeProperty?.polygonSource) {
-		nativeProperty.complexPolygon = createPolygon(runtime, nativeProperty.polygonSource as RegionPolygonSource);
+		nativeProperty.complexPolygon = createPolygon(runtime, nativeProperty.polygonSource as PolygonSource);
 		delete nativeProperty.polygonSource;
 	}
 	await assertSamePage(runtime, currentPage);
-	let nativeResult: unknown;
 	try {
 		if (action === 'create') {
-			nativeResult = await (regionApi.create as (...args: unknown[]) => Promise<unknown>).call(regionApi, requested!.layer, nativeProperty!.complexPolygon, requested!.ruleType, requested!.regionName, requested!.lineWidth, requested!.primitiveLock);
+			await (regionApi.create as (...args: unknown[]) => Promise<unknown>).call(regionApi, requested!.layer, nativeProperty!.complexPolygon, requested!.ruleType, requested!.regionName, requested!.lineWidth, requested!.primitiveLock);
 		}
 		else if (action === 'modify') {
-			nativeResult = await (regionApi.modify as (...args: unknown[]) => Promise<unknown>).call(regionApi, primitiveId, nativeProperty);
+			await (regionApi.modify as (...args: unknown[]) => Promise<unknown>).call(regionApi, primitiveId, nativeProperty);
 		}
 		else {
-			nativeResult = await (regionApi.delete as (...args: unknown[]) => Promise<unknown>).call(regionApi, primitiveId);
+			await (regionApi.delete as (...args: unknown[]) => Promise<unknown>).call(regionApi, primitiveId);
 		}
 	}
 	catch (error: unknown) {
@@ -291,10 +286,28 @@ export async function handlePcbRegionManageTask(payload: unknown): Promise<unkno
 		if (action === 'create') {
 			const all = await getAll(runtime, currentPage);
 			const added = all.filter(item => !beforeIds!.includes(item.primitiveId));
-			const returnedId = nativeResult == null ? undefined : requiredId(readState(nativeResult, 'getState_PrimitiveId'), 'EDA created primitiveId');
-			const created = returnedId ? added.find(item => item.primitiveId === returnedId) : added.length === 1 ? added[0] : undefined;
-			if (!created || added.length !== 1 || !matchesRequested(created, requested!))
-				throw new Error('EDA did not read back exactly one matching new PCB region.');
+			if (added.length === 0)
+				return { ok: false, action, scope: SCOPE, pageUuid: currentPage, reason: 'native_create_no_effect', applied: false, verified: false, nativeCallSettled: true };
+			if (added.length !== 1)
+				throw new Error('EDA read back multiple new PCB regions after one creation request.');
+			const created = added[0];
+			const requestedMismatches = Object.entries(requested!).filter(([field, expected]) =>
+				!matchesRequested(created, { [field]: expected })).map(([field, expected]) => ({ field, expected, actual: created[field as keyof RegionState] }));
+			if (requestedMismatches.length) {
+				return {
+					ok: false,
+					action,
+					scope: SCOPE,
+					pageUuid: currentPage,
+					primitiveId: created.primitiveId,
+					reason: 'create_readback_mismatch',
+					applied: true,
+					verified: false,
+					before: null,
+					after: created,
+					requestedMismatches,
+				};
+			}
 			return { ok: true, action, scope: SCOPE, pageUuid: currentPage, primitiveId: created.primitiveId, region: created, verified: true };
 		}
 		const observed = await getOne(runtime, primitiveId!, currentPage);

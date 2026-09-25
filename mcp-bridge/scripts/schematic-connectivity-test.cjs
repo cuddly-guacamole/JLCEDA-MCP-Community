@@ -68,6 +68,7 @@ async function main() {
 	let wireCreates = 0;
 	let portCreates = 0;
 	let createdPortReadbackDeltaY = 0;
+	let drcChecks = 0;
 	globalThis.eda = {
 		dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: pageUuid }; } },
 		dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: editorPageOverride ?? pageUuid }; } },
@@ -76,6 +77,7 @@ async function main() {
 				wireReads += 1;
 				return wires;
 			},
+			async getAllPrimitiveId() { return wires.map(item => item.getState_PrimitiveId()); },
 			async create(line, net) {
 				wireCreates += 1;
 				const created = wire(`wire-${wireCreates}`, net ?? '', line);
@@ -104,7 +106,12 @@ async function main() {
 		sch_PrimitiveAttribute: {
 			async getAll() { return attributes; },
 		},
-		sch_Drc: { async check() { return true; } },
+		sch_Drc: {
+			async check() {
+				drcChecks += 1;
+				return true;
+			},
+		},
 	};
 
 	const oversizedLine = Array.from({ length: 257 }, (_, index) => [index, 0]).flat();
@@ -176,11 +183,30 @@ async function main() {
 	assert.deepEqual(merged.changedWireIds, ['wire-a']);
 	globalThis.eda.sch_PrimitiveWire.create = originalCreate;
 
+	const drcChecksBeforeMove = drcChecks;
 	const moved = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-a', x: 25, y: 0 });
 	assert.equal(moved.ok, true);
 	assert.deepEqual(moved.observed, { x: 25, y: 0, net: 'NET_A' });
 	assert.equal(moved.netlistReadback.available, true);
 	assert.equal(ports[0].id, 'port-a');
+	assert.equal(drcChecks, drcChecksBeforeMove + 1, 'moving a port only needs one full semantic scan after the write');
+
+	// A successful native move with an unavailable semantic readback must not
+	// claim a verified result; the write may have changed the connected netlist.
+	const originalMoveGetAll = globalThis.eda.sch_PrimitiveComponent.getAll;
+	globalThis.eda.sch_PrimitiveComponent.getAll = async function (type, allPages) {
+		if (type === undefined && ports[0].x === 35)
+			return undefined;
+		return originalMoveGetAll.call(this, type, allPages);
+	};
+	const movedWithoutNetlist = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-a', x: 35, y: 0 });
+	assert.equal(ports[0].x, 35);
+	assert.equal(movedWithoutNetlist.ok, false);
+	assert.equal(movedWithoutNetlist.reason, 'post_write_readback_failed');
+	assert.equal(movedWithoutNetlist.commitUnknown, true);
+	assert.equal(movedWithoutNetlist.nativeCallSettled, true);
+	assert.match(movedWithoutNetlist.error, /Cannot verify the NetPort network after move/);
+	globalThis.eda.sch_PrimitiveComponent.getAll = originalMoveGetAll;
 
 	const conflict = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_B', x: 50, y: 0 });
 	assert.equal(conflict.ok, false);
@@ -610,12 +636,12 @@ async function main() {
 	const cachedPort = { id: 'cached-old-page-port', net: 'NET_A', x: 0, y: 0 };
 	ports.splice(0, ports.length, cachedPort);
 	assert.equal((await handleSchematicReadTask({})).ok, true);
+	const originalCurrentComponentIds = globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId;
 	pageUuid = 'page-2';
-	const originalGetAllPrimitiveId = componentApi.getAllPrimitiveId;
 	componentApi.getAllPrimitiveId = async () => ['new-page-port'];
 	await assert.rejects(route({ action: 'netport_move', id: cachedPort.id, x: 20, y: 0 }), /器件列表与图元 ID 列表不一致/);
 	assert.equal(cachedPort.x, 0);
-	componentApi.getAllPrimitiveId = originalGetAllPrimitiveId;
+	componentApi.getAllPrimitiveId = originalCurrentComponentIds;
 	pageUuid = 'page-1';
 }
 

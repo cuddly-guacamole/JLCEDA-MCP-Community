@@ -127,7 +127,7 @@ async function main() {
 			},
 		},
 		dmt_Pcb: {
-			async getCurrentPcbInfo() { return { uuid: 'pcb-1' }; },
+			async getCurrentPcbInfo() { return { uuid: 'pcb-1', parentBoardName: 'Board1_1' }; },
 			async getAllPcbsInfo() { return [{ uuid: 'pcb-1', name: 'Main PCB' }, { uuid: 'pcb-2', name: 'Auxiliary PCB' }]; },
 		},
 		pcb_Net: {
@@ -966,12 +966,19 @@ async function main() {
 
 	const project = await handleProjectInfoTask({ includePages: true });
 	assert.equal(project.project.name, '2026');
-	assert.equal(project.schematicPages.total, 2);
-	assert.equal(project.schematicPages.returned, 2);
+	assert.equal(project.schematicPages.total, 3);
+	assert.equal(project.schematicPages.returned, 3);
 	assert.equal(project.schematicPages.truncated, false);
-	assert.equal(project.schematicPages.items.length, 2);
+	assert.equal(project.schematicPages.items.length, 3);
+	assert.equal(project.schematicPages.items[2].parentSchematicUuid, 'sch-2');
+	const currentSchematicPages = globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo;
+	globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo = async () => {
+		throw new Error('No active schematic on PCB page');
+	};
+	assert.equal((await handleProjectInfoTask({ includePages: true })).schematicPages.total, 3);
+	globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo = currentSchematicPages;
 	const limitedPages = await handleProjectInfoTask({ includePages: true, limit: 1 });
-	assert.equal(limitedPages.schematicPages.total, 2);
+	assert.equal(limitedPages.schematicPages.total, 3);
 	assert.equal(limitedPages.schematicPages.returned, 1);
 	assert.equal(limitedPages.schematicPages.truncated, true);
 	const projectInventory = await handleProjectInfoTask({ includePages: false, includeSchematics: true, includePcbs: true, includeBoards: true, includePanels: true, limit: 2 });
@@ -1078,6 +1085,36 @@ async function main() {
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing' }), /routingType is required/);
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection' }), /confirm must be true/);
 	assert.equal((await handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection', confirm: true })).cleared, true);
+	const linkedPcbInfo = globalThis.eda.dmt_Pcb.getCurrentPcbInfo;
+	const originalCurrentDocumentInfo = globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo;
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'pcb-1', parentProjectUuid: 'project-1' });
+	const nativeImportChanges = globalThis.eda.pcb_Document.importChanges;
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'pcb-previous', parentProjectUuid: 'project-1' });
+	globalThis.eda.pcb_Document.importChanges = async () => {
+		throw new Error('Native import must not run before the PCB page identity settles.');
+	};
+	const stalePcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(stalePcbImport.reason, 'pcb_page_not_ready');
+	assert.equal(stalePcbImport.commitState, 'not_started');
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'pcb-1', parentProjectUuid: 'project-1' });
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => ({ uuid: 'pcb-1' });
+	globalThis.eda.pcb_Document.importChanges = async () => {
+		throw new Error('Native import must not run for an unlinked PCB.');
+	};
+	const unlinkedPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(unlinkedPcbImport.ok, false);
+	assert.equal(unlinkedPcbImport.reason, 'pcb_not_associated_with_board');
+	assert.equal(unlinkedPcbImport.commitState, 'not_started');
+	assert.equal(unlinkedPcbImport.requiresNativeConfirmation, false);
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => {
+		throw new Error('PCB metadata unavailable');
+	};
+	const unavailablePcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(unavailablePcbImport.reason, 'pcb_identity_unavailable');
+	assert.equal(unavailablePcbImport.commitState, 'not_started');
+	assert.equal(unavailablePcbImport.requiresNativeConfirmation, false);
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = linkedPcbInfo;
+	globalThis.eda.pcb_Document.importChanges = nativeImportChanges;
 	const pendingPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
 	assert.equal(pendingPcbImport.imported, true);
 	assert.equal(pendingPcbImport.commitState, 'pending_confirmation');
@@ -1111,6 +1148,7 @@ async function main() {
 	const rejectedPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
 	assert.equal(rejectedPcbImport.ok, false);
 	assert.equal(rejectedPcbImport.commitState, 'not_started');
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = originalCurrentDocumentInfo;
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_json', dataBase64: 'e30=' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_ses', dataBase64: 'e30=' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_layout_json', dataBase64: 'e30=' })).ok, false);

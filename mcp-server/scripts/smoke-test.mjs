@@ -115,12 +115,15 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
     assert.ok(confirmSchemas.some((schema) => schema.const === true), 'bridge_recover_client must require confirm=true');
+    const recoveryTimeoutSchemas = findPropertySchemas(recoverTool.inputSchema, 'timeoutMs');
+    assert.ok(recoveryTimeoutSchemas.some((schema) => schema.minimum === 5000 && schema.maximum === 120000), 'bridge_recover_client must advertise its extended readback budget');
     const readbackPayloadSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPayload');
     assert.ok(readbackPayloadSchemas.some((schema) => JSON.stringify(schema.default) === '{}'), 'bridge_recover_client must publish the empty readbackPayload default');
     const readbackPathSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPath');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/api/invoke')), 'bridge_recover_client must allow current-page API readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/schematic/component-edit')), 'bridge_recover_client must publish schematic component state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/component-edit')), 'bridge_recover_client must publish PCB component state readback');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/documents-manage')), 'bridge_recover_client must publish PCB document inventory readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/pour-manage')), 'bridge_recover_client must publish PCB pour state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/region-manage')), 'bridge_recover_client must publish PCB region state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/text-manage')), 'bridge_recover_client must publish PCB text state readback');
@@ -141,7 +144,7 @@ async function testProtocolVersion(protocolVersion) {
       params: {
         ...(modern ? params : {}),
         name: 'bridge_recover_client',
-        arguments: { action: 'readback', confirm: true, recoveryId: 'smoke-recovery', clientId: 'smoke-client',
+        arguments: { action: 'readback', confirm: true, timeoutMs: 120000, recoveryId: 'smoke-recovery', clientId: 'smoke-client',
           readbackPath: '/bridge/jlceda/schematic/component-edit', readbackPayload: { action: 'read' } },
       },
     }) + '\n');
@@ -164,6 +167,21 @@ async function testProtocolVersion(protocolVersion) {
     const pcbCallResponse = JSON.parse(pcbCallLine);
     assert.equal(pcbCallResponse.id, 4);
     assert.match(JSON.stringify(pcbCallResponse), /No Bridge recovery is awaiting readback/);
+
+    const documentCallLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 40, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'bridge_recover_client',
+        arguments: { action: 'readback', confirm: true, recoveryId: 'smoke-document-recovery', clientId: 'smoke-document-client',
+          readbackPath: '/bridge/jlceda/pcb/documents-manage', readbackPayload: { operation: 'list', projectUuid: 'smoke-project' } },
+      },
+    }) + '\n');
+    const [documentCallLine] = await Promise.race([documentCallLinePromise, lineTimeout]);
+    const documentCallResponse = JSON.parse(documentCallLine);
+    assert.equal(documentCallResponse.id, 40);
+    assert.match(JSON.stringify(documentCallResponse), /No Bridge recovery is awaiting readback/);
 
     const invalidCallLinePromise = once(lines, 'line');
     child.stdin.write(JSON.stringify({

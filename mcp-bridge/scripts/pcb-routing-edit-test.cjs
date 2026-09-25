@@ -118,6 +118,7 @@ async function main() {
 	const missing = await handlePcbRoutingEditTask({ action: 'read', kind: 'arc', primitiveId: 'missing' });
 	assert.equal(missing.found, false);
 	assert.equal(missing.primitive, null);
+	assert.equal(missing.reason, 'not_found');
 	const outline = await handlePcbRoutingEditTask({ action: 'read', kind: 'line', primitiveId: 'outline-line' });
 	assert.equal(outline.found, false, 'board outline must not be reported as copper routing');
 	assert.equal((await handlePcbRoutingEditTask({ action: 'read', kind: 'arc', primitiveId: 'silkscreen-arc' })).found, false);
@@ -162,6 +163,13 @@ async function main() {
 		assert.equal(deleted.ok, true, `${kind} delete`);
 		assert.equal(deleted.deleted, true);
 		assert.equal(states[kind].has(primitiveId), false);
+		if (kind === 'arc' || kind === 'polyline') {
+			const missingAfterDelete = await handlePcbRoutingEditTask({ action: 'read', kind, primitiveId });
+			assert.equal(missingAfterDelete.ok, true);
+			assert.equal(missingAfterDelete.found, false, `${kind} read after delete`);
+			assert.equal(missingAfterDelete.primitive, null);
+			assert.equal(missingAfterDelete.reason, 'not_found');
+		}
 		primitiveApi.get = originalGet;
 	}
 	const originalArcDelete = globalThis.eda.pcb_PrimitiveArc.delete;

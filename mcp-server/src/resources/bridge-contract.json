@@ -173,7 +173,8 @@
 		{
 			"toolName": "bridge_recover_client",
 			"path": "/bridge/admin/recover-client",
-			"owner": "server"
+			"owner": "server",
+			"timeoutPolicy": "extended-read"
 		},
 		{
 			"toolName": "api_index",
@@ -227,7 +228,7 @@
 			"toolName": "schematic_read",
 			"path": "/bridge/jlceda/schematic/read",
 			"owner": "bridge",
-			"timeoutPolicy": "default",
+			"timeoutPolicy": "extended-read",
 			"readOnly": true
 		},
 		{
@@ -497,6 +498,12 @@
 			"path": "/bridge/jlceda/schematic/pages-manage",
 			"owner": "bridge",
 			"timeoutPolicy": "default"
+		},
+		{
+			"toolName": "editor_navigate",
+			"path": "/bridge/jlceda/editor/navigate",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read"
 		},
 		{
 			"toolName": "pcb_documents_manage",

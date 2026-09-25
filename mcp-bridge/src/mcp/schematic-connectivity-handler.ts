@@ -436,7 +436,9 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		throw new Error(`Current schematic page does not contain primitive ${id}.`);
 	if (current.type !== 'netport')
 		throw new TypeError(`Primitive ${id} is ${current.type || 'unknown'}, not a NetPort.`);
-	const pageReadback = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	// Page identity needs the complete primitive inventory, not a second full
+	// semantic netlist scan before the native move.
+	const pageReadback = await handleSchematicReadTask({ includeConnectivityPrimitives: true, internalConnectivityOnly: true });
 	if (!isPlainObjectRecord(pageReadback) || pageReadback.ok !== true || pageReadback.pageUuid !== pageUuid
 		|| typeof pageReadback.connectivityPrimitivesSnapshot !== 'string') {
 		throw new Error(`Cannot verify the NetPort's current page: ${isPlainObjectRecord(pageReadback) ? String(pageReadback.error ?? 'schematic_read failed') : 'schematic_read failed'}`);
@@ -452,7 +454,7 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 	if (samePoint(current, target)) {
 		const netlistReadback = await readTargetNetwork(current.net);
 		await assertSameSchematicPage(eda, pageUuid);
-		return { ok: true, action: 'netport_move', pageUuid, id, net: current.net, from: { x: current.x, y: current.y }, to: target, unchanged: true, netlistReadback, semanticScope: 'current_schematic_page_hierarchical_port' };
+		return { ok: netlistReadback.available, action: 'netport_move', pageUuid, id, net: current.net, from: { x: current.x, y: current.y }, to: target, unchanged: true, ...(!netlistReadback.available ? { reason: 'semantic_readback_unavailable' } : {}), netlistReadback, semanticScope: 'current_schematic_page_hierarchical_port' };
 	}
 	const otherPort = components.find(component => component.id !== id && (component.type === 'netport' || component.type === 'netflag') && samePoint(component, target) && component.net !== current.net);
 	const wires = await readWires(wireApi(eda));
@@ -485,6 +487,8 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		const verified = Boolean(observed && samePoint(observed, target) && observed.net === current.net && observed.type === 'netport');
 		const netlistReadback = await readTargetNetwork(current.net);
 		await assertSameSchematicPage(eda, pageUuid);
+		if (!netlistReadback.available)
+			throw new Error(`Cannot verify the NetPort network after move: ${netlistReadback.error}`);
 		return {
 			ok: verified,
 			action: 'netport_move',
@@ -505,7 +509,7 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 	}
 }
 
-async function readTargetNetwork(net: string): Promise<unknown> {
+async function readTargetNetwork(net: string): Promise<{ available: boolean; error?: string; found?: boolean; connectedPinRefs?: unknown[] }> {
 	try {
 		const response = await handleSchematicReadTask({});
 		if (!isPlainObjectRecord(response) || response.ok !== true || typeof response.schematicCircuitSnapshot !== 'string')

@@ -123,6 +123,34 @@ async function main() {
 	await assert.rejects(() => handleSchematicTextManageTask({ action: 'delete', primitiveId: 'text-0' }), /list changed/);
 	assert.equal(writes, beforeStaleWrite);
 	native.getAllPrimitiveId = originalGetAllPrimitiveId;
+	const sourceTexts = new Map([['shared-text', state('shared-text')]]);
+	const copiedTexts = new Map([['shared-text', state('shared-text')]]);
+	native.getAll = async () => [...(page === 'copied-page' ? copiedTexts : sourceTexts).values()].map(primitive);
+	native.getAllPrimitiveId = async () => [...(page === 'copied-page' ? copiedTexts : sourceTexts).keys()];
+	native.delete = async (id) => {
+		writes += 1;
+		(page === 'copied-page' ? copiedTexts : sourceTexts).delete(id);
+		return false;
+	};
+	page = 'source-page';
+	document = page;
+	assert.equal((await handleSchematicTextManageTask({ action: 'read' })).textCount, 1);
+	page = 'copied-page';
+	document = page;
+	assert.equal((await handleSchematicTextManageTask({ action: 'read' })).textCount, 1, 'copied-page text may reuse its source ID');
+	const copiedDelete = await handleSchematicTextManageTask({ action: 'delete', primitiveId: 'shared-text' });
+	assert.equal(copiedDelete.verified, true, 'current-page readback confirms deletion even when native result is false');
+	assert.equal(sourceTexts.has('shared-text'), true, 'source page text remains intact');
+	assert.equal(copiedTexts.has('shared-text'), false);
+	page = 'source-page';
+	document = page;
+	const originalCopiedGetAll = native.getAll;
+	const originalCopiedGetAllIds = native.getAllPrimitiveId;
+	native.getAll = async () => [primitive(state('shared-text')), primitive(state('shared-text'))];
+	native.getAllPrimitiveId = async () => ['shared-text', 'different-text'];
+	await assert.rejects(() => handleSchematicTextManageTask({ action: 'read' }), /list changed/);
+	native.getAll = originalCopiedGetAll;
+	native.getAllPrimitiveId = originalCopiedGetAllIds;
 	console.log('schematic_text_manage handler tests passed');
 }
 
