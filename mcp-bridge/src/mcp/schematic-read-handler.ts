@@ -44,6 +44,8 @@ interface ConnectivityPrimitiveSnapshot {
 	wires: Array<{ primitiveId: string; net: string; line: unknown }>;
 	netPortCount: number;
 	netPorts: Array<{ primitiveId: string; net: string; x: number; y: number }>;
+	netFlagCount: number;
+	netFlags: Array<{ primitiveId: string; net: string; x: number; y: number }>;
 	netLabelCount: number;
 	netLabels: Array<{ primitiveId: string; parentWireId: string; net: string; x: number | null; y: number | null }>;
 }
@@ -58,8 +60,9 @@ async function readCurrentPageUuid(): Promise<string> {
 async function readConnectivityPrimitives(pageUuid: string): Promise<ConnectivityPrimitiveSnapshot> {
 	const rawWires = await eda.sch_PrimitiveWire.getAll();
 	const rawNetPorts = await eda.sch_PrimitiveComponent.getAll('netport' as ESCH_PrimitiveComponentType, false);
+	const rawNetFlags = await eda.sch_PrimitiveComponent.getAll('netflag' as ESCH_PrimitiveComponentType, false);
 	const rawAttributes = await eda.sch_PrimitiveAttribute.getAll();
-	if (!Array.isArray(rawWires) || !Array.isArray(rawNetPorts) || !Array.isArray(rawAttributes))
+	if (!Array.isArray(rawWires) || !Array.isArray(rawNetPorts) || !Array.isArray(rawNetFlags) || !Array.isArray(rawAttributes))
 		throw new Error('原理图连接图元回读不完整：导线、器件或网络属性列表不是数组。');
 	const wires = rawWires.map((wire) => {
 		const primitiveId = requiredState<string>(wire, 'getState_PrimitiveId');
@@ -81,6 +84,17 @@ async function readConnectivityPrimitives(pageUuid: string): Promise<Connectivit
 		if (typeof primitiveId !== 'string' || !primitiveId.trim() || typeof net !== 'string' || !net.trim()
 			|| !Number.isFinite(x) || !Number.isFinite(y)) {
 			throw new Error('原理图连接图元回读不完整：NetPort ID 或坐标缺失。');
+		}
+		return { primitiveId, net, x, y };
+	});
+	const netFlags = rawNetFlags.map((component) => {
+		const primitiveId = requiredState<string>(component, 'getState_PrimitiveId');
+		const net = requiredState<string>(component, 'getState_Net');
+		const x = requiredState<number>(component, 'getState_X');
+		const y = requiredState<number>(component, 'getState_Y');
+		if (typeof primitiveId !== 'string' || !primitiveId.trim() || typeof net !== 'string' || !net.trim()
+			|| !Number.isFinite(x) || !Number.isFinite(y)) {
+			throw new Error('原理图连接图元回读不完整：NetFlag ID、网络或坐标缺失。');
 		}
 		return { primitiveId, net, x, y };
 	});
@@ -106,6 +120,8 @@ async function readConnectivityPrimitives(pageUuid: string): Promise<Connectivit
 		wires,
 		netPortCount: netPorts.length,
 		netPorts,
+		netFlagCount: netFlags.length,
+		netFlags,
 		netLabelCount: netLabels.length,
 		netLabels,
 	};

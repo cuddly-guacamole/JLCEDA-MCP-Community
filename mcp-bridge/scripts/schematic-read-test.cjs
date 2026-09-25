@@ -48,6 +48,13 @@ async function main() {
 		getState_X: () => portX,
 		getState_Y: () => 0,
 	};
+	const netFlag = {
+		getState_PrimitiveId: () => 'net-flag',
+		getState_Designator: () => '',
+		getState_Net: () => 'PWR',
+		getState_X: () => 20,
+		getState_Y: () => 30,
+	};
 	const device = {
 		getState_PrimitiveId: () => 'device',
 		getState_Designator: () => 'U1',
@@ -119,7 +126,7 @@ async function main() {
 				getState_X: () => 0,
 				getState_Y: () => 0,
 			}]
-		: [netPort, device];
+		: type === 'netflag' ? [netFlag] : [netPort, device, netFlag];
 	globalThis.eda.sch_PrimitiveAttribute = {
 		async getAll() {
 			return [label];
@@ -134,6 +141,8 @@ async function main() {
 	assert.equal(primitiveSnapshot.wires.length, 121);
 	assert.deepEqual(primitiveSnapshot.wires[120].line, [2400, 0, 2410, 0]);
 	assert.deepEqual(primitiveSnapshot.netPorts, [{ primitiveId: 'net-port', net: 'SIG', x: 0, y: 0 }]);
+	assert.equal(primitiveSnapshot.netFlagCount, 1);
+	assert.deepEqual(primitiveSnapshot.netFlags, [{ primitiveId: 'net-flag', net: 'PWR', x: 20, y: 30 }]);
 	assert.deepEqual(primitiveSnapshot.netLabels, [{ primitiveId: 'label-1', parentWireId: 'wire-0', net: 'SIG', x: 5, y: 0 }]);
 	assert.equal(primitiveSnapshot.wires[1].net, '', 'unnamed wires may return undefined net');
 	assert.equal(completeReadback.schematicCircuitSnapshot !== undefined, true);
@@ -145,7 +154,7 @@ async function main() {
 				getState_X: () => 0,
 				getState_Y: () => 0,
 			}]
-		: [netPort, device];
+		: type === 'netflag' ? [netFlag] : [netPort, device, netFlag];
 	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'NetPort network must be readable');
 	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
 		? [{
@@ -154,7 +163,14 @@ async function main() {
 				getState_X: () => 0,
 				getState_Y: () => 0,
 			}]
-		: [netPort, device];
+		: type === 'netflag' ? [netFlag] : [netPort, device, netFlag];
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netflag'
+		? [{ ...netFlag, getState_Net: () => undefined }]
+		: type === 'netport' ? [netPort] : [netPort, device, netFlag];
+	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'NetFlag network must be readable');
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
+		? [netPort]
+		: type === 'netflag' ? [netFlag] : [netPort, device, netFlag];
 	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = (() => {
 		let calls = 0;
 		return async () => ({ uuid: ++calls === 1 ? 'P2' : 'P3' });
