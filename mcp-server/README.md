@@ -8,9 +8,9 @@
 
 `component_select` 的关键词与精确属性搜索、`design_compare` 的网表/原理图/PCB 比较现在都能通过 Server 的输入校验并进入 Bridge。
 
-`component_place` 等待用户按 Esc 或右键退出当前放置模式后才启动下一件，并透传新增图元 ID 和已有器件位号变化；重复放置、失联或超时后停止当前批次，不自动重试未知是否已提交的放置操作。
+`component_place` 等待用户按 Esc 或右键退出当前放置模式后才启动下一件；完全重叠的重复图元经核对后清理，并透传新增与清理的图元 ID。已有器件位号被 EDA 改动时，会保留 BOM 属性并尝试恢复原位号，结果列于 `restoredDesignators`；未恢复、失联或超时则停止批次，不自动重试未知是否已提交的操作。
 
-`component_place_auto` 按坐标逐件创建；若 EDA 改变已有器件或本批次此前放置器件的位号，则停止后续放置，返回变化记录及已放置器件的当前位号。
+`component_place_auto` 按坐标逐件创建；若 EDA 改变已有器件或本批次此前放置器件的位号，会保留 BOM 属性并尝试一次恢复。恢复失败时停止后续放置，返回位号变化及已放置器件的当前位号。
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
@@ -42,7 +42,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 
-`component_place` 的检查若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`/`schematicComponentCount`，不能只用 `/context` 或网表解除隔离。
+`component_place` 检查或 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID 与位号）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。
 
 Server 提供 `schematic_document_action`，用于受限地检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置，并执行视图导航、图元选择、属性读取、保存和变更导入。
 

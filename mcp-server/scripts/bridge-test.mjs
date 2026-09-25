@@ -1724,6 +1724,7 @@ try {
     });
     let reportedPageUuid = 'other-page';
     let reportedComponentCount = 1;
+    let includeComponentProperties = true;
     let switchPageAfterInventory = false;
     attachTaskResponder(placementCheckFresh.socket, 'placement-check-fresh', message => {
       if (message.path === '/bridge/jlceda/context')
@@ -1733,8 +1734,12 @@ try {
         assert.equal(message.payload.includeCompleteSchematicComponentIds, true);
         if (switchPageAfterInventory) reportedPageUuid = 'other-page';
         return { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
-          schematicComponentIds: ['kept'], schematicComponentCount: reportedComponentCount };
+          schematicComponentIds: ['kept'], schematicComponentCount: reportedComponentCount,
+          schematicComponentStates: [{ primitiveId: 'kept', designator: 'U4',
+            ...(includeComponentProperties ? { otherPropertyJson: '{"supplierId":"C1"}' } : {}) }] };
       }
+      if (message.path === '/bridge/jlceda/component/place-auto')
+        return { ok: false, commitUnknown: true, nativeCallSettled: false };
       return { ok: true };
     });
     const placementReadback = { action: 'readback', confirm: true, recoveryId: placementRecovery.recoveryId,
@@ -1742,12 +1747,15 @@ try {
       readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] } };
     await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', {
       ...placementReadback, readbackPath: '/bridge/jlceda/context', readbackPayload: {},
-    }, 2000), /placement cleanup requires current-page/);
+    }, 2000), /placement requires current-page/);
     await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /Schematic document or page identity changed/);
     reportedPageUuid = 'placement-page';
     reportedComponentCount = 2;
-    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /component ID readback was incomplete/);
+    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /component state readback was incomplete/);
     reportedComponentCount = 1;
+    includeComponentProperties = false;
+    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /component state readback was incomplete/);
+    includeComponentProperties = true;
     switchPageAfterInventory = true;
     await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /Readback pageUuid does not match/);
     reportedPageUuid = 'placement-page';
@@ -1755,7 +1763,13 @@ try {
     const verified = await placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000);
     assert.equal(verified.readbackVerified, true);
     assert.deepEqual(verified.readback.schematicComponentIds, ['kept']);
+    assert.deepEqual(verified.readback.schematicComponentStates, [{ primitiveId: 'kept', designator: 'U4', otherPropertyJson: '{"supplierId":"C1"}' }]);
     assert.equal((await placementCheckServer.request('/bridge/jlceda/component/place/check', { sessionId: 'placement-2' }, 2000)).ok, true);
+    assert.equal((await placementCheckServer.request('/bridge/jlceda/component/place-auto', { components: [] }, 2000)).commitUnknown, true);
+    const autoPlacementDiagnostic = (await placementCheckServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'placement-check-fresh').quarantine.diagnostics[0];
+    assert.equal(autoPlacementDiagnostic.requiredReadback, 'schematic_component_ids');
+    assert.equal(autoPlacementDiagnostic.hostRestartRequired, true);
   } finally {
     placementCheckOld?.socket.close();
     placementCheckFresh?.socket.close();

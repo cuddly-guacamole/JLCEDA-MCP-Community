@@ -32,7 +32,7 @@
   },
   {
     "name": "bridge_recover_client",
-    "description": "处理 EDA 写操作超时、执行中失联、提交未确认状态及 PCB 导入待确认状态。先从 bridge_clients 取得 requestId，以 action=recover、confirm=true 建立恢复会话；PCB 布线诊断含 hostRestartRequired:true 时须重启宿主。等待原 Bridge 断开及恢复会话后的全新 clientId，就原文档和图页只读回读并以 action=readback 完成。原客户端和先前已连接客户端的普通重连不能用于回读；交互放置重复件清理须完整读回当前页器件 ID，PCB 自动布局须完整读回器件位置，自动布线及 PCB 直线/过孔创建须完整读回导线、过孔及网络。import_changes 返回 pending_confirmation 后全局阻止写入；用户在原生对话框应用或取消后，以 action=resolve_import、confirm=true、resolution=applied/cancelled 显式确认，Server 核对同一 PCB 并完整读回器件和网络后解除。无法确认弹框已关闭时，先 action=recover，再重启原 EDA 宿主，以全新连接 action=readback，另需 hostRestartConfirmed=true。隔离期间只读查询可用。",
+    "description": "处理 EDA 写操作超时、执行中失联、提交未确认状态及 PCB 导入待确认状态。先从 bridge_clients 取得 requestId，以 action=recover、confirm=true 建立恢复会话；诊断含 hostRestartRequired:true 时须重启原宿主。等待原 Bridge 断开及恢复会话后的全新 clientId，就原文档和图页只读回读并以 action=readback 完成。原客户端和先前已连接客户端的普通重连不能用于回读；交互或坐标放置须完整读回当前页器件 ID、位号与 BOM 扩展属性，PCB 自动布局须完整读回器件位置，自动布线及 PCB 直线/过孔创建须完整读回导线、过孔及网络。import_changes 返回 pending_confirmation 后全局阻止写入；用户在原生对话框应用或取消后，以 action=resolve_import、confirm=true、resolution=applied/cancelled 显式确认，Server 核对同一 PCB 并完整读回器件和网络后解除。无法确认弹框已关闭时，先 action=recover，再重启原 EDA 宿主，以全新连接 action=readback，另需 hostRestartConfirmed=true。隔离期间只读查询可用。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -47,7 +47,7 @@
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "PCB 导入、autoRouting 超时或 PCB 直线/过孔原生创建未确认，且诊断要求重启时，确认原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互放置检查须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
+        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID、位号和 BOM 扩展属性；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -136,7 +136,7 @@
         "includeCompleteSchematicComponentIds": {
           "type": "boolean",
           "const": true,
-          "description": "仅用于 eda.sch_PrimitiveComponent.getAllPrimitiveId 且 args:[null,false]：额外返回不截断的当前原理图页器件 ID 列表 schematicComponentIds 和数量。"
+          "description": "仅用于 eda.sch_PrimitiveComponent.getAllPrimitiveId 且 args:[null,false]：额外返回不截断的当前原理图页器件 ID 列表、ID/位号/BOM 扩展属性快照 schematicComponentStates 和数量。"
         },
         "timeoutMs": {
           "type": "integer",
@@ -323,7 +323,7 @@
   },
   {
     "name": "component_place",
-    "description": "引导用户按顺序交互放置已确认的器件列表；每件需按 Esc 或右键结束当前放置模式才继续。返回新增图元 ID；重复放置或超时后停止，不自动重试。",
+    "description": "引导用户按顺序交互放置已确认的器件列表；每件需按 Esc 或右键结束当前放置模式才继续。返回新增图元 ID，精确重叠副本会回读后清理；已有器件位号若被 EDA 改动会保留 BOM 属性并尝试恢复。清理、恢复失败或超时后停止，不自动重试。",
     "inputSchema": {
       "type": "object",
       "properties": {

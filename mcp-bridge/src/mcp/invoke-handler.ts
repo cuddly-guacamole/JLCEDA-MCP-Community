@@ -360,12 +360,17 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		const components = await Promise.resolve(eda.sch_PrimitiveComponent.getAll(undefined, false));
 		if (!Array.isArray(components))
 			return { apiFullName: resolvedPath, ok: false, error: 'Current schematic component state readback was incomplete.' };
-		const schematicComponentStates = components.map(component => ({
-			primitiveId: getSyncState(component, 'getState_PrimitiveId', ''),
-			designator: getSyncState(component, 'getState_Designator', ''),
-		}));
+		const schematicComponentStates = components.map((component) => {
+			const otherProperty = getSyncState<unknown>(component, 'getState_OtherProperty', undefined) ?? {};
+			return {
+				primitiveId: getSyncState(component, 'getState_PrimitiveId', ''),
+				designator: getSyncState(component, 'getState_Designator', ''),
+				otherPropertyJson: isPlainObjectRecord(otherProperty) ? JSON.stringify(otherProperty) : undefined,
+			};
+		});
 		if (schematicComponentStates.length !== invokeResult.length
-			|| schematicComponentStates.some(state => typeof state.primitiveId !== 'string' || !state.primitiveId.trim() || typeof state.designator !== 'string')
+			|| schematicComponentStates.some(state => typeof state.primitiveId !== 'string' || !state.primitiveId.trim()
+				|| typeof state.designator !== 'string' || typeof state.otherPropertyJson !== 'string')
 			|| new Set(schematicComponentStates.map(state => state.primitiveId)).size !== invokeResult.length
 			|| schematicComponentStates.some(state => !invokeResult.includes(state.primitiveId))) {
 			return { apiFullName: resolvedPath, ok: false, error: 'Current schematic component state readback was incomplete.' };

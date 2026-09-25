@@ -665,24 +665,32 @@ async function main() {
 			return Array.from({ length: 125 }, (_, index) => ({
 				getState_PrimitiveId: () => `component-${index + 1}`,
 				getState_Designator: () => `U${index + 1}`,
+				getState_OtherProperty: () => index === 0 ? { supplierId: 'C1' } : undefined,
 			}));
 		},
 	};
 	const completeSchematicIds = await handleApiInvokeTask({
-		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false], includeCompleteSchematicComponentIds: true,
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+		args: [null, false],
+		includeCompleteSchematicComponentIds: true,
 	});
 	assert.equal(completeSchematicIds.result.length, 120, 'ordinary API result retains its serialization limit');
 	assert.equal(completeSchematicIds.schematicComponentCount, 125);
 	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentIds.length, 125);
 	assert.equal(completeSchematicIds.schematicComponentIds[124], 'component-125');
 	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentStates.length, 125);
-	assert.deepEqual(completeSchematicIds.schematicComponentStates[124], { primitiveId: 'component-125', designator: 'U125' });
+	assert.deepEqual((await toSerializableAsync(completeSchematicIds)).schematicComponentStates[0], { primitiveId: 'component-1', designator: 'U1', otherPropertyJson: '{"supplierId":"C1"}' });
+	assert.deepEqual(completeSchematicIds.schematicComponentStates[124], { primitiveId: 'component-125', designator: 'U125', otherPropertyJson: '{}' });
 	await assert.rejects(() => handleApiInvokeTask({
-		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [], includeCompleteSchematicComponentIds: true,
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+		args: [],
+		includeCompleteSchematicComponentIds: true,
 	}), /args \[null, false\]/);
 	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['same-id', 'same-id'];
 	assert.equal((await handleApiInvokeTask({
-		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false], includeCompleteSchematicComponentIds: true,
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+		args: [null, false],
+		includeCompleteSchematicComponentIds: true,
 	})).ok, false);
 	globalThis.eda.sch_PrimitiveComponent = originalSchematicComponents;
 	const originalCurrentPcbInfo = globalThis.eda.dmt_Pcb.getCurrentPcbInfo;

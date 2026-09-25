@@ -267,7 +267,8 @@ async function main() {
 		async getAllPrimitiveId() { return [...interactiveIds]; },
 		async getAll() {
 			return interactiveIds.map(id => id === 'existing-u'
-				? primitive(id, interactiveDesignator, interactiveBom) : placedPrimitive(id));
+				? primitive(id, interactiveDesignator, interactiveBom)
+				: placedPrimitive(id));
 		},
 		async placeComponentWithMouse() {
 			interactiveDesignator = 'U16';
@@ -291,7 +292,9 @@ async function main() {
 	assert.deepEqual(interactiveBom, { Value: 'FM25V20A', Datasheet: 'https://example.test/f' });
 	interactiveIds.length = 1;
 	interactiveDesignator = 'U5';
-	globalThis.eda.sch_PrimitiveComponent.modify = async () => { throw new Error('RPC Call modify Timed Out'); };
+	globalThis.eda.sch_PrimitiveComponent.modify = async () => {
+		throw new Error('RPC Call modify Timed Out');
+	};
 	const uncertainDesignatorStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
 	pressEscape();
 	const uncertainDesignatorCheck = await handleComponentPlaceCheckTask({ sessionId: uncertainDesignatorStart.sessionId });
@@ -744,7 +747,8 @@ async function main() {
 		async modify() { throw new Error('RPC Call modify Timed Out'); },
 	};
 	const uncertainRestore = await handleComponentPlaceAutoTask({ components: [
-		{ uuid: 'first', libraryUuid: 'library' }, { uuid: 'second', libraryUuid: 'library' },
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
 	] });
 	assert.equal(uncertainRestore.ok, false);
 	assert.equal(uncertainRestore.placedCount, 1);
