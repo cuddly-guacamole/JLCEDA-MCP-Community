@@ -120,6 +120,14 @@ assert.equal(bridgePathForTool('pcb_component_edit'), '/bridge/jlceda/pcb/compon
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/component-edit', { action: 'read' }), true);
 for (const action of ['create', 'modify', 'delete'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/component-edit', { action }), false);
+await dispatcher.dispatch({ name: 'pcb_pour_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/pour-manage');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_pour_manage', { action: 'read' }) + 2000);
+assert.equal(bridgePathForTool('pcb_pour_manage'), '/bridge/jlceda/pcb/pour-manage');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/pour-manage', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete', 'rebuild'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/pour-manage', { action }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -476,6 +484,34 @@ for (const input of [
   { action: 'delete' },
 ]) {
   assert.equal(pcbComponentEditSchema.safeParse(input).success, false, `pcb_component_edit should reject ${JSON.stringify(input)}`);
+}
+const pcbPourDefinition = definitions.find((definition) => definition.name === 'pcb_pour_manage');
+assert.ok(pcbPourDefinition);
+const pcbPourSchema = z.fromJSONSchema(pcbPourDefinition.inputSchema);
+assert.equal(pcbPourDefinition.inputSchema.$defs.pourProperty.minProperties, 1);
+for (const input of [
+  { action: 'read' },
+  { action: 'create', net: 'GND', layer: 1, polygonSource: ['L', 0, 0, 10, 0, 10, 10, 0, 10, 'C'], pourFillMethod: 'solid' },
+  { action: 'create', net: 'VCC', layer: 44, polygonSource: ['CIRCLE', 10, 10, 5] },
+  { action: 'modify', primitiveId: 'pour-1', property: { polygonSource: ['R', 0, 0, 10, 10], pourPriority: 2 } },
+  { action: 'modify', primitiveId: 'pour-1', property: { net: 'GND', pourFillMethod: '45grid' } },
+  { action: 'delete', primitiveId: 'pour-1' },
+  { action: 'rebuild', primitiveId: 'pour-1' },
+  { action: 'rebuild', all: true },
+]) {
+  assert.equal(pcbPourSchema.safeParse(input).success, true, `pcb_pour_manage should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'read', primitiveId: 'pour-1' },
+  { action: 'create', net: 'GND', layer: 3, polygonSource: ['L', 0, 0] },
+  { action: 'create', net: 'GND', layer: 1, polygonSource: ['BAD', 0, 0] },
+  { action: 'create', net: 'GND', layer: 1 },
+  { action: 'modify', primitiveId: 'pour-1', property: { x: 10 } },
+  { action: 'delete', primitiveId: 'pour-1', property: { net: 'VCC' } },
+  { action: 'rebuild' },
+  { action: 'rebuild', primitiveId: 'pour-1', all: true },
+]) {
+  assert.equal(pcbPourSchema.safeParse(input).success, false, `pcb_pour_manage should reject ${JSON.stringify(input)}`);
 }
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);

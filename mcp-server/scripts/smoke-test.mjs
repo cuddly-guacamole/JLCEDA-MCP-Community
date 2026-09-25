@@ -92,6 +92,7 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(Array.isArray(toolsResponse.result?.tools));
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'eda_context'));
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'pcb_component_edit'));
+    assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'pcb_pour_manage'));
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -102,6 +103,7 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/api/invoke')), 'bridge_recover_client must allow current-page API readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/schematic/component-edit')), 'bridge_recover_client must publish schematic component state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/component-edit')), 'bridge_recover_client must publish PCB component state readback');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/pour-manage')), 'bridge_recover_client must publish PCB pour state readback');
     const expectedPageSchemas = findPropertySchemas(recoverTool.inputSchema, 'expectedPageUuid');
     assert.ok(expectedPageSchemas.some((schema) => schema.type === 'string'), 'bridge_recover_client must publish the optional page UUID');
     const actionSchemas = findPropertySchemas(recoverTool.inputSchema, 'action');
@@ -155,6 +157,35 @@ async function testProtocolVersion(protocolVersion) {
     const invalidCallResponse = JSON.parse(invalidCallLine);
     assert.equal(invalidCallResponse.id, 5);
     assert.match(JSON.stringify(invalidCallResponse), /property must contain at least one field/);
+
+    const pourCallLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 6, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'bridge_recover_client',
+        arguments: { action: 'readback', confirm: true, recoveryId: 'smoke-pour-recovery', clientId: 'smoke-pour-client',
+          readbackPath: '/bridge/jlceda/pcb/pour-manage', readbackPayload: { action: 'read' } },
+      },
+    }) + '\n');
+    const [pourCallLine] = await Promise.race([pourCallLinePromise, lineTimeout]);
+    const pourCallResponse = JSON.parse(pourCallLine);
+    assert.equal(pourCallResponse.id, 6);
+    assert.match(JSON.stringify(pourCallResponse), /No Bridge recovery is awaiting readback/);
+
+    const invalidPourCallLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 7, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'pcb_pour_manage',
+        arguments: { action: 'modify', primitiveId: 'pour-1', property: {} },
+      },
+    }) + '\n');
+    const [invalidPourCallLine] = await Promise.race([invalidPourCallLinePromise, lineTimeout]);
+    const invalidPourCallResponse = JSON.parse(invalidPourCallLine);
+    assert.equal(invalidPourCallResponse.id, 7);
+    assert.match(JSON.stringify(invalidPourCallResponse), /property must contain at least one field/);
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {

@@ -310,6 +310,16 @@
 			}
 		},
 		{
+			"toolName": "pcb_pour_manage",
+			"path": "/bridge/jlceda/pcb/pour-manage",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "pcb_drc_check",
 			"path": "/bridge/jlceda/pcb/drc-check",
 			"owner": "bridge",

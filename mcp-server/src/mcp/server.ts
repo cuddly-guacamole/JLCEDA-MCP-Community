@@ -26,6 +26,7 @@ function createToolInputSchema(
         '/bridge/jlceda/schematic/read',
         '/bridge/jlceda/schematic/component-edit',
         '/bridge/jlceda/pcb/component-edit',
+        '/bridge/jlceda/pcb/pour-manage',
         '/bridge/jlceda/schematic/review',
         '/bridge/jlceda/schematic/layout-check',
         '/bridge/jlceda/pcb/drc-check',
@@ -49,7 +50,7 @@ function createToolInputSchema(
     return z.union([recover, readback, resolveImport]);
   }
   const schema = z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
-  if (name === 'pcb_component_edit' || name === 'schematic_component_edit') {
+  if (name === 'pcb_component_edit' || name === 'schematic_component_edit' || name === 'pcb_pour_manage') {
     // z.fromJSONSchema currently omits minProperties. Preserve the advertised
     // contract when the call reaches the MCP parser.
     return schema.superRefine((value, context) => {
