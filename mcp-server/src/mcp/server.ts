@@ -28,6 +28,7 @@ function createToolInputSchema(
         '/bridge/jlceda/schematic/component-edit',
         '/bridge/jlceda/schematic/text-manage',
         '/bridge/jlceda/pcb/component-edit',
+        '/bridge/jlceda/pcb/documents-manage',
         '/bridge/jlceda/pcb/pour-manage',
         '/bridge/jlceda/pcb/region-manage',
         '/bridge/jlceda/pcb/text-manage',
