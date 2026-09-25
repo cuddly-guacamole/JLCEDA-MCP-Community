@@ -146,8 +146,14 @@ async function main() {
 			},
 			async getAllPrimitivesByNet(name, primitiveTypes) {
 				assert.equal(name, 'USB_D+');
-				assert.deepEqual(primitiveTypes, ['Polyline', 'Via']);
-				return [{ uuid: 'track-1', type: 'TRACK' }];
+				assert.equal(primitiveTypes, undefined, 'native primitive type filtering returns an empty array in EDA 3.2.181');
+				return [
+					{ globalIndex: 'track-1', pcbItemPrimitiveType: 'Track', startX: 0, endX: 10 },
+					{ globalIndex: 'pad-1', pcbItemPrimitiveType: 'Pad', parentId: 'component-1' },
+					{ globalIndex: 'pad-2', pcbItemPrimitiveType: 'Pad' },
+					{ globalIndex: 'polyline-1', pcbItemPrimitiveType: 'Polyline' },
+					{ globalIndex: 'via-1', pcbItemPrimitiveType: 'Via' },
+				];
 			},
 		},
 		pcb_Document: {
@@ -999,7 +1005,16 @@ async function main() {
 	const pcbNetAnalysis = await handlePcbNetQueryTask({ mode: 'exact', query: 'USB_D+', analysis: { length: true, color: true, primitiveTypes: ['POLYLINE', 'VIA'] } });
 	assert.equal(pcbNetAnalysis.length, 42.5);
 	assert.equal(pcbNetAnalysis.color, '#00ff00');
-	assert.equal(pcbNetAnalysis.primitiveCount, 1);
+	assert.equal(pcbNetAnalysis.primitiveCount, 2);
+	assert.deepEqual(pcbNetAnalysis.primitives.map(primitive => primitive.globalIndex), ['polyline-1', 'via-1']);
+	const pcbNetRoutingAndPads = await handlePcbNetQueryTask({ mode: 'exact', query: 'USB_D+', analysis: { primitiveTypes: ['PAD', 'COMPONENT_PAD', 'LINE', 'ARC', 'POLYLINE', 'VIA'] } });
+	assert.equal(pcbNetRoutingAndPads.primitiveCount, 5);
+	const pcbNetComponentPads = await handlePcbNetQueryTask({ mode: 'exact', query: 'USB_D+', analysis: { primitiveTypes: ['COMPONENT_PAD'] } });
+	assert.deepEqual(pcbNetComponentPads.primitives.map(primitive => primitive.globalIndex), ['pad-1']);
+	const pcbNetStandalonePads = await handlePcbNetQueryTask({ mode: 'exact', query: 'USB_D+', analysis: { primitiveTypes: ['PAD'] } });
+	assert.deepEqual(pcbNetStandalonePads.primitives.map(primitive => primitive.globalIndex), ['pad-2']);
+	const pcbNetLines = await handlePcbNetQueryTask({ mode: 'exact', query: 'USB_D+', analysis: { primitiveTypes: ['LINE'] } });
+	assert.deepEqual(pcbNetLines.primitives.map(primitive => primitive.globalIndex), ['track-1']);
 	const originalGetAllPrimitivesByNet = globalThis.eda.pcb_Net.getAllPrimitivesByNet;
 	globalThis.eda.pcb_Net.getAllPrimitivesByNet = async (name, primitiveTypes) => {
 		assert.equal(name, 'USB_D+');

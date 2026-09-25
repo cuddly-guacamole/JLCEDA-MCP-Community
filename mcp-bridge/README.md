@@ -38,6 +38,8 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `pcb_read` 复用已有的器件、布线、覆铜、板框、区域和文本读取处理器，并补充独立焊盘、器件焊盘和全部网络。默认仅读器件和网络，`sections:["all"]` 才读取全部；只返回同一 PCB UUID 的完整所选部分，数组不截断。文本部分包括独立 String 与器件 Attribute；焊盘部分包含身份、位置和网络，不包含复杂焊盘外形。
 
+`pcb_net_query` 的精确模式可用 `analysis.primitiveTypes` 筛选网络图元。EDA 3.2.181 的原生类型参数会返回空数组，Bridge 因此一次读取该网络全部图元，再按原生图元类型或返回的 `pcbItemPrimitiveType` 筛选；`Track` 的直线和带 `parentId` 的 `Pad` 分别识别为 `LINE` 和 `COMPONENT_PAD`。
+
 `pcb_connectivity_action` 可在指定网络上创建 PCB 直线走线或通孔。`line_create` 需要 `net`、`layer`、`startX/startY`、`endX/endY` 和 `lineWidth`；`via_create` 需要 `net`、`x/y`、`holeDiameter` 和 `diameter`，单位为 EDA 当前画布数据单位。默认先确认网络已存在；明确传入 `allowNewNet:true` 可在独立 PCB 上创建新网络。直线目标层必须是已启用、未锁定的 `SIGNAL` 或 `PLANE` 铜层。写入后使用原生单 ID 查询核对网络和几何；原生调用超时、缺少返回 ID 或回读失败时报告 `commitUnknown:true`，等待受控恢复核对 PCB 布线状态后再写入。
 
 `bridge_select_client` 在已连接的 EDA 页面客户端之间选择 MCP 路由目标。显式选择待命页前会进行约 1.5 秒双向队列探活；旧扩展不支持该选择流程，请先升级 Bridge。它不会切换同一个 EDA 进程中的可见标签页；如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
