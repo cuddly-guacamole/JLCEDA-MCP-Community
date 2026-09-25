@@ -32,6 +32,17 @@ interface PlaceComponentApi {
 	placeComponentWithMouse: (component: { libraryUuid: string; uuid: string }, subPartName?: string) => Promise<boolean>;
 	getAllPrimitiveId: (componentType?: unknown, allSchematicPages?: boolean) => Promise<string[]>;
 	getAll: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown[]>;
+	delete?: (primitiveId: string) => Promise<boolean>;
+}
+
+interface PlacedComponentState {
+	libraryUuid: string;
+	uuid: string;
+	subPartName: string;
+	x: number;
+	y: number;
+	rotation: number;
+	mirror: boolean;
 }
 
 interface FollowMouseTipApi {
@@ -42,6 +53,7 @@ interface FollowMouseTipApi {
 
 interface ActivePlaceSession {
 	sessionId: string;
+	component: ComponentPlaceItem;
 	pageUuid: string;
 	referenceIds: Set<string>;
 	baselineDesignators: Map<string, string>;
@@ -196,7 +208,98 @@ function resolvePlaceComponentApi(): PlaceComponentApi {
 		placeComponentWithMouse: componentModule.placeComponentWithMouse as (component: { libraryUuid: string; uuid: string }, subPartName?: string) => Promise<boolean>,
 		getAllPrimitiveId: componentModule.getAllPrimitiveId as PlaceComponentApi['getAllPrimitiveId'],
 		getAll: componentModule.getAll as PlaceComponentApi['getAll'],
+		delete: typeof componentModule.delete === 'function' ? componentModule.delete as PlaceComponentApi['delete'] : undefined,
 	};
+}
+
+function readPlacedComponentState(primitive: unknown): PlacedComponentState | undefined {
+	const component = getSyncState<unknown>(primitive, 'getState_Component', null);
+	const subPartName = getSyncState<unknown>(primitive, 'getState_SubPartName', null);
+	const x = getSyncState<unknown>(primitive, 'getState_X', null);
+	const y = getSyncState<unknown>(primitive, 'getState_Y', null);
+	const rotation = getSyncState<unknown>(primitive, 'getState_Rotation', null);
+	const mirror = getSyncState<unknown>(primitive, 'getState_Mirror', null);
+	if (!isPlainObjectRecord(component)
+		|| typeof component.libraryUuid !== 'string' || !component.libraryUuid
+		|| typeof component.uuid !== 'string' || !component.uuid
+		|| typeof subPartName !== 'string'
+		|| typeof x !== 'number' || !Number.isFinite(x)
+		|| typeof y !== 'number' || !Number.isFinite(y)
+		|| typeof rotation !== 'number' || !Number.isFinite(rotation)
+		|| typeof mirror !== 'boolean') {
+		return undefined;
+	}
+	return { libraryUuid: component.libraryUuid, uuid: component.uuid, subPartName, x, y, rotation, mirror };
+}
+
+function samePlacedComponent(a: PlacedComponentState, b: PlacedComponentState): boolean {
+	return a.libraryUuid === b.libraryUuid && a.uuid === b.uuid && a.subPartName === b.subPartName
+		&& a.x === b.x && a.y === b.y && a.rotation === b.rotation && a.mirror === b.mirror;
+}
+
+async function cleanupExactPlacementDuplicates(
+	session: ActivePlaceSession,
+	primitiveIds: string[],
+): Promise<{ primitiveIds: string[]; removedDuplicateIds?: string[]; warning?: string; commitUnknown?: boolean }> {
+	const api = session.placeApi;
+	if (!api.delete)
+		return { primitiveIds, warning: '检测到多个新增器件，但当前 EDA 未提供删除 API；请检查重叠器件。' };
+	try {
+		await assertPlaceSessionPage(session.pageUuid);
+		const all = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+		await assertPlaceSessionPage(session.pageUuid);
+		if (!Array.isArray(all))
+			throw new TypeError('EDA 未返回器件列表。');
+		const newPrimitives = all.filter(item => primitiveIds.includes(getSyncState(item, 'getState_PrimitiveId', '')));
+		if (newPrimitives.length !== primitiveIds.length)
+			return { primitiveIds, warning: '无法逐一读取新增器件，已保留重复器件供人工核对。' };
+		const states = newPrimitives.map(readPlacedComponentState);
+		const first = states[0];
+		if (!first || states.some(state => !state || !samePlacedComponent(first, state))
+			|| first.libraryUuid !== session.component.libraryUuid || first.uuid !== session.component.uuid
+			|| (session.component.subPartName && first.subPartName !== session.component.subPartName)) {
+			return { primitiveIds, warning: '新增器件的型号、子部件或位置不同，已保留多个器件供人工核对。' };
+		}
+	}
+	catch (error: unknown) {
+		return { primitiveIds, warning: `无法核对新增器件，已保留重复器件：${toSafeErrorMessage(error)}` };
+	}
+
+	const retainedId = primitiveIds[0];
+	const extraIds = primitiveIds.slice(1);
+	let deletionAttempted = false;
+	let deletionError: unknown;
+	for (const id of extraIds) {
+		try {
+			await assertPlaceSessionPage(session.pageUuid);
+			deletionAttempted = true;
+			await Promise.resolve(api.delete.call(api.context, id));
+		}
+		catch (error: unknown) {
+			deletionError = error;
+			break;
+		}
+	}
+	try {
+		await assertPlaceSessionPage(session.pageUuid);
+		const currentIds = await Promise.resolve(api.getAllPrimitiveId.call(api.context, undefined, false));
+		await assertPlaceSessionPage(session.pageUuid);
+		const remainingIds = currentIds.filter(id => id && !session.referenceIds.has(id));
+		if (remainingIds.length === 1 && remainingIds[0] === retainedId)
+			return { primitiveIds: remainingIds, removedDuplicateIds: extraIds };
+		return {
+			primitiveIds: remainingIds,
+			warning: `重复器件清理后仍有 ${String(remainingIds.length)} 个新增图元，请核对当前原理图。${deletionError ? `删除失败：${toSafeErrorMessage(deletionError)}` : ''}`,
+			...(deletionError && /timed out/i.test(toSafeErrorMessage(deletionError)) ? { commitUnknown: true } : {}),
+		};
+	}
+	catch (error: unknown) {
+		return {
+			primitiveIds,
+			warning: `重复器件清理后的回读失败，删除结果未知：${toSafeErrorMessage(error)}`,
+			...(deletionAttempted ? { commitUnknown: true } : {}),
+		};
+	}
 }
 
 async function readDesignators(api: PlaceComponentApi): Promise<Map<string, string>> {
@@ -353,6 +456,7 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const sessionId = createPlaceSessionId();
 	const session: ActivePlaceSession = {
 		sessionId,
+		component,
 		pageUuid,
 		referenceIds,
 		baselineDesignators,
@@ -442,17 +546,31 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 		await assertPlaceSessionPage(session.pageUuid);
 		const currentIds = await Promise.resolve(session.placeApi.getAllPrimitiveId.call(session.placeApi.context, undefined, false));
 		await assertPlaceSessionPage(session.pageUuid);
-		const primitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
-		if (primitiveIds.length > 0) {
+		const observedPrimitiveIds = currentIds.filter(id => id && !session.referenceIds.has(id));
+		if (observedPrimitiveIds.length > 0) {
 			if (!session.placementExited) {
 				return {
 					ok: true,
 					placed: false,
 					awaitingExit: true,
-					candidatePrimitiveIds: primitiveIds,
+					candidatePrimitiveIds: observedPrimitiveIds,
 					userCancelled: false,
 				};
 			}
+			const cleanupResult = observedPrimitiveIds.length > 1
+				? await cleanupExactPlacementDuplicates(session, observedPrimitiveIds)
+				: { primitiveIds: observedPrimitiveIds };
+			if ('commitUnknown' in cleanupResult && cleanupResult.commitUnknown) {
+				await cleanupPlaceSession(sessionId);
+				return {
+					ok: false,
+					commitUnknown: true,
+					readbackRequired: true,
+					primitiveIds: observedPrimitiveIds,
+					error: cleanupResult.warning,
+				};
+			}
+			const primitiveIds = cleanupResult.primitiveIds;
 			let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
 			let annotationWarning: string | undefined;
 			try {
@@ -467,13 +585,16 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 			catch (error: unknown) {
 				annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
 			}
+			if ('warning' in cleanupResult && cleanupResult.warning)
+				annotationWarning = [annotationWarning, cleanupResult.warning].filter(Boolean).join(' ');
 			await assertPlaceSessionPage(session.pageUuid);
 			await cleanupPlaceSession(sessionId);
 			return {
 				ok: true,
-				placed: primitiveIds.length === 1,
-				duplicate: primitiveIds.length > 1,
+				placed: primitiveIds.length === 1 && !('warning' in cleanupResult && cleanupResult.warning),
+				duplicate: primitiveIds.length > 1 || Boolean('warning' in cleanupResult && cleanupResult.warning),
 				primitiveIds,
+				...('removedDuplicateIds' in cleanupResult ? { removedDuplicateIds: cleanupResult.removedDuplicateIds } : {}),
 				designatorChanges,
 				annotationWarning,
 				userCancelled: false,

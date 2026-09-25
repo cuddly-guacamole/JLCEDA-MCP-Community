@@ -24,6 +24,18 @@ function primitive(id, designator, otherProperty = {}) {
 	};
 }
 
+function placedPrimitive(id, x = 510, y = 415) {
+	return {
+		...primitive(id, 'U?'),
+		getState_Component: () => ({ libraryUuid: 'library', uuid: 'device' }),
+		getState_SubPartName: () => '',
+		getState_X: () => x,
+		getState_Y: () => y,
+		getState_Rotation: () => 0,
+		getState_Mirror: () => false,
+	};
+}
+
 async function main() {
 	// EDA 3.x clears BOM metadata if modify omits otherProperty.
 	let metadata = { Value: '10k', Datasheet: 'https://example.test/r' };
@@ -260,6 +272,107 @@ async function main() {
 	assert.equal(duplicateCheck.placed, false);
 	assert.equal(duplicateCheck.duplicate, true);
 	assert.deepEqual(duplicateCheck.primitiveIds, ['placed-2', 'placed-3']);
+
+	// A single click can create two identical EDA primitives. Delete only the
+	// extra ID and confirm that the retained primitive is the only new one.
+	const initialPlacementApi = globalThis.eda.sch_PrimitiveComponent;
+	const exactIds = ['existing'];
+	const deletedExactIds = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...exactIds]; },
+		async getAll() { return exactIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete(id) {
+			deletedExactIds.push(id);
+			exactIds.splice(exactIds.indexOf(id), 1);
+			return true;
+		},
+		async placeComponentWithMouse() {
+			exactIds.push('same-1', 'same-2');
+			return true;
+		},
+	};
+	const exactStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const exactCheck = await handleComponentPlaceCheckTask({ sessionId: exactStart.sessionId });
+	assert.equal(exactCheck.placed, true);
+	assert.equal(exactCheck.duplicate, false);
+	assert.deepEqual(exactCheck.primitiveIds, ['same-1']);
+	assert.deepEqual(exactCheck.removedDuplicateIds, ['same-2']);
+	assert.deepEqual(deletedExactIds, ['same-2']);
+	assert.deepEqual(exactIds, ['existing', 'same-1']);
+
+	// Two intentional placements at different positions must be preserved.
+	const distinctIds = ['existing'];
+	const deletedDistinctIds = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...distinctIds]; },
+		async getAll() {
+			return distinctIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id, id === 'distinct-1' ? 510 : 610));
+		},
+		async delete(id) {
+			deletedDistinctIds.push(id);
+			return true;
+		},
+		async placeComponentWithMouse() {
+			distinctIds.push('distinct-1', 'distinct-2');
+			return true;
+		},
+	};
+	const distinctStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const distinctCheck = await handleComponentPlaceCheckTask({ sessionId: distinctStart.sessionId });
+	assert.equal(distinctCheck.placed, false);
+	assert.equal(distinctCheck.duplicate, true);
+	assert.deepEqual(deletedDistinctIds, []);
+	assert.deepEqual(distinctIds, ['existing', 'distinct-1', 'distinct-2']);
+
+	// A failed post-delete readback must report the mutation as uncertain.
+	const uncertainIds = ['existing'];
+	let uncertainIdReads = 0;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() {
+			uncertainIdReads += 1;
+			if (uncertainIdReads > 2)
+				throw new Error('duplicate readback failed');
+			return [...uncertainIds];
+		},
+		async getAll() { return uncertainIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete(id) {
+			uncertainIds.splice(uncertainIds.indexOf(id), 1);
+			return true;
+		},
+		async placeComponentWithMouse() {
+			uncertainIds.push('uncertain-1', 'uncertain-2');
+			return true;
+		},
+	};
+	const uncertainStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const uncertainCheck = await handleComponentPlaceCheckTask({ sessionId: uncertainStart.sessionId });
+	assert.equal(uncertainCheck.ok, false);
+	assert.equal(uncertainCheck.commitUnknown, true);
+	assert.equal(uncertainCheck.readbackRequired, true);
+	assert.match(uncertainCheck.error, /duplicate readback failed/);
+	assert.equal((await handleComponentPlaceCheckTask({ sessionId: uncertainStart.sessionId })).ok, false);
+
+	// An EDA delete timeout can commit after an immediate readback.
+	const timeoutIds = ['existing'];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...timeoutIds]; },
+		async getAll() { return timeoutIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete() { throw new Error('RPC Call delete Timed Out'); },
+		async placeComponentWithMouse() {
+			timeoutIds.push('timeout-1', 'timeout-2');
+			return true;
+		},
+	};
+	const timeoutStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const timeoutCheck = await handleComponentPlaceCheckTask({ sessionId: timeoutStart.sessionId });
+	assert.equal(timeoutCheck.ok, false);
+	assert.equal(timeoutCheck.commitUnknown, true);
+	assert.match(timeoutCheck.error, /Timed Out/);
+	globalThis.eda.sch_PrimitiveComponent = initialPlacementApi;
 
 	// Escape can arrive before the mouse-placement API resolves.
 	globalThis.eda.sch_PrimitiveComponent.placeComponentWithMouse = async () => {
