@@ -51,7 +51,9 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 		return false;
 	}
 	const response = result as Record<string, unknown>;
-	if (path === '/bridge/jlceda/pcb/connectivity') {
+	if (path === '/bridge/jlceda/pcb/connectivity'
+		|| path === '/bridge/jlceda/component/place/check'
+		|| path === '/bridge/jlceda/component/place-auto') {
 		return response.ok === false
 			&& response.commitUnknown === true
 			&& response.nativeCallSettled === false;

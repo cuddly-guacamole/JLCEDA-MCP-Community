@@ -101,7 +101,7 @@ const uncertainCleanupBridge = {
     if (path === '/bridge/jlceda/component/place')
       return { placement: { components: [{ uuid: 'one' }], timeoutSeconds: 30 } };
     if (path.endsWith('/start')) return { ok: true, sessionId: 'cleanup-session' };
-    if (path.endsWith('/check')) return { ok: false, commitUnknown: true, readbackRequired: true, primitiveIds: ['a', 'b'], error: 'duplicate cleanup readback failed' };
+    if (path.endsWith('/check')) return { ok: false, commitUnknown: true, readbackRequired: true, nativeCallSettled: false, primitiveIds: ['a', 'b'], designatorChanges: [{ primitiveId: 'old-u', before: 'U4', after: 'U15' }], restoredDesignators: [{ primitiveId: 'old-r', before: 'R8', after: 'R1' }], annotationWarning: 'Designators need review', error: 'duplicate cleanup readback failed' };
     if (path.endsWith('/close')) return { ok: true };
     throw new Error(`Unexpected path: ${path}`);
   },
@@ -110,7 +110,11 @@ const uncertainCleanupResult = await new ToolDispatcher(uncertainCleanupBridge).
 assert.equal(uncertainCleanupResult.structuredContent.ok, false);
 assert.equal(uncertainCleanupResult.structuredContent.results[0].commitUnknown, true);
 assert.equal(uncertainCleanupResult.structuredContent.results[0].readbackRequired, true);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].nativeCallSettled, false);
 assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].primitiveIds, ['a', 'b']);
+assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].designatorChanges, [{ primitiveId: 'old-u', before: 'U4', after: 'U15' }]);
+assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].restoredDesignators, [{ primitiveId: 'old-r', before: 'R8', after: 'R1' }]);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].annotationWarning, 'Designators need review');
 assert.match(uncertainCleanupResult.structuredContent.results[0].error, /cleanup readback failed/);
 
 const batchCalls = [];

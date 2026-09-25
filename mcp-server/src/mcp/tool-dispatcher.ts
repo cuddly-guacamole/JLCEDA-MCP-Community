@@ -255,6 +255,7 @@ export class ToolDispatcher {
       let annotationWarning = '';
       let commitUnknown = false;
       let readbackRequired = false;
+      let nativeCallSettled: boolean | undefined;
       let errorMessage = '';
       let sessionId = '';
       try {
@@ -283,9 +284,13 @@ export class ToolDispatcher {
           removedDuplicateIds = Array.isArray(checkResult.removedDuplicateIds)
             ? checkResult.removedDuplicateIds.filter((id): id is string => typeof id === 'string')
             : removedDuplicateIds;
+          designatorChanges = Array.isArray(checkResult.designatorChanges) ? checkResult.designatorChanges : [];
+          restoredDesignators = Array.isArray(checkResult.restoredDesignators) ? checkResult.restoredDesignators : [];
+          annotationWarning = typeof checkResult.annotationWarning === 'string' ? checkResult.annotationWarning : '';
           if (checkResult.ok !== true) {
             commitUnknown = checkResult.commitUnknown === true;
             readbackRequired = checkResult.readbackRequired === true;
+            nativeCallSettled = typeof checkResult.nativeCallSettled === 'boolean' ? checkResult.nativeCallSettled : undefined;
             errorMessage = String(checkResult.error ?? 'placement check failed');
             break;
           }
@@ -296,9 +301,6 @@ export class ToolDispatcher {
               ...checkResult.candidatePrimitiveIds.filter((id): id is string => typeof id === 'string'),
             ])];
           }
-          designatorChanges = Array.isArray(checkResult.designatorChanges) ? checkResult.designatorChanges : [];
-          restoredDesignators = Array.isArray(checkResult.restoredDesignators) ? checkResult.restoredDesignators : [];
-          annotationWarning = typeof checkResult.annotationWarning === 'string' ? checkResult.annotationWarning : '';
           if (checkResult.duplicate === true) {
             duplicate = true;
             errorMessage = `One placement created ${String(primitiveIds.length)} primitives; inspect before continuing`;
@@ -340,7 +342,7 @@ export class ToolDispatcher {
         awaitingExit,
         primitiveIds,
         ...(removedDuplicateIds.length > 0 ? { removedDuplicateIds } : {}),
-        ...(commitUnknown ? { commitUnknown, readbackRequired } : {}),
+        ...(commitUnknown ? { commitUnknown, readbackRequired, ...(nativeCallSettled !== undefined ? { nativeCallSettled } : {}) } : {}),
         ...(awaitingExit ? { candidatePrimitiveIds } : {}),
         designatorChanges,
         ...(restoredDesignators.length > 0 ? { restoredDesignators } : {}),

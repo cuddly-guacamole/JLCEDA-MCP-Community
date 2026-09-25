@@ -357,11 +357,25 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			|| new Set(invokeResult).size !== invokeResult.length) {
 			return { apiFullName: resolvedPath, ok: false, error: 'Current schematic component ID readback was incomplete.' };
 		}
+		const components = await Promise.resolve(eda.sch_PrimitiveComponent.getAll(undefined, false));
+		if (!Array.isArray(components))
+			return { apiFullName: resolvedPath, ok: false, error: 'Current schematic component state readback was incomplete.' };
+		const schematicComponentStates = components.map(component => ({
+			primitiveId: getSyncState(component, 'getState_PrimitiveId', ''),
+			designator: getSyncState(component, 'getState_Designator', ''),
+		}));
+		if (schematicComponentStates.length !== invokeResult.length
+			|| schematicComponentStates.some(state => typeof state.primitiveId !== 'string' || !state.primitiveId.trim() || typeof state.designator !== 'string')
+			|| new Set(schematicComponentStates.map(state => state.primitiveId)).size !== invokeResult.length
+			|| schematicComponentStates.some(state => !invokeResult.includes(state.primitiveId))) {
+			return { apiFullName: resolvedPath, ok: false, error: 'Current schematic component state readback was incomplete.' };
+		}
 		return {
 			apiFullName: resolvedPath,
 			result: await toSerializableAsync(invokeResult),
 			schematicComponentIds: preserveBoundedArray([...invokeResult]),
 			schematicComponentCount: invokeResult.length,
+			schematicComponentStates: preserveBoundedArray(schematicComponentStates),
 		};
 	}
 	if (normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && Array.isArray(invokeResult)) {

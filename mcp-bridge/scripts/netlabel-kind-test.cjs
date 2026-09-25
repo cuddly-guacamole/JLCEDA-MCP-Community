@@ -330,6 +330,10 @@ async function main() {
 	if (requiresHostRestartForResult(connectivityPath, { action: 'line_create' }, unsettledConnectivity))
 		connectivityQuarantine.requireHostRestart(connectivityPath);
 	assert.equal(connectivityQuarantine.requiresHostRestart(), true);
+	const placementCheckPath = '/bridge/jlceda/component/place/check';
+	assert.equal(requiresHostRestartForResult(placementCheckPath, { sessionId: 'placement' }, unsettledConnectivity), true);
+	assert.equal(requiresHostRestartForResult(placementCheckPath, { sessionId: 'placement' }, { ...unsettledConnectivity, nativeCallSettled: true }), false);
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/component/place-auto', { components: [] }, unsettledConnectivity), true);
 	const layoutQuarantine = new BridgeTaskQuarantine();
 	let resolveLateLayoutResult;
 	const lateLayoutResult = new Promise((resolve) => {

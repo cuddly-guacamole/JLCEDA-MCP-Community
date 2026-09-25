@@ -659,6 +659,14 @@ async function main() {
 			assert.equal(allPages, false);
 			return Array.from({ length: 125 }, (_, index) => `component-${index + 1}`);
 		},
+		async getAll(_type, allPages) {
+			assert.equal(_type, undefined);
+			assert.equal(allPages, false);
+			return Array.from({ length: 125 }, (_, index) => ({
+				getState_PrimitiveId: () => `component-${index + 1}`,
+				getState_Designator: () => `U${index + 1}`,
+			}));
+		},
 	};
 	const completeSchematicIds = await handleApiInvokeTask({
 		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false], includeCompleteSchematicComponentIds: true,
@@ -667,6 +675,8 @@ async function main() {
 	assert.equal(completeSchematicIds.schematicComponentCount, 125);
 	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentIds.length, 125);
 	assert.equal(completeSchematicIds.schematicComponentIds[124], 'component-125');
+	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentStates.length, 125);
+	assert.deepEqual(completeSchematicIds.schematicComponentStates[124], { primitiveId: 'component-125', designator: 'U125' });
 	await assert.rejects(() => handleApiInvokeTask({
 		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [], includeCompleteSchematicComponentIds: true,
 	}), /args \[null, false\]/);
