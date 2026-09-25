@@ -287,7 +287,7 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string; compone
 			continue;
 		}
 		const designator = getSyncState<string>(rawComponent, 'getState_Designator', '');
-		if (!designator)
+		if (!designator && getSyncState<string>(rawComponent, 'getState_ComponentType', '') !== 'part')
 			continue;
 		const primitiveId = getSyncState<string>(rawComponent, 'getState_PrimitiveId', '');
 		const pinsRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId(primitiveId)));
@@ -377,7 +377,8 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string; compone
 		const componentDesignator = getSyncState<string>(rawComponent, 'getState_Designator', '');
 		const netFlagNetworkName = getSyncState<string>(rawComponent, 'getState_Net', '');
 
-		if (componentDesignator.length === 0 && netFlagNetworkName.length === 0) {
+		if (componentDesignator.length === 0 && netFlagNetworkName.length === 0
+			&& getSyncState<string>(rawComponent, 'getState_ComponentType', '') !== 'part') {
 			continue;
 		}
 
@@ -422,7 +423,7 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string; compone
 			const connectedNetworkName = coordinateToNetworkNameMap.get(coordinateKey) ?? '';
 
 			if (connectedNetworkName.length > 0) {
-				const pinRef = `${componentDesignator}.${pinNumber || pinSignalName}`;
+				const pinRef = `${componentDesignator || primitiveId}.${pinNumber || pinSignalName}`;
 				let networkPinSet = networkToPinRefSetMap.get(connectedNetworkName);
 				if (!networkPinSet) {
 					networkPinSet = new Set();

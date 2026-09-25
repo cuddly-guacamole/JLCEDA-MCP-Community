@@ -5,6 +5,7 @@ process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', modu
 require('ts-node/register/transpile-only');
 
 const { handleSchematicConnectivityTask } = require('../src/mcp/schematic-connectivity-handler.ts');
+const { handleSchematicReadTask } = require('../src/mcp/schematic-read-handler.ts');
 const { getBridgeTaskHandler } = require('../src/runtime/bridge-handler-registry.ts');
 
 function wire(id, net, line) {
@@ -58,6 +59,8 @@ function attribute(id, parentId, key, value, x, y) {
 }
 
 async function main() {
+	let pageUuid = 'page-1';
+	let editorPageOverride = null;
 	const wires = [wire('wire-a', 'NET_A', [0, 0, 100, 0])];
 	const ports = [{ id: 'port-a', net: 'NET_A', x: 0, y: 0 }];
 	let wireReads = 0;
@@ -66,8 +69,8 @@ async function main() {
 	let portCreates = 0;
 	let createdPortReadbackDeltaY = 0;
 	globalThis.eda = {
-		dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: 'page-1' }; } },
-		dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: 'page-1' }; } },
+		dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: pageUuid }; } },
+		dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: editorPageOverride ?? pageUuid }; } },
 		sch_PrimitiveWire: {
 			async getAll() {
 				wireReads += 1;
@@ -454,9 +457,8 @@ async function main() {
 	ports.splice(0, ports.length, movedPort);
 	const componentApi = globalThis.eda.sch_PrimitiveComponent;
 	const originalComponentGetAll = componentApi.getAll;
-	let moveReadAttempts = 0;
 	componentApi.getAll = async (...args) => {
-		if (++moveReadAttempts === 3)
+		if (movedPort.x === 10 && args[0] === 'netport')
 			throw new Error('port move readback failed');
 		return originalComponentGetAll(...args);
 	};
@@ -536,6 +538,61 @@ async function main() {
 	};
 	await assert.rejects(route({ action: 'netport_create', net: 'NET_A', x: 10, y: 10 }), /invalid netport/);
 	componentApi.createNetPort = originalCreateNetPort;
+
+	// A page switch during the pre-write reads must not move a port from the old page.
+	const switchingPort = { id: 'page-switch-port', net: 'NET_A', x: 0, y: 0 };
+	ports.splice(0, ports.length, switchingPort);
+	const originalSwitchWireGetAll = wireApi.getAll;
+	wireApi.getAll = async () => {
+		pageUuid = 'page-2';
+		return wires;
+	};
+	await assert.rejects(route({ action: 'netport_move', id: switchingPort.id, x: 10, y: 0 }), /图页已切换|active schematic page changed/);
+	assert.equal(switchingPort.x, 0);
+	wireApi.getAll = originalSwitchWireGetAll;
+	pageUuid = 'page-1';
+
+	// If the page changes after the native move, report an unknown post-write state.
+	const originalSwitchComponentGetAll = componentApi.getAll;
+	componentApi.getAll = async (...args) => {
+		const result = await originalSwitchComponentGetAll(...args);
+		if (switchingPort.x === 10 && args[0] === 'netport')
+			pageUuid = 'page-2';
+		return result;
+	};
+	const switchedAfterWrite = await route({ action: 'netport_move', id: switchingPort.id, x: 10, y: 0 });
+	assert.equal(switchingPort.x, 10);
+	assert.equal(switchedAfterWrite.ok, false);
+	assert.equal(switchedAfterWrite.reason, 'post_write_readback_failed');
+	assert.equal(switchedAfterWrite.commitUnknown, true);
+	componentApi.getAll = originalSwitchComponentGetAll;
+	pageUuid = 'page-1';
+
+	// The editor may switch before the page API catches up.
+	const beforeEditorSwitchX = switchingPort.x;
+	editorPageOverride = 'page-2';
+	await assert.rejects(route({ action: 'netport_move', id: switchingPort.id, x: 20, y: 0 }), /not synchronized/);
+	assert.equal(switchingPort.x, beforeEditorSwitchX);
+	editorPageOverride = null;
+
+	// A port from the old page is absent from the new page's current inventory.
+	const oldPagePort = { id: 'copied-page-port', net: 'NET_A', x: 0, y: 0 };
+	ports.splice(0, ports.length, oldPagePort);
+	assert.equal((await handleSchematicReadTask({})).ok, true);
+	pageUuid = 'page-2';
+	ports.splice(0, ports.length);
+	await assert.rejects(route({ action: 'netport_move', id: oldPagePort.id, x: 20, y: 0 }), /Current schematic page/);
+	assert.equal(oldPagePort.x, 0);
+
+	// A copied page may reuse that ID. Moving its current-page port is valid.
+	const copiedPagePort = { id: oldPagePort.id, net: 'NET_A', x: 0, y: 0 };
+	ports.push(copiedPagePort);
+	const copiedPageMove = await route({ action: 'netport_move', id: copiedPagePort.id, x: 20, y: 0 });
+	assert.equal(copiedPageMove.ok, true);
+	assert.equal(copiedPageMove.pageUuid, 'page-2');
+	assert.equal(copiedPagePort.x, 20);
+	assert.equal(oldPagePort.x, 0);
+	pageUuid = 'page-1';
 }
 
 main().catch((error) => {

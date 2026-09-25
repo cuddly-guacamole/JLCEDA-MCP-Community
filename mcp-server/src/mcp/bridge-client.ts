@@ -886,6 +886,12 @@ export class EdaBridgeServer {
       const commitUnknown = isRecord(message.result)
         && (message.result.commitState === 'unknown' || message.result.commitUnknown === true);
       if (diagnostic?.clientId === peer.clientId
+        && diagnostic.path === '/bridge/jlceda/schematic/component-edit'
+        && isRecord(message.result) && message.result.reason === 'pin_network_changed') {
+        diagnostic.requiredReadback = 'schematic_connectivity_primitives';
+        diagnostic.uncertaintyReason = 'component pin network changed';
+      }
+      if (diagnostic?.clientId === peer.clientId
         && isRecord(message.result)
         && ((diagnostic.requiredReadback === 'pcb_routing_state'
           && (diagnostic.path === '/bridge/jlceda/pcb/connectivity' || diagnostic.path === '/bridge/jlceda/pcb/routing-edit' || diagnostic.path === '/bridge/jlceda/pcb/board-outline-manage')
@@ -936,8 +942,15 @@ export class EdaBridgeServer {
     else if (!isReadOnlyRequest(pending.path ?? '', pending.payload)
       && isRecord(message.result)
       && message.result.commitUnknown === true) {
+      const pinNetworkChanged = pending.path === '/bridge/jlceda/schematic/component-edit'
+        && message.result.reason === 'pin_network_changed';
       this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000,
-        'write result could not be verified', message.result.nativeCallSettled === true);
+        pinNetworkChanged ? 'component pin network changed' : 'write result could not be verified',
+        message.result.nativeCallSettled === true);
+      if (pinNetworkChanged) {
+        const diagnostic = this.recoveryDiagnostics.get(requestId);
+        if (diagnostic) diagnostic.requiredReadback = 'schematic_connectivity_primitives';
+      }
     }
     else if (isPendingPcbImportResult(pending.path, pending.payload, message.result)) {
       this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native PCB import confirmation pending');

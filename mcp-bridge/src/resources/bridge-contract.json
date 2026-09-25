@@ -234,7 +234,7 @@
 			"toolName": "schematic_component_edit",
 			"path": "/bridge/jlceda/schematic/component-edit",
 			"owner": "bridge",
-			"timeoutPolicy": "default",
+			"timeoutPolicy": "standard-read",
 			"readOnlyIf": {
 				"field": "action",
 				"equals": "read"
