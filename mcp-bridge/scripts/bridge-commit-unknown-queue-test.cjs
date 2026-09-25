@@ -62,6 +62,7 @@ class MockBridgeTransport {
 	reportTaskStarted(requestId, _leaseTerm, context) {
 		this.started.push(requestId);
 		this.startedContexts.set(requestId, context);
+		this.afterStarted?.(requestId);
 	}
 
 	refreshServerActivity() {}
@@ -94,6 +95,8 @@ async function main() {
 	let readCalls = 0;
 	let pcbWriteCalls = 0;
 	let currentDocumentType = 3;
+	let currentSchematicPage = 'schematic-one';
+	let schematicDocumentOverride;
 	let gatedDocumentRead;
 	let hangingDocumentReads = 0;
 	let hangingEditablePageReads = false;
@@ -119,7 +122,7 @@ async function main() {
 					await gate.release.promise;
 				}
 				return {
-					uuid: currentDocumentType === 3 ? 'pcb-document' : 'schematic-one',
+					uuid: currentDocumentType === 3 ? 'pcb-document' : schematicDocumentOverride ?? currentSchematicPage,
 					documentType: currentDocumentType,
 				};
 			},
@@ -131,7 +134,7 @@ async function main() {
 					hungEditableGetterCalls += 1;
 					return new Promise(() => {});
 				}
-				return { uuid: 'schematic-one' };
+				return { uuid: currentSchematicPage };
 			},
 		},
 		dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: 'cached-pcb' }; } },
@@ -247,6 +250,29 @@ async function main() {
 		assert.equal(readAfterHungContext.error, undefined, 'later read-only work must not remain stuck behind the failed preflight');
 		hungContextGate.release.resolve();
 		readCalls = 0;
+		schematicDocumentOverride = 'schematic-two';
+		submit('unsynced-delete', { apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['to-delete'] });
+		const unsyncedDelete = await transport.resultFor('unsynced-delete');
+		assert.match(unsyncedDelete.error.message, /not synchronized/);
+		assert.equal(transport.started.includes('unsynced-delete'), false);
+		assert.equal(deleteCalls, 0);
+		schematicDocumentOverride = undefined;
+		transport.afterStarted = (requestId) => {
+			if (requestId === 'page-switch-before-delete')
+				currentSchematicPage = 'schematic-two';
+		};
+		submit('page-switch-before-delete', {
+			apiFullName: 'eda.sch_PrimitiveComponent.delete',
+			args: ['to-delete'],
+			expectedSchematicDeletePageUuid: 'schematic-two',
+		});
+		const switchedBeforeDelete = await transport.resultFor('page-switch-before-delete');
+		assert.match(switchedBeforeDelete.error.message, /删除前原理图图页已切换/);
+		assert.equal(transport.startedContexts.get('page-switch-before-delete').pageUuid, 'schematic-one');
+		assert.equal(deleteCalls, 0, 'the new page must not receive the old page deletion');
+		assert.equal(idReads, 0);
+		currentSchematicPage = 'schematic-one';
+		transport.afterStarted = undefined;
 		submit('uncertain-delete', { apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['to-delete'] });
 		await deleteEntered.promise;
 		transport.callbacks.onProbeRequested('queued-probe');

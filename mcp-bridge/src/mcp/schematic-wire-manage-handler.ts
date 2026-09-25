@@ -367,8 +367,6 @@ export async function handleSchematicWireManageTask(payload: unknown): Promise<u
 		deletionResult = await api.delete!.call(api, primitiveId!);
 	}
 	catch (error: unknown) { return unknownNativeWrite(action, primitiveId!, before, error); }
-	if (deletionResult === false)
-		return { ok: false, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, reason: 'native_delete_rejected', before };
 	try {
 		const afterSnapshot = await pageSnapshot();
 		if ('ok' in afterSnapshot)
@@ -377,8 +375,11 @@ export async function handleSchematicWireManageTask(payload: unknown): Promise<u
 			throw new Error('The active schematic page changed after deleting the wire.');
 		const after = await readCurrentWires(api, afterSnapshot);
 		await assertSamePage(runtime, snapshot.pageUuid);
-		if (after.some(wire => wire.primitiveId === primitiveId))
+		if (after.some(wire => wire.primitiveId === primitiveId)) {
+			if (deletionResult === false)
+				return { ok: false, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, reason: 'native_delete_rejected', before };
 			throw new Error('EDA wire remains after delete.');
+		}
 		return { ok: true, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, deleted: true, verified: true, before, wireCountAfter: after.length };
 	}
 	catch (error: unknown) { return unknownAfterWrite(action, primitiveId!, before, error); }

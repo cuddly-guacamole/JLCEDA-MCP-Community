@@ -49,6 +49,9 @@ async function main() {
 		dmt_Schematic: {
 			async getCurrentSchematicPageInfo() { return { uuid: currentPageUuid }; },
 		},
+		dmt_SelectControl: {
+			async getCurrentDocumentInfo() { return { uuid: currentPageUuid }; },
+		},
 		sch_PrimitiveComponent: {
 			async get(id) { return id === 'r1' ? primitive('r1', 'R1', metadata) : undefined; },
 			async modify(id, patch) {
@@ -137,6 +140,10 @@ async function main() {
 	assert.equal(deleted.result, true);
 	assert.deepEqual(deleted.deletedIds, ['a', 'b', 'c']);
 	assert.deepEqual([...remaining], []);
+	await assert.rejects(
+		handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: [[{ primitiveId: 'a' }]] }),
+		/只接受单个 ID 或 ID 数组/,
+	);
 	const initialDeleteApi = globalThis.eda.sch_PrimitiveComponent;
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAllPrimitiveId() { return ['timeout-id']; },
@@ -148,7 +155,7 @@ async function main() {
 	assert.deepEqual(uncertainDelete.uncertainIds, ['timeout-id']);
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAllPrimitiveId() { return ['fallback-timeout']; },
-		async get() { return primitive('fallback-timeout', 'R1'); },
+		async getAll() { return [primitive('fallback-timeout', 'R1')]; },
 		async delete(input) {
 			if (typeof input === 'string')
 				return false;
@@ -168,19 +175,73 @@ async function main() {
 			return false;
 		return remaining.delete(input.getState_PrimitiveId());
 	};
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [...remaining].map(id => primitive(id, 'R1'));
 	const objectFallback = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['d'] });
 	assert.equal(objectFallback.result, true);
 	assert.deepEqual(objectFallback.deletedIds, ['d']);
 
-	// Known IDs on another schematic page must be verified beyond the active page.
+	// A copied page can share primitive IDs with its source. Only the active page is deleted and verified.
+	const sourcePageIds = new Set(['shared-1', 'shared-2', 'other-page-component']);
+	const copiedPageIds = new Set(['shared-1', 'shared-2']);
+	let copiedPageIdReads = 0;
+	currentPageUuid = 'P2';
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async (_type, allPages) => {
+		copiedPageIdReads += 1;
+		return allPages ? [...sourcePageIds, ...copiedPageIds] : [...copiedPageIds];
+	};
+	globalThis.eda.sch_PrimitiveComponent.delete = async input => copiedPageIds.delete(typeof input === 'string' ? input : input.getState_PrimitiveId());
+	const copiedPageDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: [['shared-1', 'shared-2']] });
+	assert.equal(copiedPageDelete.result, true);
+	assert.equal(copiedPageDelete.pageUuid, 'P2');
+	assert.deepEqual(copiedPageDelete.deletedIds, ['shared-1', 'shared-2']);
+	assert.equal(copiedPageIdReads, 3, 'batch delete needs one initial list and one readback per ID');
+	assert.deepEqual([...sourcePageIds], ['shared-1', 'shared-2', 'other-page-component'], 'source page remains intact');
+	assert.equal(copiedPageIds.size, 0);
+	let crossPageNativeCalls = 0;
 	const otherPageIds = new Set(['other-page-component']);
-	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async (_type, allPages) => allPages ? [...remaining, ...otherPageIds] : [...remaining];
-	globalThis.eda.sch_PrimitiveComponent.get = async id => otherPageIds.has(id) ? primitive(id, 'U9') : undefined;
-	globalThis.eda.sch_PrimitiveComponent.delete = async input => otherPageIds.delete(typeof input === 'string' ? input : input.getState_PrimitiveId());
+	globalThis.eda.sch_PrimitiveComponent.delete = async () => {
+		crossPageNativeCalls += 1;
+		return false;
+	};
+	await assert.rejects(
+		handleApiInvokeTask({ apiFullName: 'x.sch_PrimitiveComponent.delete', args: ['other-page-component'] }),
+		/apiFullName 格式非法/,
+	);
+	assert.equal(crossPageNativeCalls, 0, 'a non-eda prefix must not bypass page-bound deletion');
 	const crossPageDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['other-page-component'] });
-	assert.equal(crossPageDelete.result, true);
-	assert.deepEqual(crossPageDelete.deletedIds, ['other-page-component']);
-	assert.deepEqual([...otherPageIds], []);
+	assert.equal(crossPageDelete.result, false);
+	assert.deepEqual(crossPageDelete.failedIds, ['other-page-component']);
+	assert.deepEqual([...otherPageIds], ['other-page-component']);
+	assert.equal(crossPageNativeCalls, 0, 'other-page ID must not reach the native delete API');
+	currentPageUuid = 'P1';
+	const originalDocumentInfo = globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo;
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'another-page' });
+	await assert.rejects(
+		handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['shared-1'] }),
+		/尚未同步/,
+	);
+	assert.equal(crossPageNativeCalls, 0);
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = originalDocumentInfo;
+	let switchedPageDeleteCalls = 0;
+	const switchedPageIds = new Set(['first', 'second']);
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId(_type, allPages) {
+			assert.equal(allPages, false);
+			return [...switchedPageIds];
+		},
+		async delete(id) {
+			switchedPageDeleteCalls += 1;
+			switchedPageIds.delete(id);
+			currentPageUuid = 'P3';
+			return true;
+		},
+	};
+	const switchedPageDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: [['first', 'second']] });
+	assert.equal(switchedPageDelete.commitUnknown, true);
+	assert.deepEqual(switchedPageDelete.uncertainIds, ['first']);
+	assert.deepEqual(switchedPageDelete.notAttemptedIds, ['second']);
+	assert.equal(switchedPageDeleteCalls, 1, 'page switch must stop the batch');
+	currentPageUuid = 'P1';
 
 	// A successful native deletion with a failed readback must quarantine later writes.
 	let postDeleteReads = 0;
@@ -205,14 +266,15 @@ async function main() {
 	assert.deepEqual(unknownDelete.notAttemptedIds, ['not-attempted']);
 	assert.deepEqual(attemptedDeletes, ['uncertain']);
 
-	// The next item's pre-read is still post-write for a batch that already deleted an item.
+	// The previous item's verified current-page read is reused as the next pre-read.
+	// A failed read after the second deletion reports that item as uncertain.
 	let batchReads = 0;
 	const batchRemaining = new Set(['done', 'next', 'later']);
 	const batchDeletes = [];
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAllPrimitiveId() {
 			batchReads += 1;
-			if (batchReads === 4)
+			if (batchReads === 3)
 				throw new Error('next-item ID readback failed');
 			return [...batchRemaining];
 		},
@@ -226,20 +288,33 @@ async function main() {
 	assert.equal(unknownNextPreRead.readbackRequired, true);
 	assert.deepEqual(unknownNextPreRead.deletedIds, ['done']);
 	assert.deepEqual(unknownNextPreRead.failedIds, ['absent']);
-	assert.deepEqual(unknownNextPreRead.uncertainIds, []);
-	assert.deepEqual(unknownNextPreRead.notAttemptedIds, ['next', 'later']);
-	assert.deepEqual(batchDeletes, ['done']);
+	assert.deepEqual(unknownNextPreRead.uncertainIds, ['next']);
+	assert.deepEqual(unknownNextPreRead.notAttemptedIds, ['later']);
+	assert.deepEqual(batchDeletes, ['done', 'next']);
 
 	// The object fallback must carry the same uncertainty when its object read fails.
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAllPrimitiveId() { return ['fallback-read']; },
-		async get() { throw new Error('object readback failed'); },
+		async getAll() { throw new Error('object readback failed'); },
 		async delete() { return false; },
 	};
 	const unknownFallbackObject = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['fallback-read'] });
 	assert.equal(unknownFallbackObject.commitUnknown, true);
 	assert.equal(unknownFallbackObject.readbackRequired, true);
 	assert.match(unknownFallbackObject.error, /object readback failed/);
+	let staleObjectPresent = true;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return ['stale-id']; },
+		async getAll() { return staleObjectPresent ? [primitive('stale-id', 'R1')] : []; },
+		async delete() {
+			staleObjectPresent = false;
+			return false;
+		},
+	};
+	const staleIdAfterDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['stale-id'] });
+	assert.equal(staleIdAfterDelete.commitUnknown, true, 'stale ID and object lists cannot prove deletion failed');
+	assert.deepEqual(staleIdAfterDelete.uncertainIds, ['stale-id']);
+	assert.match(staleIdAfterDelete.error, /对象与图元 ID 列表不一致/);
 
 	// Also cover the final ID readback after a successful object fallback deletion.
 	let fallbackReads = 0;
@@ -251,7 +326,7 @@ async function main() {
 				throw new Error('fallback ID readback failed');
 			return ['fallback-final'];
 		},
-		async get(id) { return primitive(id, 'R1'); },
+		async getAll() { return [primitive('fallback-final', 'R1')]; },
 		async delete(input) {
 			fallbackInputs.push(input);
 			return true;

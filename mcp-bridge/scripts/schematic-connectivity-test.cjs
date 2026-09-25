@@ -77,6 +77,7 @@ async function main() {
 				wireReads += 1;
 				return wires;
 			},
+			async getAllPrimitiveId() { return wires.map(item => item.getState_PrimitiveId()); },
 			async create(line, net) {
 				wireCreates += 1;
 				const created = wire(`wire-${wireCreates}`, net ?? '', line);
@@ -635,12 +636,12 @@ async function main() {
 	const cachedPort = { id: 'cached-old-page-port', net: 'NET_A', x: 0, y: 0 };
 	ports.splice(0, ports.length, cachedPort);
 	assert.equal((await handleSchematicReadTask({})).ok, true);
+	const originalCurrentComponentIds = globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId;
 	pageUuid = 'page-2';
-	const originalGetAllPrimitiveId = componentApi.getAllPrimitiveId;
 	componentApi.getAllPrimitiveId = async () => ['new-page-port'];
 	await assert.rejects(route({ action: 'netport_move', id: cachedPort.id, x: 20, y: 0 }), /器件列表与图元 ID 列表不一致/);
 	assert.equal(cachedPort.x, 0);
-	componentApi.getAllPrimitiveId = originalGetAllPrimitiveId;
+	componentApi.getAllPrimitiveId = originalCurrentComponentIds;
 	pageUuid = 'page-1';
 }
 

@@ -16,13 +16,15 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `schematic_connectivity_action` 在创建导线前检查与现有导线的电气接触，并要求明确列出允许接触的导线 ID。新导线的 `line` 最多包含 512 个数（256 个坐标点），不会限制读取图页上已有导线。检查网络名时会读取当前图页普通 NetLabel 的 `NET` 属性；父 ID 对应导线的属性按导线关联，父 ID 为空且坐标有效的属性按坐标检查。没有连接点的纯十字交叉不算接触。写入后回读导线 ID 和几何，若 EDA 改写了未允许的导线则报告提交状态不明。NetPort 使用当前图页图元的 `setState_X/Y().done()` 移动并回读确认，写前核对图页、编辑器文档与当前图元列表，移动前后的异步读取继续核对身份；写后执行一次语义网表回读，失败时报告 `commitUnknown: true` 并要求受控恢复。也可新建层次图端口并返回当前页目标网络的引脚回读。原生写入超时或写入后图元回读失败时返回 `commitUnknown: true`，后续写入等待 Server 受控恢复；前者须重启原 EDA 宿主。恢复时 `schematic_read` 可选 `includeConnectivityPrimitives:true`，返回未截断的当前页导线 ID/几何、NetPort 与 NetFlag 的 ID/网络/坐标、NET 属性和语义网表；图页切换或读取失败会拒绝回读。底层 EDA API 没有提供原子回滚，导线和端口写入后仍需复查完整网表。
 
-`schematic_wire_manage` 用完整当前页连接快照定位导线，`read` 输出不截断的导线 ID、几何、网络和样式。`modify` 更新单件正交路径、网络或样式；路径修改复用接触预览，网络改名限于未接触其他导线或显式网络标识的单件。`delete` 删除单件。写后重新读取并核对图页与目标；原生超时或回读无法确认时隔离后续写入，并通过 `schematic_read includeConnectivityPrimitives:true` 对原图页完整回读。
+`schematic_wire_manage` 用完整当前页连接快照定位导线，`read` 输出不截断的导线 ID、几何、网络和样式。`modify` 更新单件正交路径、网络或样式；路径修改复用接触预览，网络改名限于未接触其他导线或显式网络标识的单件。`delete` 删除单件，即使原生接口返回 `false` 也按当前页完整回读判断是否已删除。写后重新读取并核对图页与目标；原生超时或回读无法确认时隔离后续写入，并通过 `schematic_read includeConnectivityPrimitives:true` 对原图页完整回读。
 
-`schematic_text_manage` 使用官方 `sch_PrimitiveText` 接口读取、创建和删除当前原理图页的独立文字标注。`read` 返回不截断的完整列表或单条文字；写入时核对图页、编辑器文档与写后目标状态。EDA 3.2.181 / API 0.3.15 的两种原生修改方法都会破坏未请求的对齐方式，因此本工具暂不提供 `modify`，也拒绝显式写入 `alignMode`。默认对齐的文字可读取属性后删除并重新创建，新文字 ID 会变化；非默认对齐无法这样无损重建。提交状态未知时隔离后续写入，使用本工具的无过滤 `read` 完整回读原图页文字。
+`schematic_text_manage` 使用官方 `sch_PrimitiveText` 接口读取、创建和删除当前原理图页的独立文字标注。`read` 返回不截断的完整列表或单条文字；写入时核对图页、编辑器文档与写后目标状态。EDA 3.2.181 / API 0.3.15 的两种原生修改方法都会破坏未请求的对齐方式，因此本工具暂不提供 `modify`，也拒绝显式写入 `alignMode`。默认对齐的文字可读取属性后删除并重新创建，新文字 ID 会变化；非默认对齐无法这样无损重建。复制图页可与原页共享文字 ID，工具核对当前页文字对象与 ID 列表后操作。提交状态未知时隔离后续写入，使用本工具的无过滤 `read` 完整回读原图页文字。
 
-`schematic_read` 在普通读取和完整连接回读前后核对图页及编辑器文档 UUID，交叉比对器件列表与当前图元 ID 列表。复制页可能合法复用源页图元 ID，因此不依据跨页历史 ID 拒绝读取。当前身份或列表不一致时返回 `PAGE_NOT_READY`，等图页加载后重试；成功结果包含 `pageUuid`。
+`schematic_read` 在普通读取和完整连接回读前后核对图页及编辑器文档 UUID，并交叉比对当前页器件对象与 ID 列表；设置 `includeConnectivityPrimitives:true` 时还核对导线对象与 ID 列表。复制图页可与原页共享 ID；列表或身份未同步时返回 `PAGE_NOT_READY`，等图页加载后重试。成功结果包含 `pageUuid`。
 
 `schematic_component_edit` 只处理当前原理图页的普通器件。`read` 返回不截断的 ID、位置、方向、位号与 BOM 状态；`modify` 在调用原生 API 时带上完整的 `otherProperty`，并在写后重新读取目标。修改坐标、旋转或镜像时，会用当前页语义快照比较各引脚写入前后的网络；若网络变化，返回 `pin_network_changed` 和引脚明细，并隔离后续写入，要求同页完整连接图元和语义网络回读。`delete` 删除一个图元并核对其已不存在。NetPort 与 NetFlag 仍由连接和网络标识工具处理。其他原生调用未定或写后回读失败要求同页完整器件状态回读。
+
+`api_invoke` 调用 `eda.sch_PrimitiveComponent.delete` 时可传单个 ID 或 ID 数组。数组按当前图页逐项删除、逐项回读；`getAllPrimitiveId(undefined, false)` 只检查当前页，因此复制页与原页共享 ID 不会误报删除失败。切页或回读失败会停止后续删除，并要求回读执行时的原图页。`schematic_read` 对复制页同样接受共享 ID，以图页/文档同步和当前页对象、ID 列表一致性判断是否可读。
 
 `pcb_component_edit` 的 `read` 返回不截断的当前 PCB 器件状态。`create` 可按设备或封装库引用放置顶层、底层器件；`modify` 调整单个器件的层、坐标、角度、锁定状态、位号或 BOM 属性，并保留未指定的 `otherProperty` 键；`delete` 删除单个器件。每次写入后重新读取核对，原生调用未定或回读失败时隔离写入，要求在同一 PCB 完整回读器件状态。
 
@@ -192,7 +194,7 @@ Claude Desktop、Claude Code、Cursor 等客户端应将 `jlceda-mcp` 注册为�
 5. 普通网络标签创建失败时不要改用电源网络标识代替；3.x 请使用支持的导线操作，4.x 请查看 Bridge 调试日志。
 6. 状态异常时先关闭旧版 MCP Hub，再重启 AI 客户端与 EDA Bridge。
 
-`api_invoke` 中的 `eda.sch_PrimitiveComponent.modify` 和 `delete` 做兼容处理：修改时省略 `otherProperty` 会保留原值；传入图元 ID 数组删除时会逐项执行，跨当前原理图的全部图页核对，并返回 `deletedIds`、`failedIds`。删除后的图元读回失败会停止后续删除，返回 `commitUnknown: true`、`readbackRequired: true` 及待核对的 ID；此时应先完成受控恢复，不要直接重试。
+`api_invoke` 中的 `eda.sch_PrimitiveComponent.modify` 和 `delete` 做兼容处理：修改时省略 `otherProperty` 会保留原值；删除可传单个图元 ID 或 ID 数组，仅在任务执行时的当前原理图页逐项执行和核对，复制页与原页共享的 ID 不视作当前页残留。返回 `pageUuid`、`deletedIds`、`failedIds` 和总体 `result`。删除后的图元读回失败会停止后续删除，返回 `commitUnknown: true`、`readbackRequired: true` 及待核对的 ID；此时应先完成受控恢复，不要直接重试。
 ## 常见问题
 
 ### 聊天里看不到工具怎么办？

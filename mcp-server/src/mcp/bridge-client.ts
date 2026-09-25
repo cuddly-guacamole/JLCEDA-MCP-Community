@@ -73,7 +73,7 @@ interface RecoveryDiagnostic {
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
   targetPcbUuid?: string;
-  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_text_state' | 'pcb_layer_state' | 'pcb_routing_state' | 'pcb_document_inventory' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state' | 'schematic_text_state';
+  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_text_state' | 'pcb_layer_state' | 'pcb_routing_state' | 'pcb_document_inventory' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state' | 'schematic_text_state';
   hostRestartRequired?: boolean;
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
@@ -147,8 +147,6 @@ function isPageBoundWrite(path: string, payload: unknown): boolean {
     return false;
   if (path === '/bridge/jlceda/api/invoke' && isRecord(payload) && typeof payload.apiFullName === 'string') {
     const apiFullName = payload.apiFullName.trim().toLowerCase();
-    if (apiFullName === 'eda.sch_primitivecomponent.delete')
-      return false;
     return apiFullName.startsWith('eda.sch_') || apiFullName.startsWith('eda.pcb_');
   }
   return path.startsWith('/bridge/jlceda/pcb/')
@@ -208,7 +206,7 @@ function knownProjectTargetUuid(path: string, payload: unknown): string | undefi
   return optionalString(payload.args[0]);
 }
 
-function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
+function isSchematicComponentDelete(path: string, payload: unknown): boolean {
   return path === '/bridge/jlceda/api/invoke'
     && isRecord(payload)
     && typeof payload.apiFullName === 'string'
@@ -216,7 +214,8 @@ function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
 }
 
 function isSchematicConnectivityMutation(path: string, payload: unknown): boolean {
-  return path === '/bridge/jlceda/netlabel/place'
+  return isSchematicComponentDelete(path, payload)
+    || path === '/bridge/jlceda/netlabel/place'
 	|| (path === '/bridge/jlceda/schematic/wire-manage'
 		&& isRecord(payload) && (payload.action === 'modify' || payload.action === 'delete'))
     || (path === '/bridge/jlceda/schematic/connectivity'
@@ -1374,7 +1373,6 @@ export class EdaBridgeServer {
         ? { requiredReadback: 'pcb_routing_state' as const,
             hostRestartRequired: !nativeCallSettled || isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) }
         : {}),
-      ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
       ...(mutating && isSchematicPlacementWrite(pending.path ?? '')
         ? { requiredReadback: 'schematic_component_ids' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
@@ -1545,10 +1543,6 @@ export class EdaBridgeServer {
       && !isPcbRoutingReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error(`${pcbRoutingWriteLabel} requires eda.pcb_PrimitiveLine.getAll with no arguments for recovery readback.`);
     }
-    if (session.diagnostic.requiredReadback === 'schematic_project_review'
-      && readbackPath !== '/bridge/jlceda/schematic/review') {
-      throw new Error('Cross-page schematic component deletion requires schematic_review of the whole project for recovery readback.');
-    }
     if (session.diagnostic.requiredReadback === 'schematic_component_ids'
       && !isSchematicComponentIdReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Schematic placement requires current-page eda.sch_PrimitiveComponent.getAllPrimitiveId with args [null, false] for recovery readback.');
@@ -1655,7 +1649,7 @@ export class EdaBridgeServer {
       ? executionContext?.documentUuid ?? optionalString(payload.expectedDocumentUuid)
       : session.diagnostic.targetDocumentUuid ?? optionalString(payload.expectedDocumentUuid);
     const expectedProjectUuid = session.diagnostic.targetProjectUuid
-      ?? (session.diagnostic.pageBound || session.diagnostic.requiredReadback === 'schematic_project_review'
+      ?? (session.diagnostic.pageBound
         || session.diagnostic.requiredReadback === 'schematic_page_inventory'
         ? executionContext?.projectUuid : undefined)
       ?? optionalString(payload.expectedProjectUuid);

@@ -177,6 +177,41 @@ async function main() {
 	assert.equal((await handleSchematicComponentEditTask({ action: 'read' })).componentCount, 1);
 	const absent = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'r1' });
 	assert.equal(absent.reason, 'component_not_found');
+	const originalDocumentInfo = globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo;
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'another-page' });
+	const beforeUnsyncedDelete = callCount;
+	await assert.rejects(
+		handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'c1' }),
+		/not synchronized/,
+	);
+	assert.equal(callCount, beforeUnsyncedDelete);
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = originalDocumentInfo;
+	const sourceParts = new Map([['shared', { ...parts.get('c1'), primitiveId: 'shared', x: 501 }]]);
+	const copiedParts = new Map([['shared', { ...parts.get('c1'), primitiveId: 'shared', x: 601 }]]);
+	const componentApi = globalThis.eda.sch_PrimitiveComponent;
+	const originalGetAll = componentApi.getAll;
+	const originalGetAllIds = componentApi.getAllPrimitiveId;
+	const originalGet = componentApi.get;
+	const originalDelete = componentApi.delete;
+	componentApi.getAll = async () => [...(pageUuid === 'copied-page' ? copiedParts : sourceParts).values()].map(primitive);
+	componentApi.getAllPrimitiveId = async () => [...(pageUuid === 'copied-page' ? copiedParts : sourceParts).keys()];
+	componentApi.get = async () => primitive(sourceParts.get('shared'));
+	componentApi.delete = async (target) => {
+		const id = target.getState_PrimitiveId();
+		(target.getState_X() === 601 ? copiedParts : sourceParts).delete(id);
+		return true;
+	};
+	pageUuid = 'copied-page';
+	const copiedDelete = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'shared' });
+	assert.equal(copiedDelete.verified, true);
+	assert.equal(copiedDelete.before.x, 601, 'the target object comes from the active copy');
+	assert.equal(copiedParts.has('shared'), false);
+	assert.equal(sourceParts.has('shared'), true, 'the source page keeps its shared ID');
+	pageUuid = 'page-1';
+	componentApi.getAll = originalGetAll;
+	componentApi.getAllPrimitiveId = originalGetAllIds;
+	componentApi.get = originalGet;
+	componentApi.delete = originalDelete;
 
 	globalThis.eda.sch_PrimitiveComponent.modify = async () => {
 		throw new Error('RPC Call modify Timed Out');
@@ -188,18 +223,21 @@ async function main() {
 	globalThis.eda.sch_PrimitiveComponent.modify = async (id, patch) => {
 		Object.assign(parts.get(id), patch);
 	};
-	const originalGet = globalThis.eda.sch_PrimitiveComponent.get;
-	let getCount = 0;
-	globalThis.eda.sch_PrimitiveComponent.get = async (...args) => {
-		getCount += 1;
-		if (getCount === 1)
-			return originalGet(...args);
-		throw new Error('post-write read unavailable');
+	const liveGetAll = globalThis.eda.sch_PrimitiveComponent.getAll;
+	let postWriteReadFails = false;
+	globalThis.eda.sch_PrimitiveComponent.getAll = async (...args) => {
+		if (postWriteReadFails)
+			throw new Error('post-write read unavailable');
+		return liveGetAll(...args);
+	};
+	globalThis.eda.sch_PrimitiveComponent.modify = async (id, patch) => {
+		Object.assign(parts.get(id), patch);
+		postWriteReadFails = true;
 	};
 	const readbackFailure = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 25 } });
 	assert.deepEqual([readbackFailure.commitUnknown, readbackFailure.readbackRequired, readbackFailure.nativeCallSettled], [true, true, true]);
 	assert.equal(requiresHostRestartForResult(path, { action: 'modify' }, readbackFailure), false);
-	globalThis.eda.sch_PrimitiveComponent.get = originalGet;
+	globalThis.eda.sch_PrimitiveComponent.getAll = liveGetAll;
 	globalThis.eda.sch_PrimitiveComponent.modify = async (id, patch) => {
 		Object.assign(parts.get(id), patch);
 		pageUuid = 'page-2';

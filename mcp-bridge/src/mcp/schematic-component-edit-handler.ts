@@ -32,7 +32,6 @@ interface PinNetwork {
 interface ComponentApi extends Record<string, unknown> {
 	getAll: (type: string, allPages: boolean) => Promise<unknown>;
 	getAllPrimitiveId?: (type: string, allPages: boolean) => Promise<unknown>;
-	get?: (id: string) => Promise<unknown>;
 	modify?: (id: string, property: Record<string, unknown>) => Promise<unknown>;
 	delete?: (component: unknown) => Promise<unknown>;
 }
@@ -127,12 +126,17 @@ function componentApi(runtime: Record<string, unknown>): ComponentApi {
 }
 
 async function currentPageUuid(runtime: Record<string, unknown>): Promise<string> {
-	const api = runtime.dmt_Schematic;
-	if (!isPlainObjectRecord(api) || typeof api.getCurrentSchematicPageInfo !== 'function')
-		throw new TypeError('EDA current schematic page API is unavailable.');
-	const page = await api.getCurrentSchematicPageInfo();
-	if (!isPlainObjectRecord(page) || typeof page.uuid !== 'string' || !page.uuid.trim())
-		throw new TypeError('EDA current schematic page UUID is unavailable.');
+	const schematic = runtime.dmt_Schematic;
+	const select = runtime.dmt_SelectControl;
+	if (!isPlainObjectRecord(schematic) || typeof schematic.getCurrentSchematicPageInfo !== 'function'
+		|| !isPlainObjectRecord(select) || typeof select.getCurrentDocumentInfo !== 'function') {
+		throw new TypeError('EDA current schematic page and editor document APIs are unavailable.');
+	}
+	const [page, document] = await Promise.all([schematic.getCurrentSchematicPageInfo(), select.getCurrentDocumentInfo()]);
+	if (!isPlainObjectRecord(page) || !isPlainObjectRecord(document)
+		|| typeof page.uuid !== 'string' || !page.uuid.trim() || page.uuid !== document.uuid) {
+		throw new TypeError('EDA current schematic page and editor document are not synchronized.');
+	}
 	return page.uuid.trim();
 }
 
@@ -141,18 +145,31 @@ async function assertSamePage(runtime: Record<string, unknown>, expected: string
 		throw new Error('The active schematic page changed during the component operation.');
 }
 
-async function readCurrentParts(api: ComponentApi): Promise<ComponentState[]> {
+async function readCurrentPartEntries(api: ComponentApi): Promise<Array<{ primitive: unknown; state: ComponentState }>> {
 	const raw = await api.getAll('part', false);
 	if (!Array.isArray(raw))
 		throw new TypeError('EDA sch_PrimitiveComponent.getAll(part, false) did not return an array.');
-	return raw.map(readComponent);
+	return raw.map(primitive => ({ primitive, state: readComponent(primitive) }));
+}
+
+async function readCurrentParts(api: ComponentApi): Promise<ComponentState[]> {
+	return (await readCurrentPartEntries(api)).map(entry => entry.state);
 }
 
 async function readCurrentPartIds(api: ComponentApi): Promise<string[]> {
 	const raw = await api.getAllPrimitiveId!.call(api, 'part', false);
-	if (!Array.isArray(raw) || raw.some(id => typeof id !== 'string' || !id))
+	if (!Array.isArray(raw) || raw.some(id => typeof id !== 'string' || !id) || new Set(raw).size !== raw.length)
 		throw new TypeError('EDA sch_PrimitiveComponent.getAllPrimitiveId(part, false) did not return component IDs.');
 	return raw;
+}
+
+function assertCurrentPartEntries(entries: Array<{ state: ComponentState }>, ids: string[]): void {
+	const currentIds = new Set(ids);
+	const objectIds = entries.map(entry => entry.state.primitiveId);
+	if (objectIds.length !== ids.length || new Set(objectIds).size !== objectIds.length
+		|| objectIds.some(id => !currentIds.has(id))) {
+		throw new Error('Current-page component objects and IDs do not match; retry after page load.');
+	}
 }
 
 function requiredProperty(value: unknown): Record<string, unknown> {
@@ -267,8 +284,8 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 	if (!runtime)
 		throw new TypeError('EDA runtime is unavailable.');
 	const api = componentApi(runtime);
-	if (action !== 'read' && (typeof api.getAllPrimitiveId !== 'function' || typeof api.get !== 'function'))
-		throw new TypeError('EDA sch_PrimitiveComponent.getAllPrimitiveId/get is unavailable.');
+	if (action !== 'read' && typeof api.getAllPrimitiveId !== 'function')
+		throw new TypeError('EDA sch_PrimitiveComponent.getAllPrimitiveId is unavailable.');
 	if (action === 'modify' && typeof api.modify !== 'function')
 		throw new TypeError('EDA sch_PrimitiveComponent.modify is unavailable.');
 	if (action === 'delete' && typeof api.delete !== 'function')
@@ -284,11 +301,12 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 	await assertSamePage(runtime, pageUuid);
 	if (!ids.includes(primitiveId!))
 		return { ok: false, action, scope: SCOPE, pageUuid, primitiveId, reason: 'component_not_found' };
-	const target = await api.get!.call(api, primitiveId!);
+	const entries = await readCurrentPartEntries(api);
 	await assertSamePage(runtime, pageUuid);
-	const before = readComponent(target);
-	if (before.primitiveId !== primitiveId)
-		throw new TypeError('EDA component ID changed between current-page lookup and target read.');
+	assertCurrentPartEntries(entries, ids);
+	const targetEntry = entries.find(entry => entry.state.primitiveId === primitiveId)!;
+	const target = targetEntry.primitive;
+	const before = targetEntry.state;
 	if (action === 'modify') {
 		const fullOtherProperty = { ...before.otherProperty, ...(property!.otherProperty as Property | undefined) };
 		const update = { ...property!, otherProperty: fullOtherProperty };
@@ -304,9 +322,11 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 		}
 		try {
 			await assertSamePage(runtime, pageUuid);
-			const observed = await api.get!.call(api, primitiveId!);
-			const after = observed === undefined || observed === null ? undefined : readComponent(observed);
+			const afterIds = await readCurrentPartIds(api);
+			const afterEntries = await readCurrentPartEntries(api);
 			await assertSamePage(runtime, pageUuid);
+			assertCurrentPartEntries(afterEntries, afterIds);
+			const after = afterEntries.find(entry => entry.state.primitiveId === primitiveId)?.state;
 			if (!after || after.primitiveId !== primitiveId || !requestedValuesMatch(after, property!, fullOtherProperty))
 				throw new Error('EDA component state differs from the requested modification.');
 			if (beforePinNetworks) {
@@ -331,9 +351,11 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 	}
 	try {
 		await assertSamePage(runtime, pageUuid);
-		const remaining = (await readCurrentPartIds(api)).includes(primitiveId!);
+		const afterIds = await readCurrentPartIds(api);
+		const afterEntries = await readCurrentPartEntries(api);
 		await assertSamePage(runtime, pageUuid);
-		if (remaining)
+		assertCurrentPartEntries(afterEntries, afterIds);
+		if (afterIds.includes(primitiveId!))
 			throw new Error('EDA component remains on the current schematic page after delete.');
 		return { ok: true, action, scope: SCOPE, pageUuid, primitiveId, deleted: true, verified: true, before };
 	}

@@ -15,14 +15,14 @@ PCB `autoRouting` 指定网络时使用 `RoutingNets:["网络名"]`；返回值�
 ## 功能与工具
 
 - `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由；显式选择待命页前会先验证双向通信和任务队列，失败时保持原活动页，旧扩展需升级后才能显式选中。它们不会切换同一个 EDA 进程中的可见标签页；进程内打开或激活文档使用 `editor_navigate`。
-- `bridge_recover_client`：不可取消 EDA 修改超时时，先从 `bridge_clients` 取得超时诊断的 `requestId`，再调用 `action=recover` 建立恢复会话。底层调用若持续挂起或 PCB 自动布局的提交状态未知，此后须重启原 EDA 宿主以终止旧调用；待新 Bridge 连接和全新 `clientId` 建立，按写入目标身份选择新客户端，再执行只读 `action=readback`。普通掉线重连保留旧 `clientId`，不能用于恢复回读。当前页绑定写入缺少执行时图页 UUID 时不能以旧心跳或手填 UUID 解除隔离；跨页器件删除需读回全工程 `schematic_review`。导线创建及 NetPort 创建、移动需以 `schematic_read`、`readbackPayload:{"includeConnectivityPrimitives":true}` 完整读回当前页导线几何、NetPort 和网络属性；只查 `/context` 无法解除隔离。一般原理图当前页器件回读使用 `api_invoke` 调用 `getAllPrimitiveId` 或 `getAll`，传入 `args:[null,false]`；PCB 器件回读使用无参数的 `eda.pcb_PrimitiveComponent.getAll`。回读前始终阻止写操作，超时修改可能已经完成。
+- `bridge_recover_client`：不可取消 EDA 修改超时时，先从 `bridge_clients` 取得超时诊断的 `requestId`，再调用 `action=recover` 建立恢复会话。底层调用若持续挂起或 PCB 自动布局的提交状态未知，此后须重启原 EDA 宿主以终止旧调用；待新 Bridge 连接和全新 `clientId` 建立，按写入目标身份选择新客户端，再执行只读 `action=readback`。普通掉线重连保留旧 `clientId`，不能用于恢复回读。当前页绑定写入缺少执行时图页 UUID 时不能以旧心跳或手填 UUID 解除隔离；原理图器件批量删除需在原图页用 `schematic_read` 和 `includeConnectivityPrimitives:true` 回读。导线创建及 NetPort 创建、移动需以 `schematic_read`、`readbackPayload:{"includeConnectivityPrimitives":true}` 完整读回当前页导线几何、NetPort 和网络属性；只查 `/context` 无法解除隔离。一般原理图当前页器件回读使用 `api_invoke` 调用 `getAllPrimitiveId` 或 `getAll`，传入 `args:[null,false]`；PCB 器件回读使用无参数的 `eda.pcb_PrimitiveComponent.getAll`。回读前始终阻止写操作，超时修改可能已经完成。
 - `schematic_document_action`：检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置；执行视图导航、图元选择、图元属性/BBox 读取、保存和变更导入。
 - `schematic_layout_check`：基于结构化 EDA 几何估算原理图符号、引脚、属性文本、网络标签和导线重叠，报告密集区域与可选页面越界；`mode: "fix"` 仅在 `confirm: true` 时移动属性文本。
 - `schematic_connectivity_action`：预览新导线与现有导线的接触、明确允许接触后创建导线，并创建或移动当前图页 NetPort；单条新导线最多传入 256 个坐标点。返回图元和网络回读状态。NetPort 适合同页连接与层次图端口，跨页连接应使用跨页连接标识。
 - `schematic_wire_manage`：完整读取当前原理图页导线的 ID、网络、几何和样式，按 ID 修改单条导线的正交路径、网络或样式，也可删除单条导线。几何修改沿用导线接触预览，写后核对同页图元；未知提交用 `schematic_read` 的完整连接图元快照恢复。
 - `schematic_text_manage`：完整读取当前原理图页文字标注，支持按 ID 查询、创建和删除单条文字；写前核对图页与编辑器身份，写后回读目标 ID。当前 EDA API 修改已有文字会破坏对齐，故暂不提供修改，对齐值也只读。默认对齐的文字可读取后删除并重建，新文字 ID 会变化；非默认对齐无法这样无损重建。未知提交需完整回读原图页文字。
-- `schematic_read`：读取当前原理图页的电路语义和页 UUID；核对图页与文档身份、器件列表和当前图元 ID 列表，未同步时返回 `PAGE_NOT_READY`。复制页可以合法共享图元 ID。
-- `schematic_component_edit`：完整读取当前原理图页的普通器件状态，或按图元 ID 修改位置、旋转、镜像、位号与 BOM 属性及删除器件。修改会保留未指定的 BOM 扩展属性；改变几何状态时还会比较写入前后各引脚的网络，误接会报告 `pin_network_changed`。提交状态不明时，需在原图页完整读回普通器件及语义网络后再决定如何修正。
+- `schematic_read`：读取当前原理图页的电路语义和页 UUID；核对图页与编辑器文档身份、当前页器件对象和 ID 列表；读取完整连接图元时还核对导线对象和 ID 列表。未同步时返回 `PAGE_NOT_READY`。复制页可以合法共享图元 ID。
+- `schematic_component_edit`：完整读取当前原理图页的普通器件状态，或按图元 ID 修改位置、旋转、镜像、位号与 BOM 属性及删除器件。修改会保留未指定的 BOM 扩展属性；改变几何状态时还会比较写入前后各引脚的网络，误接会报告 `pin_network_changed`。批量删除可通过 `api_invoke` 调用 `eda.sch_PrimitiveComponent.delete` 并传 ID 数组，Bridge 会按执行时的当前图页逐项删除和回读；复制图页与原页可能共享 ID。提交状态不明时，需在原图页完整读回普通器件及语义网络后再决定如何修正。
 - `schematic_pages_manage`：在 `confirm: true` 时创建、复制、重命名或完整重排原理图页面。重排必须提供每个当前页面 UUID，Bridge 会重新读取并验证结果；不提供删除功能。
 - `pcb_documents_manage`：按当前工程 UUID 完整列出 PCB，或在 `confirm:true` 时创建游离/指定板子的 PCB、复制或重命名已有 PCB。写后核对工程和 PCB UUID；重命名要求目标 PCB 已打开，工具不会切换图页。未知提交须完整回读工程 PCB 目录。
 - `editor_navigate`：在当前工程中按文档 UUID 打开原理图图页或 PCB；也可按已有 `tabId` 激活，并提供文档 UUID 供切换前后核对。成功时回读工程、文档、图页与标签 ID；结果不明时先按目标文档回读，不要盲目重复切换。

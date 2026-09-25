@@ -126,6 +126,23 @@ async function currentPcbLayoutContext(): Promise<{ pageKind: 'pcb'; pageUuid?: 
 	};
 }
 
+async function currentSchematicDeletePage(): Promise<string> {
+	const [page, document] = await Promise.all([
+		eda.dmt_Schematic.getCurrentSchematicPageInfo(),
+		eda.dmt_SelectControl.getCurrentDocumentInfo(),
+	]);
+	const pageUuid = typeof page?.uuid === 'string' ? page.uuid.trim() : '';
+	const documentUuid = typeof document?.uuid === 'string' ? document.uuid.trim() : '';
+	if (!pageUuid || pageUuid !== documentUuid)
+		throw new Error('当前原理图图页与编辑器文档尚未同步，已取消删除。');
+	return pageUuid;
+}
+
+async function assertSchematicDeletePage(expected: string): Promise<void> {
+	if (await currentSchematicDeletePage() !== expected)
+		throw new Error('删除期间原理图图页已切换，已停止后续删除。');
+}
+
 // 在对象上解析段名，要求精确匹配。
 function resolveSegmentKey(target: Record<string, unknown>, segment: string): string {
 	if (segment in target) {
@@ -154,7 +171,7 @@ function resolveApiCallable(apiFullName: string): { callable: (...args: unknown[
 	}
 
 	const segments = normalized.split('.');
-	if (segments.length < 3 || segments.some(item => item.length === 0)) {
+	if (segments.length < 3 || segments[0].toLowerCase() !== 'eda' || segments.some(item => item.length === 0)) {
 		throw new Error(`apiFullName 格式非法: "${apiFullName}"。正确格式为 eda.模块名.方法名（以“.”分隔的至少三段路径）。`);
 	}
 
@@ -250,19 +267,38 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		invokeArgs[1] = { ...invokeArgs[1], otherProperty: otherProperty === undefined ? {} : { ...otherProperty } };
 	}
 
-	// EDA 3.x 的数组重载可能仅删除首项。逐个删除并核对实际图元列表。
-	if (normalizedPath === 'eda.sch_primitivecomponent.delete' && (typeof invokeArgs[0] === 'string' || (Array.isArray(invokeArgs[0]) && invokeArgs[0].every(id => typeof id === 'string')))) {
+	// EDA 3.x 的数组重载可能仅删除首项。只接受可逐项核验的 ID。
+	if (normalizedPath === 'eda.sch_primitivecomponent.delete') {
+		if (!(typeof invokeArgs[0] === 'string' && invokeArgs[0].trim())
+			&& !(Array.isArray(invokeArgs[0]) && invokeArgs[0].every(id => typeof id === 'string' && id.trim()))) {
+			throw new TypeError('原理图器件删除只接受单个 ID 或 ID 数组。');
+		}
 		const module = thisArg as {
-			get?: (id: string) => Promise<unknown>;
+			getAll?: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown>;
 			getAllPrimitiveId?: (componentType?: unknown, allSchematicPages?: boolean) => Promise<string[]>;
 		};
 		if (typeof module.getAllPrimitiveId !== 'function') {
 			throw new TypeError('无法核对器件图元列表，已取消删除。');
 		}
+		const pageUuid = await currentSchematicDeletePage();
+		if (typeof payload.expectedSchematicDeletePageUuid === 'string'
+			&& pageUuid !== payload.expectedSchematicDeletePageUuid) {
+			throw new Error('删除前原理图图页已切换，已取消删除。');
+		}
+		const readCurrentIds = async (): Promise<string[]> => {
+			const current = await Promise.resolve(module.getAllPrimitiveId!.call(thisArg, undefined, false));
+			await assertSchematicDeletePage(pageUuid);
+			if (!Array.isArray(current) || current.some(id => typeof id !== 'string' || !id)
+				|| new Set(current).size !== current.length) {
+				throw new TypeError('无法核对当前页器件图元列表，已停止删除。');
+			}
+			return current;
+		};
 		const ids = (typeof invokeArgs[0] === 'string' ? [invokeArgs[0]] : invokeArgs[0]) as string[];
 		const deletedIds: string[] = [];
 		const failedIds: string[] = [];
 		let deleteAttempted = false;
+		let remaining = await readCurrentIds();
 		const callDelete = async (target: unknown): Promise<string | undefined> => {
 			try {
 				await Promise.resolve(callable.call(thisArg, target));
@@ -290,9 +326,8 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			nativeCallSettled: false,
 		});
 		for (const [index, id] of ids.entries()) {
-			let before: string[];
 			try {
-				before = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+				await assertSchematicDeletePage(pageUuid);
 			}
 			catch (error: unknown) {
 				if (!deleteAttempted)
@@ -312,7 +347,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 					nativeCallSettled: true,
 				};
 			}
-			if (!before.includes(id)) {
+			if (!remaining.includes(id)) {
 				failedIds.push(id);
 				continue;
 			}
@@ -321,15 +356,28 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			if (initialDeleteError)
 				return unknownDeleteResult(id, index, initialDeleteError);
 			try {
-				let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
-				if (remaining.includes(id) && typeof module.get === 'function') {
-					const liveObject = await Promise.resolve(module.get.call(thisArg, id));
-					if (liveObject) {
-						const fallbackDeleteError = await callDelete(liveObject);
-						if (fallbackDeleteError)
-							return unknownDeleteResult(id, index, fallbackDeleteError);
-						remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
+				remaining = await readCurrentIds();
+				if (remaining.includes(id)) {
+					if (typeof module.getAll !== 'function')
+						throw new TypeError('无法核对当前页器件对象，删除结果尚未确认。');
+					const currentObjects = await Promise.resolve(module.getAll.call(thisArg, undefined, false));
+					await assertSchematicDeletePage(pageUuid);
+					if (!Array.isArray(currentObjects))
+						throw new TypeError('无法读取当前页器件对象，已停止删除。');
+					const currentObjectIds = currentObjects.map(item => getSyncState(item, 'getState_PrimitiveId', ''));
+					const currentIdSet = new Set(remaining);
+					if (currentObjectIds.length !== remaining.length
+						|| new Set(currentObjectIds).size !== currentObjectIds.length
+						|| currentObjectIds.some(objectId => !objectId || !currentIdSet.has(objectId))) {
+						throw new TypeError('当前页器件对象与图元 ID 列表不一致，删除结果尚未确认。');
 					}
+					const liveObject = currentObjects.find(item => getSyncState(item, 'getState_PrimitiveId', '') === id);
+					if (!liveObject)
+						throw new TypeError('当前页器件对象与图元 ID 列表不一致，删除结果尚未确认。');
+					const fallbackDeleteError = await callDelete(liveObject);
+					if (fallbackDeleteError)
+						return unknownDeleteResult(id, index, fallbackDeleteError);
+					remaining = await readCurrentIds();
 				}
 				(remaining.includes(id) ? failedIds : deletedIds).push(id);
 			}
@@ -350,7 +398,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 				};
 			}
 		}
-		return { apiFullName: resolvedPath, result: failedIds.length === 0, deletedIds, failedIds };
+		return { apiFullName: resolvedPath, pageUuid, result: failedIds.length === 0, deletedIds, failedIds };
 	}
 
 	if (normalizedPath === PCB_AUTO_LAYOUT && pendingAutoLayoutPcbUuid) {

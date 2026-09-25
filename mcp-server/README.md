@@ -14,7 +14,7 @@
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
-`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。跨页器件删除需以全工程 `schematic_review` 回读；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。完整安全恢复要求 Bridge 与 Server 均升级到 2.3.2；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
+`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。原理图器件批量删除绑定执行时的当前图页，恢复时以 `schematic_read includeConnectivityPrimitives:true` 回读原页；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。完整安全恢复要求 Bridge 与 Server 均升级到 2.3.2；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 
 PCB `import_changes` 返回 `pending_confirmation` 后，Server 将其列为全局写入阻断诊断。用户在原 EDA 对话框应用或取消并确认关闭后，使用诊断中的 `requestId` 调用 `bridge_recover_client`，传入 `action:"resolve_import"`、`confirm:true`、`resolution:"applied"` 或 `"cancelled"`。Server 核对原连接及 PCB 文档/图页，完整读回器件和网络；Bridge 收到同页解除确认后才恢复写入。只读查询在此期间仍可用，但 EDA API 不提供确认框完成事件，读回本身不能证明对话框已关闭。无法确认时以 `action:"recover"` 建立恢复会话，重启原 EDA 宿主，再用全新连接、`hostRestartConfirmed:true`、无参数 `eda.pcb_PrimitiveComponent.getAll` 做 `action:"readback"`；Server 还会分页读取完整网络名称。
 
@@ -41,7 +41,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生调用超时以及写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。诊断包含 `hostRestartRequired:true` 时先重启原宿主并传 `hostRestartConfirmed:true`；读回失败继续隔离，只查 `/context` 不会解除。
 
-`schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对器件列表和当前图元 ID。复制页可以合法复用源页图元 ID；若读取期间身份或列表未同步，则返回 `PAGE_NOT_READY`，等待加载后重试。成功结果包含 `pageUuid`。
+`schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对当前页器件对象与图元 ID 列表；设置 `includeConnectivityPrimitives:true` 时还比对导线对象与 ID 列表。若读取期间身份或列表未同步，则返回 `PAGE_NOT_READY`，等待加载后重试。复制页可以合法复用源页图元 ID。不要把未同步的快照用于放置或解除写入隔离；成功结果包含 `pageUuid`。
 
 ## 工具说明
 
@@ -54,6 +54,8 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 `schematic_text_manage` 的 `read` 返回当前页全部文字标注或指定 `primitiveId` 的单条文字；`create` 至少传入 `x`、`y`、`content`，可选旋转、颜色和字体；`delete` 按 ID 删除。现场 EDA 3.2.181 / API 0.3.15 修改已有文字会破坏对齐方式，本工具暂不提供 `modify`，也拒绝显式写入 `alignMode`。若原文字使用默认对齐，可先 `read` 记录属性，再 `delete` 和 `create` 来变更文字；新文字会得到新 ID。非默认对齐无法借此无损重建。每次写入后核对同页目标状态。若返回 `commitUnknown:true`，使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/schematic/text-manage"`、`readbackPayload:{"action":"read"}`，完整回读原图页文字；诊断要求时先重启原 EDA 宿主。
 
 `schematic_component_edit` 的 `read` 返回当前原理图页全部普通器件的完整状态；`modify` 用 `primitiveId` 和 `property` 修改单个器件的位置、方向、位号或属性，`delete` 按 ID 删除一个器件。`property.otherProperty` 与已有 BOM 扩展属性合并；其余未指定字段保持原值。写入后核对目标 ID 和请求的状态变化；几何修改还比较目标器件各引脚网络。`pin_network_changed` 会列出误接引脚并隔离写入，恢复时需对同页执行 `schematic_read`，设置 `includeConnectivityPrimitives:true`，核对连接图元和语义网表后修正。其他 `commitUnknown:true` 使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/schematic/component-edit"`、`readbackPayload:{"action":"read"}`，完整读回执行时的原图页；诊断要求宿主重启时先重启原 EDA 宿主。
+
+需要一次调用批量删除时，`api_invoke` 可传 `apiFullName:"eda.sch_PrimitiveComponent.delete"`、`args:[["ID1","ID2"]]`。Bridge 将数组拆成单个原生删除，并按执行时的当前图页逐项回读，返回 `deletedIds` 和 `failedIds`；复制图页与原页可共享 ID，不会把原页的同名 ID 当作当前页残留。`schematic_read` 也依据图页和编辑器文档身份、当前页对象与 ID 列表的一致性核验，不把共享 ID 当作切页失败。
 
 `pcb_component_edit` 的 `read` 返回当前 PCB 全部器件的不截断状态。`create` 接受设备或封装的库引用、顶层或底层、坐标与可选角度；`modify` 按 ID 修改单个器件的层、坐标、角度、锁定状态、位号或 BOM 属性，`delete` 按 ID 删除单个器件。修改 `otherProperty` 时会保留未指定的已有键。每次写入后重新读取并核对当前 PCB。提交状态不明时，`bridge_recover_client action=readback` 必须使用 `readbackPath:"/bridge/jlceda/pcb/component-edit"` 和 `readbackPayload:{"action":"read"}`，核对同一 PCB 的完整器件快照；诊断要求宿主重启时先重启原宿主。
 
