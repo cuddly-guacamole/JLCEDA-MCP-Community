@@ -923,7 +923,7 @@
   },
   {
     "name": "pcb_region_manage",
-    "description": "完整读取当前 PCB 的禁止区域与约束区域，或按 ID 读取单个区域；创建、修改、删除单个区域。创建使用单轮廓 polygonSource，修改也支持多轮廓；规则编号 2/5/6/7/8/9。写后回读；未知提交须在同一 PCB 完整回读全部区域。",
+    "description": "完整读取当前 PCB 的禁止区域与约束区域，或按 ID 读取单个区域；创建、修改、删除单个区域。创建使用单轮廓 polygonSource，修改也支持多轮廓；规则编号 2/5/6/7/8/9。部分修改返回 before/after 和 requestedMismatches；删除按完整区域列表核对。未知提交须在同一 PCB 完整回读全部区域。",
     "inputSchema": {
       "type": "object",
       "properties": {

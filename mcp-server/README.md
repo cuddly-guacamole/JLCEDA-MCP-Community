@@ -54,6 +54,8 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 可用单轮廓或多轮廓 `polygonSource` 修改现有区域，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
 
+区域修改若部分属性未生效，工具返回 `applied`、`before/after`、`requestedMismatches` 和 `verified:false`，完整回读已确定结果时不会开启未知提交隔离。删除通过完整区域列表核对目标 ID。
+
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 
 `component_place` 启动或检查，以及 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID、位号及 BOM 属性）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。

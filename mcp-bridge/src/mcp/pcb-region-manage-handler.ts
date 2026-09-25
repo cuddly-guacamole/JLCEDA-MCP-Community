@@ -107,10 +107,7 @@ function readRegion(raw: unknown): RegionState {
 }
 
 async function getOne(runtime: Record<string, unknown>, id: string, expectedPage: string): Promise<RegionState | undefined> {
-	const regionApi = api(runtime, 'pcb_PrimitiveRegion', ['get']);
-	const raw = await (regionApi.get as (id: string) => Promise<unknown>).call(regionApi, id);
-	await assertSamePage(runtime, expectedPage);
-	return raw == null ? undefined : readRegion(raw);
+	return (await getAll(runtime, expectedPage)).find(region => region.primitiveId === id);
 }
 
 async function getAll(runtime: Record<string, unknown>, expectedPage: string): Promise<RegionState[]> {
@@ -259,7 +256,7 @@ export async function handlePcbRegionManageTask(payload: unknown): Promise<unkno
 		const regions = await getAll(runtime, currentPage);
 		return { ok: true, action, scope: SCOPE, pageUuid: currentPage, complete: true, regionCount: regions.length, regions };
 	}
-	const regionApi = api(runtime, 'pcb_PrimitiveRegion', [action, 'get', 'getAll']);
+	const regionApi = api(runtime, 'pcb_PrimitiveRegion', [action, 'getAll']);
 	const context: Record<string, unknown> = { pageUuid: currentPage, ...(primitiveId ? { primitiveId } : {}) };
 	const before = primitiveId ? await getOne(runtime, primitiveId, currentPage) : undefined;
 	if (primitiveId && !before)
@@ -302,12 +299,29 @@ export async function handlePcbRegionManageTask(payload: unknown): Promise<unkno
 		}
 		const observed = await getOne(runtime, primitiveId!, currentPage);
 		if (action === 'modify') {
-			if (!observed || !matchesRequested(observed, requested!))
-				throw new Error('EDA PCB region readback differs from the requested properties.');
+			if (!observed || !matchesRequested(observed, requested!)) {
+				const requestedMismatches = observed
+					? Object.keys(requested!).filter(field => !matchesRequested(observed, { [field]: requested![field] }))
+					: Object.keys(requested!);
+				return {
+					ok: false,
+					action,
+					scope: SCOPE,
+					pageUuid: currentPage,
+					primitiveId,
+					reason: observed ? 'requested_properties_not_applied' : 'region_missing_after_modify',
+					before,
+					after: observed ?? null,
+					requested,
+					requestedMismatches,
+					applied: !observed || JSON.stringify(before) !== JSON.stringify(observed),
+					verified: false,
+				};
+			}
 			return { ok: true, action, scope: SCOPE, pageUuid: currentPage, primitiveId, region: observed, verified: true };
 		}
-		if (nativeResult === false || observed !== undefined)
-			throw new Error('EDA PCB region still exists after delete.');
+		if (observed !== undefined)
+			return { ok: false, action, scope: SCOPE, pageUuid: currentPage, primitiveId, reason: 'region_still_present', before, after: observed, applied: JSON.stringify(before) !== JSON.stringify(observed), verified: false };
 		return { ok: true, action, scope: SCOPE, pageUuid: currentPage, primitiveId, deleted: true, verified: true };
 	}
 	catch (error: unknown) {

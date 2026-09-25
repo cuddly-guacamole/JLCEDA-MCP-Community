@@ -107,9 +107,35 @@ async function main() {
 	assert.equal(modified.region.layer, 12);
 	assert.deepEqual(modified.region.ruleType, [9]);
 	assert.equal(modified.region.regionName, '电源约束区');
+	const propertyModify = globalThis.eda.pcb_PrimitiveRegion.modify;
+	globalThis.eda.pcb_PrimitiveRegion.modify = async (id, property) => {
+		const { lineWidth: _ignored, ...applied } = property;
+		return propertyModify(id, applied);
+	};
+	const partiallyModified = await handlePcbRegionManageTask({ action: 'modify', primitiveId: 'old-0', property: { polygonSource: ['R', 100, 200, 320, 400, 0, 0], lineWidth: 0.3 } });
+	assert.equal(partiallyModified.ok, false);
+	assert.equal(partiallyModified.applied, true);
+	assert.equal(partiallyModified.verified, false);
+	assert.equal(partiallyModified.commitUnknown, undefined);
+	assert.deepEqual(partiallyModified.requestedMismatches, ['lineWidth']);
+	assert.deepEqual(partiallyModified.after.polygonSource, ['R', 100, 200, 320, 400, 0, 0]);
+	assert.equal(partiallyModified.after.lineWidth, 0.2);
+	globalThis.eda.pcb_PrimitiveRegion.modify = propertyModify;
+	const placeholderGet = globalThis.eda.pcb_PrimitiveRegion.get;
+	globalThis.eda.pcb_PrimitiveRegion.get = async () => ({ getState_PrimitiveId: () => created.primitiveId });
 	const deleted = await handlePcbRegionManageTask({ action: 'delete', primitiveId: created.primitiveId });
 	assert.equal(deleted.verified, true);
 	assert.equal(deleted.deleted, true);
+	assert.equal((await handlePcbRegionManageTask({ action: 'read', primitiveId: created.primitiveId })).found, false);
+	globalThis.eda.pcb_PrimitiveRegion.get = placeholderGet;
+	const actualDelete = globalThis.eda.pcb_PrimitiveRegion.delete;
+	globalThis.eda.pcb_PrimitiveRegion.delete = async () => false;
+	const stillPresent = await handlePcbRegionManageTask({ action: 'delete', primitiveId: 'old-1' });
+	assert.equal(stillPresent.ok, false);
+	assert.equal(stillPresent.reason, 'region_still_present');
+	assert.equal(stillPresent.applied, false);
+	assert.equal(stillPresent.commitUnknown, undefined);
+	globalThis.eda.pcb_PrimitiveRegion.delete = actualDelete;
 
 	const beforeRejected = writes;
 	await assert.rejects(() => handlePcbRegionManageTask({ action: 'create', layer: 3, polygonSource: source, ruleType: [2] }), /layer must/);
@@ -131,18 +157,18 @@ async function main() {
 	assert.equal(requiresHostRestartForResult(path, {}, unknown), true);
 	globalThis.eda.pcb_PrimitiveRegion.modify = originalModify;
 
-	const originalGet = globalThis.eda.pcb_PrimitiveRegion.get;
+	const originalGetAll = globalThis.eda.pcb_PrimitiveRegion.getAll;
 	let reads = 0;
-	globalThis.eda.pcb_PrimitiveRegion.get = async (...args) => {
+	globalThis.eda.pcb_PrimitiveRegion.getAll = async (...args) => {
 		reads += 1;
 		if (reads === 2)
 			throw new Error('readback failed');
-		return originalGet(...args);
+		return originalGetAll(...args);
 	};
 	const readbackUnknown = await handlePcbRegionManageTask({ action: 'modify', primitiveId: 'old-0', property: { primitiveLock: true } });
 	assert.equal(readbackUnknown.commitUnknown, true);
 	assert.equal(readbackUnknown.nativeCallSettled, true);
-	globalThis.eda.pcb_PrimitiveRegion.get = originalGet;
+	globalThis.eda.pcb_PrimitiveRegion.getAll = originalGetAll;
 
 	const originalCreate = globalThis.eda.pcb_PrimitiveRegion.create;
 	globalThis.eda.pcb_PrimitiveRegion.create = async (...args) => {
