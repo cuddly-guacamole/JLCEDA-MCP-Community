@@ -757,6 +757,34 @@ async function main() {
 	assert.equal(failedRouting.ok, false);
 	assert.equal(failedRouting.routingState, 'not_started');
 	assert.deepEqual(failedRouting.result.failedNets, ['VCC']);
+	const selectedRoutingResult = { success: true, totalNetsCount: 1, successNetsCount: 1, failedNets: [], duration: 42 };
+	globalThis.eda.pcb_Document.autoRouting = async (props) => {
+		assert.deepEqual(props, { RoutingNets: ['VCC'] });
+		return selectedRoutingResult;
+	};
+	const selectedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
+	assert.deepEqual(selectedRouting.result, selectedRoutingResult, 'native result remains intact');
+	assert.deepEqual(selectedRouting.requestedRoutingNets, ['VCC']);
+	assert.deepEqual(selectedRouting.reportedFailedNetsOutsideSelection, []);
+	assert.equal(selectedRouting.reportedTotalNetsCountExceedsSelection, false);
+	assert.equal(selectedRouting.selectionScopeUnconfirmed, false);
+	assert.equal(selectedRouting.ok, undefined);
+	const scopeMismatchResult = { success: false, totalNetsCount: 62, successNetsCount: 0, failedNets: ['VCC', 'GND'], duration: 0 };
+	globalThis.eda.pcb_Document.autoRouting = async () => scopeMismatchResult;
+	const scopeMismatch = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
+	assert.deepEqual(scopeMismatch.result, scopeMismatchResult);
+	assert.deepEqual(scopeMismatch.requestedRoutingNets, ['VCC']);
+	assert.deepEqual(scopeMismatch.reportedFailedNetsOutsideSelection, ['GND']);
+	assert.equal(scopeMismatch.reportedTotalNetsCountExceedsSelection, true);
+	assert.equal(scopeMismatch.selectionScopeUnconfirmed, true);
+	assert.equal(scopeMismatch.ok, false);
+	assert.equal(scopeMismatch.routingState, 'not_started');
+	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: true, totalNetsCount: 2, successNetsCount: 2, failedNets: [], duration: 42 });
+	const countMismatch = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
+	assert.equal(countMismatch.ok, false, 'more reported participating nets than requested must not be treated as a confirmed success');
+	assert.deepEqual(countMismatch.reportedFailedNetsOutsideSelection, []);
+	assert.equal(countMismatch.reportedTotalNetsCountExceedsSelection, true);
+	assert.equal(countMismatch.selectionScopeUnconfirmed, true);
 	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: true, totalNetsCount: 3, successNetsCount: 2, failedNets: ['GND'], duration: 42 });
 	const partialRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });
 	assert.equal(partialRouting.ok, false, 'successful start with unfinished nets must not report completed routing');
@@ -764,10 +792,17 @@ async function main() {
 	globalThis.eda.pcb_Document.autoRouting = async () => {
 		throw new Error('RPC Call autoRouting Timed Out');
 	};
-	const uncertainRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ nets: ['VCC'] }] });
+	const uncertainRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
 	assert.equal(uncertainRouting.commitState, 'unknown');
 	assert.equal(uncertainRouting.commitUnknown, true);
 	assert.equal(uncertainRouting.retryBlocked, true);
+	assert.deepEqual(uncertainRouting.requestedRoutingNets, ['VCC']);
+	globalThis.eda.pcb_Document.autoRouting = async () => {
+		throw new Error('WebSocket closed');
+	};
+	const disconnectedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
+	assert.equal(disconnectedRouting.commitUnknown, true);
+	assert.deepEqual(disconnectedRouting.requestedRoutingNets, ['VCC']);
 	const linePrimitives = Array.from({ length: 125 }, (_, index) => ({ primitiveId: `line-${index}`, net: 'VCC', layer: 1, startX: index, startY: 0, endX: index + 1, endY: 1, lineWidth: 0.2, primitiveLock: false }));
 	globalThis.eda.pcb_PrimitiveLine = {
 		async getAll() { return linePrimitives; },

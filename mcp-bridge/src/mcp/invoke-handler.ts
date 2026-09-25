@@ -199,6 +199,11 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	const { callable, thisArg, resolvedPath } = resolveApiCallable(apiFullName);
 	const invokeArgs = Array.isArray(payload.args) ? payload.args : [];
 	const normalizedPath = resolvedPath.toLowerCase();
+	const routingProps = normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeArgs[0]) ? invokeArgs[0] : undefined;
+	const requestedRoutingNets = Array.isArray(routingProps?.RoutingNets)
+		&& routingProps.RoutingNets.every((net: unknown) => typeof net === 'string')
+		? [...routingProps.RoutingNets] as string[]
+		: undefined;
 	if (payload.includeCompletePositions !== undefined
 		&& (payload.includeCompletePositions !== true || normalizedPath !== PCB_COMPONENT_GET_ALL || invokeArgs.length !== 0)) {
 		throw new TypeError('includeCompletePositions is only supported for eda.pcb_PrimitiveComponent.getAll with no arguments.');
@@ -383,6 +388,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		if (normalizedPath === PCB_AUTO_ROUTING && /RPC Call autoRouting Timed Out/i.test(toSafeErrorMessage(error))) {
 			return {
 				apiFullName: resolvedPath,
+				...(requestedRoutingNets !== undefined ? { requestedRoutingNets } : {}),
 				ok: false,
 				commitState: 'unknown',
 				commitUnknown: true,
@@ -395,6 +401,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		if (!isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', payload) && isUnknownNativeRpcResult(errorMessage)) {
 			return {
 				apiFullName: resolvedPath,
+				...(requestedRoutingNets !== undefined ? { requestedRoutingNets } : {}),
 				ok: false,
 				commitUnknown: true,
 				readbackRequired: true,
@@ -490,15 +497,31 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult)) {
 		const failedNets = Array.isArray(invokeResult.failedNets) && invokeResult.failedNets.length > 0;
+		const reportedFailedNetsOutsideSelection = requestedRoutingNets && Array.isArray(invokeResult.failedNets)
+			? invokeResult.failedNets.filter((net: unknown): net is string => typeof net === 'string' && !requestedRoutingNets.includes(net))
+			: [];
+		const reportedTotalNetsCountExceedsSelection = requestedRoutingNets !== undefined
+			&& typeof invokeResult.totalNetsCount === 'number'
+			&& invokeResult.totalNetsCount > requestedRoutingNets.length;
+		const selectionScopeUnconfirmed = reportedFailedNetsOutsideSelection.length > 0 || reportedTotalNetsCountExceedsSelection;
+		const selectionDetails = requestedRoutingNets === undefined
+			? {}
+			: {
+					requestedRoutingNets,
+					reportedFailedNetsOutsideSelection,
+					reportedTotalNetsCountExceedsSelection,
+					selectionScopeUnconfirmed,
+				};
 		const partialCount = typeof invokeResult.totalNetsCount === 'number'
 			&& typeof invokeResult.successNetsCount === 'number'
 			&& invokeResult.successNetsCount < invokeResult.totalNetsCount;
-		const incomplete = invokeResult.success === false || failedNets || partialCount;
+		const incomplete = invokeResult.success === false || failedNets || partialCount || selectionScopeUnconfirmed;
 		if (!incomplete)
-			return { apiFullName: resolvedPath, result: await toSerializableAsync(invokeResult) };
+			return { apiFullName: resolvedPath, result: await toSerializableAsync(invokeResult), ...selectionDetails };
 		return {
 			apiFullName: resolvedPath,
 			result: await toSerializableAsync(invokeResult),
+			...selectionDetails,
 			ok: false,
 			routingState: invokeResult.success === false && invokeResult.successNetsCount === 0 && invokeResult.duration === 0 ? 'not_started' : 'incomplete',
 			verification: 'Check PCB tracks, vias, and DRC before treating this routing attempt as complete.',
