@@ -1164,7 +1164,12 @@ try {
     ['create-polyline', { action: 'create', kind: 'polyline', net: 'VCC', layer: 1, polygonSource: [0, 0, 'L', 10, 0, 10, 10] }, true],
     ['modify-via', { action: 'modify', kind: 'via', primitiveId: 'via-1', property: { diameter: 0.6 } }, false],
     ['delete-line', { action: 'delete', kind: 'line', primitiveId: 'line-1' }, true],
+    ['board-create-line', { action: 'create', kind: 'line', startX: 0, startY: 0, endX: 10, endY: 0 }, false],
+    ['board-modify-arc', { action: 'modify', kind: 'arc', primitiveId: 'board-arc-1', property: { arcAngle: 45 } }, true],
   ]) {
+    const editPath = caseName.startsWith('board-')
+      ? '/bridge/jlceda/pcb/board-outline-manage'
+      : '/bridge/jlceda/pcb/routing-edit';
     const editPort = await reservePort();
     const editServer = new EdaBridgeServer(editPort);
     const editUrl = `ws://127.0.0.1:${editPort}/bridge/ws${tokenQuery}`;
@@ -1185,12 +1190,12 @@ try {
           result: { ok: false, action: writePayload.action, kind: writePayload.kind,
             commitUnknown: true, readbackRequired: true, nativeCallSettled } }));
       });
-      assert.equal((await editServer.request('/bridge/jlceda/pcb/routing-edit', writePayload, 2000)).commitUnknown, true);
+      assert.equal((await editServer.request(editPath, writePayload, 2000)).commitUnknown, true);
       const diagnostic = (await editServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
       assert.equal(diagnostic.requiredReadback, 'pcb_routing_state');
       assert.equal(diagnostic.hostRestartRequired, !nativeCallSettled);
       assert.equal(diagnostic.context.pageUuid, context.pageUuid);
-      await assert.rejects(editServer.request('/bridge/jlceda/pcb/routing-edit', writePayload, 2000),
+      await assert.rejects(editServer.request(editPath, writePayload, 2000),
         /writes are blocked pending recovery readback/);
       const recovery = await editServer.request('/bridge/admin/recover-client', {
         action: 'recover', confirm: true, requestId: diagnostic.requestId,
@@ -1219,6 +1224,8 @@ try {
                 ? [{ primitiveId: 'via-1', net: 'VCC', x: 10, y: 10, holeDiameter: 0.3,
                     diameter: 0.6, viaType: 0, primitiveLock: false }]
                 : [{ primitiveId: 'line-1', net: 'VCC', layer: 1, startX: 0, startY: 0,
+                    endX: 10, endY: 0, lineWidth: 0.2, primitiveLock: false },
+                  { primitiveId: 'board-line-1', net: '', layer: 11, startX: 0, startY: 0,
                     endX: 10, endY: 0, lineWidth: 0.2, primitiveLock: false }];
           return { apiFullName, routingPrimitives, routingPrimitiveCount: routingPrimitives.length };
         }
@@ -1229,7 +1236,7 @@ try {
         readbackPayload: { apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [] },
         ...(!nativeCallSettled ? { hostRestartConfirmed: true } : {}) };
       await assert.rejects(editServer.request('/bridge/admin/recover-client', {
-        ...readbackRequest, readbackPath: '/bridge/jlceda/pcb/routing-edit', readbackPayload: { action: 'read' },
+        ...readbackRequest, readbackPath: editPath, readbackPayload: { action: 'read' },
       }, 2000), /requires eda.pcb_PrimitiveLine.getAll/);
       if (!nativeCallSettled)
         await assert.rejects(editServer.request('/bridge/admin/recover-client', {
@@ -1237,6 +1244,7 @@ try {
         }, 2000), /original EDA host was restarted/);
       const verified = await editServer.request('/bridge/admin/recover-client', readbackRequest, 2000);
       assert.equal(verified.readbackVerified, true);
+      assert.ok(verified.routingSnapshot.primitives.line.some(item => item.primitiveId === 'board-line-1' && item.layer === 11));
       assert.equal(verified.routingSnapshot.primitives.arc.length, 1);
       assert.equal(verified.routingSnapshot.primitives.polyline.length, 1);
       assert.equal(verified.routingSnapshot.primitives.via.length, 1);

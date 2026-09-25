@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- 新增 `pcb_board_outline_manage`，对板框层的直线、圆弧和折线提供完整读取及单图元创建、修改、删除，未知提交复用同板图元回读。
 - `schematic_read` 增加图页/文档身份及当前器件 ID 一致性检查，并兼容复制页合法复用源页图元 ID。
 - 新增 `schematic_component_edit`，可完整读取当前页普通器件并按 ID 修改或删除；写后核对目标状态，未知提交要求同页完整器件状态回读。
 - 新增 `pcb_component_edit`，可按设备或封装库引用放置 PCB 器件，修改位置与 BOM 属性或删除；未知提交要求同板完整器件状态回读。

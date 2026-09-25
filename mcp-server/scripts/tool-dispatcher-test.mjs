@@ -136,6 +136,14 @@ assert.equal(bridgePathForTool('pcb_routing_edit'), '/bridge/jlceda/pcb/routing-
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/routing-edit', { action: 'read' }), true);
 for (const action of ['create', 'modify', 'delete'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/routing-edit', { action }), false);
+await dispatcher.dispatch({ name: 'pcb_board_outline_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/board-outline-manage');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_board_outline_manage', { action: 'read' }) + 2000);
+assert.equal(bridgePathForTool('pcb_board_outline_manage'), '/bridge/jlceda/pcb/board-outline-manage');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/board-outline-manage', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/board-outline-manage', { action }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -548,6 +556,30 @@ for (const input of [
   { action: 'delete', kind: 'via' },
 ]) {
   assert.equal(pcbRoutingSchema.safeParse(input).success, false, `pcb_routing_edit should reject ${JSON.stringify(input)}`);
+}
+const boardOutlineDefinition = definitions.find((definition) => definition.name === 'pcb_board_outline_manage');
+assert.ok(boardOutlineDefinition);
+const boardOutlineSchema = z.fromJSONSchema(boardOutlineDefinition.inputSchema);
+for (const input of [
+  { action: 'read' },
+  { action: 'read', kind: 'line', primitiveId: 'l1' },
+  { action: 'create', kind: 'line', startX: 0, startY: 0, endX: 10, endY: 0 },
+  { action: 'create', kind: 'arc', startX: 0, startY: 0, endX: 10, endY: 10, arcAngle: 90 },
+  { action: 'create', kind: 'polyline', polygonSource: [0, 0, 'L', 10, 0] },
+  { action: 'modify', kind: 'line', primitiveId: 'l1', property: { endX: 20 } },
+  { action: 'modify', kind: 'polyline', primitiveId: 'p1', property: { polygonSource: [0, 0, 'L', 20, 0] } },
+  { action: 'delete', kind: 'arc', primitiveId: 'a1' },
+]) {
+  assert.equal(boardOutlineSchema.safeParse(input).success, true, `pcb_board_outline_manage should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'read', kind: 'line' },
+  { action: 'create', kind: 'line', startX: 0, startY: 0 },
+  { action: 'create', kind: 'line', net: 'GND', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0 },
+  { action: 'modify', kind: 'line', primitiveId: 'l1', property: { layer: 1 } },
+  { action: 'delete', kind: 'via', primitiveId: 'v1' },
+]) {
+  assert.equal(boardOutlineSchema.safeParse(input).success, false, `pcb_board_outline_manage should reject ${JSON.stringify(input)}`);
 }
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);

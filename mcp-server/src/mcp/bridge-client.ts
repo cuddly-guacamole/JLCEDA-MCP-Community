@@ -341,6 +341,12 @@ function isPcbRoutingEditMutation(path: string, payload: unknown): boolean {
     && (payload.action === 'create' || payload.action === 'modify' || payload.action === 'delete');
 }
 
+function isPcbBoardOutlineMutation(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/pcb/board-outline-manage'
+    && isRecord(payload)
+    && (payload.action === 'create' || payload.action === 'modify' || payload.action === 'delete');
+}
+
 const PCB_ROUTING_READBACK_APIS = [
   'eda.pcb_PrimitiveLine.getAll',
   'eda.pcb_PrimitiveArc.getAll',
@@ -878,7 +884,7 @@ export class EdaBridgeServer {
       if (diagnostic?.clientId === peer.clientId
         && isRecord(message.result)
         && ((diagnostic.requiredReadback === 'pcb_routing_state'
-          && (diagnostic.path === '/bridge/jlceda/pcb/connectivity' || diagnostic.path === '/bridge/jlceda/pcb/routing-edit')
+          && (diagnostic.path === '/bridge/jlceda/pcb/connectivity' || diagnostic.path === '/bridge/jlceda/pcb/routing-edit' || diagnostic.path === '/bridge/jlceda/pcb/board-outline-manage')
           && (message.result.nativeCallSettled === true
             || (message.result.ok === true && message.result.verified === true)))
           || ((diagnostic.requiredReadback === 'pcb_component_state'
@@ -1294,7 +1300,8 @@ export class EdaBridgeServer {
         : {}),
       ...((isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
         || isPcbConnectivityMutation(pending.path ?? '', pending.payload)
-        || isPcbRoutingEditMutation(pending.path ?? '', pending.payload))
+        || isPcbRoutingEditMutation(pending.path ?? '', pending.payload)
+        || isPcbBoardOutlineMutation(pending.path ?? '', pending.payload))
         ? { requiredReadback: 'pcb_routing_state' as const,
             hostRestartRequired: !nativeCallSettled || isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) }
         : {}),
@@ -1402,7 +1409,10 @@ export class EdaBridgeServer {
       throw new Error('No Bridge recovery is awaiting readback.');
     }
     const pcbRoutingWriteLabel = session.diagnostic.path === '/bridge/jlceda/api/invoke'
-      ? 'Timed-out PCB autoRouting' : 'Unverified PCB routing write';
+      ? 'Timed-out PCB autoRouting'
+      : session.diagnostic.path === '/bridge/jlceda/pcb/board-outline-manage'
+        ? 'Unverified PCB board outline write'
+        : 'Unverified PCB routing write';
     if (String(payload.recoveryId ?? '').trim() !== session.recoveryId) {
       throw new Error('recoveryId does not match the active recovery session.');
     }
