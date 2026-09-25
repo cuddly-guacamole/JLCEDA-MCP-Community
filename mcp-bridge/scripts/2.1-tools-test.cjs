@@ -972,7 +972,9 @@ async function main() {
 	assert.equal(project.schematicPages.items.length, 3);
 	assert.equal(project.schematicPages.items[2].parentSchematicUuid, 'sch-2');
 	const currentSchematicPages = globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo;
-	globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo = async () => { throw new Error('No active schematic on PCB page'); };
+	globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo = async () => {
+		throw new Error('No active schematic on PCB page');
+	};
 	assert.equal((await handleProjectInfoTask({ includePages: true })).schematicPages.total, 3);
 	globalThis.eda.dmt_Schematic.getCurrentSchematicAllSchematicPagesInfo = currentSchematicPages;
 	const limitedPages = await handleProjectInfoTask({ includePages: true, limit: 1 });
