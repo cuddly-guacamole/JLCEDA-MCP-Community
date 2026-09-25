@@ -2234,6 +2234,75 @@ try {
     }
   }
 
+  const regionPort = await reservePort();
+  const regionServer = new EdaBridgeServer(regionPort);
+  let oldRegionClient;
+  let freshRegionClient;
+  try {
+    await regionServer.start();
+    const regionUrl = `ws://127.0.0.1:${regionPort}/bridge/ws${tokenQuery}`;
+    const pageContext = { documentUuid: 'region-document', projectUuid: 'region-project',
+      pageKind: 'pcb', pageUuid: 'region-page' };
+    oldRegionClient = await registerEda(regionUrl, 'region-old', pageContext);
+    oldRegionClient.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      oldRegionClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'region-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+      oldRegionClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'region-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { ok: false, action: 'create', commitUnknown: true, nativeCallSettled: false } }));
+    });
+    const writePayload = { action: 'create', layer: 1, polygonSource: ['R', 0, 0, 100, 100, 0, 0], ruleType: [2] };
+    assert.equal((await regionServer.request('/bridge/jlceda/pcb/region-manage', writePayload, 2000)).commitUnknown, true);
+    const diagnostic = (await regionServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(diagnostic.requiredReadback, 'pcb_region_state');
+    assert.equal(diagnostic.hostRestartRequired, true);
+    const recovery = await regionServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: diagnostic.requestId,
+    }, 2000);
+    oldRegionClient.socket.close();
+    await waitUntil(async () => (await regionServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'region-old')?.ready === false);
+    freshRegionClient = await registerEda(regionUrl, 'region-fresh', pageContext);
+    const region = { primitiveId: 'r1', layer: 1, polygonSource: ['R', 0, 0, 100, 100, 0, 0],
+      ruleType: [2], regionName: null, lineWidth: 0.2, primitiveLock: false };
+    const snapshot = { ok: true, action: 'read', scope: 'current_pcb_page', complete: true,
+      pageUuid: 'region-page', regionCount: 1, regions: [region] };
+    let readback = snapshot;
+    attachTaskResponder(freshRegionClient.socket, 'region-fresh', message => {
+      if (message.path === '/bridge/jlceda/context')
+        return { currentDocumentInfo: { uuid: 'region-document', parentProjectUuid: 'region-project' },
+          currentProjectInfo: { uuid: 'region-project' }, currentPcbInfo: { uuid: 'region-page' } };
+      assert.equal(message.path, '/bridge/jlceda/pcb/region-manage');
+      assert.deepEqual(message.payload, { action: 'read' });
+      return readback;
+    });
+    const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+      clientId: 'region-fresh', hostRestartConfirmed: true,
+      readbackPath: '/bridge/jlceda/pcb/region-manage', readbackPayload: { action: 'read' } };
+    await assert.rejects(regionServer.request('/bridge/admin/recover-client', {
+      ...recoveryReadback, readbackPayload: { action: 'read', primitiveId: 'r1' },
+    }, 2000), /without primitiveId/);
+    await assert.rejects(regionServer.request('/bridge/admin/recover-client', {
+      ...recoveryReadback, hostRestartConfirmed: false,
+    }, 2000), /original EDA host was restarted/);
+    readback = { ...snapshot, regionCount: 2 };
+    await assert.rejects(regionServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /region state readback was incomplete/);
+    readback = { ...snapshot, regions: [{ ...region, ruleType: [3] }] };
+    await assert.rejects(regionServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /region readback was incomplete/);
+    const complexRegion = { ...region, polygonSource: [region.polygonSource, ['R', 20, 20, 40, 40, 0, 0]] };
+    readback = { ...snapshot, regions: [complexRegion] };
+    const verified = await regionServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+    assert.equal(verified.readbackVerified, true);
+    assert.deepEqual(verified.readback.regions, [complexRegion]);
+    assert.equal(verified.writesRemainBlocked, false);
+  } finally {
+    oldRegionClient?.socket.close();
+    freshRegionClient?.socket.close();
+    regionServer.close();
+  }
+
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
   assert.equal(pageMutationServer.validateCompleteSchematicPages({
