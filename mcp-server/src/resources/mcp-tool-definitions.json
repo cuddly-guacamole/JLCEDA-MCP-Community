@@ -208,11 +208,11 @@
   },
   {
     "name": "schematic_read",
-    "description": "读取当前原理图页面的完整电路语义快照及页 UUID；核对图页/文档身份与当前页器件对象、ID 列表，includeConnectivityPrimitives=true 时另核对导线对象、ID 列表；未同步则报告 PAGE_NOT_READY。复制页可合法共享源页图元 ID。受控恢复时还完整回读导线 ID/几何、NetPort ID/坐标/网络及 NET 属性；方向属性无法由当前 EDA API 验证。",
+    "description": "读取当前原理图页面的完整电路语义快照及页 UUID；核对图页/文档身份与当前页器件对象、ID 列表，includeConnectivityPrimitives=true 时另完整回读并核对导线对象、ID 列表、NetPort、NetFlag 及 NET 属性，可用于常规连线核查、写后验证或受控恢复；未同步则报告 PAGE_NOT_READY。复制页可合法共享源页图元 ID；方向属性无法由当前 EDA API 验证。",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "includeConnectivityPrimitives": { "type": "boolean", "default": false, "description": "仅在连接图元写入结果未知后的受控恢复中使用；返回完整的当前页连接图元 JSON 快照。" },
+        "includeConnectivityPrimitives": { "type": "boolean", "default": false, "description": "按需返回完整的当前页连接图元 JSON 快照，可用于局部连线核查、写后验证及未知提交后的受控恢复；大图页可配合 timeoutMs。" },
         "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000, "description": "大原理图的完整语义读取执行预算。" }
       },
       "additionalProperties": false
@@ -341,7 +341,7 @@
   },
   {
     "name": "schematic_connectivity_action",
-    "description": "安全预览和创建原理图导线，或在当前图页创建、移动 NetPort。NetPort 是层次图端口，可用于同页连接；跨页连接请用跨页连接标识。纯十字交叉没有连接点时不算接触；导线电气接触现有导线时须先预览并明确列出允许接触的导线 ID；写入后需回读网表确认。",
+    "description": "安全预览和创建原理图导线，或在当前图页创建、移动 NetPort。NetPort 是层次图端口，可用于同页连接；跨页连接请用跨页连接标识。纯十字交叉没有连接点时不算接触；导线电气接触现有导线时须先预览并明确列出允许接触的导线 ID。wire_create 成功后还须调用 schematic_read includeConnectivityPrimitives=true，核对同页导线及语义网络；返回的 net 只是请求值。",
     "inputSchema": {
       "type": "object",
       "properties": {
