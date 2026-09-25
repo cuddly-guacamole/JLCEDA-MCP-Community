@@ -44,6 +44,10 @@ interface NetLabelApi {
 export type NetLabelKind = 'Power' | 'Ground' | 'AnalogGround' | 'ProtectGround' | 'NetLabel';
 const NET_LABEL_CREATE_TIMEOUT_MS = 5_000;
 
+function isUnknownNativeCreateResult(errorMessage: string): boolean {
+	return /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i.test(errorMessage);
+}
+
 interface PinObject {
 	x: number;
 	y: number;
@@ -273,10 +277,12 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 	const results = [];
 	let successCount = 0;
 	let failureCount = 0;
+	let commitUnknown = false;
 
 	for (let i = 0; i < placements.length; i += 1) {
 		const placement = placements[i];
 		const netLabelKind = detectNetLabelKind(placement.netName);
+		let nativeCreateStarted = false;
 		if (netLabelKind === 'NetLabel' && unsupportedEditorVersion) {
 			results.push({
 				index: i,
@@ -334,6 +340,7 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 			let result: unknown;
 			if (netLabelKind === 'NetLabel') {
 				const netLabelApi = resolveNetLabelApi();
+				nativeCreateStarted = true;
 				result = await createNetLabelWithTimeout(
 					Promise.resolve(netLabelApi.createNetLabel.call(
 						netLabelApi.context,
@@ -345,6 +352,7 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 				);
 			}
 			else {
+				nativeCreateStarted = true;
 				result = await Promise.resolve(
 					netFlagApi.createNetFlag.call(
 						netFlagApi.context,
@@ -388,15 +396,20 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 			if (error instanceof BridgeTaskTimeoutError) {
 				throw error;
 			}
+			const errorMessage = toSafeErrorMessage(error);
 			results.push({
 				index: i,
 				componentId: placement.componentId,
 				pinIdentifier: placement.pinIdentifier,
 				netName: placement.netName,
 				success: false,
-				error: toSafeErrorMessage(error),
+				error: errorMessage,
 			});
 			failureCount += 1;
+			if (nativeCreateStarted && isUnknownNativeCreateResult(errorMessage)) {
+				commitUnknown = true;
+				break;
+			}
 		}
 	}
 
@@ -407,6 +420,11 @@ export async function handleNetLabelPlaceTask(payload: unknown): Promise<unknown
 		failureCount,
 		total: placements.length,
 		results,
-		message: `网络标签放置完成：成功 ${String(successCount)} 个，失败 ${String(failureCount)} 个。`,
+		...(commitUnknown
+			? { commitUnknown: true, readbackRequired: true, nativeCallSettled: false, notAttemptedCount: placements.length - results.length }
+			: {}),
+		message: commitUnknown
+			? `网络标签创建结果未知：成功 ${String(successCount)} 个，待核对 ${String(failureCount)} 个，未尝试 ${String(placements.length - results.length)} 个。`
+			: `网络标签放置完成：成功 ${String(successCount)} 个，失败 ${String(failureCount)} 个。`,
 	};
 }

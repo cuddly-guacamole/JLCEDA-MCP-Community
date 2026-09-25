@@ -467,6 +467,58 @@ async function main() {
 		createNetLabelCalls.push(args);
 		return { primitiveId: 'label-1' };
 	};
+	const originalFlagCreate = globalThis.eda.sch_PrimitiveComponent.createNetFlag;
+	const originalLabelCreate = globalThis.eda.sch_PrimitiveAttribute.createNetLabel;
+	let flagCreateCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = async () => {
+		flagCreateCalls += 1;
+		if (flagCreateCalls === 2)
+			throw new Error('RPC Call createNetFlag Timed Out');
+		return { primitiveId: `flag-${flagCreateCalls}` };
+	};
+	const uncertainFlag = await handleNetLabelPlaceTask({ placements: [
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'VCC' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'AGND' },
+	] });
+	assert.equal(flagCreateCalls, 2);
+	assert.equal(uncertainFlag.successCount, 1);
+	assert.equal(uncertainFlag.failureCount, 1);
+	assert.equal(uncertainFlag.notAttemptedCount, 1);
+	assert.equal(uncertainFlag.commitUnknown, true);
+	assert.equal(uncertainFlag.readbackRequired, true);
+	assert.equal(uncertainFlag.nativeCallSettled, false);
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = originalFlagCreate;
+	let flagCalledAfterLabelDisconnect = false;
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = async () => {
+		flagCalledAfterLabelDisconnect = true;
+		return { primitiveId: 'unexpected-flag' };
+	};
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => { throw new Error('connection lost'); };
+	const uncertainLabel = await handleNetLabelPlaceTask({ placements: [
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'UART_TX' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+	] });
+	assert.equal(uncertainLabel.commitUnknown, true);
+	assert.equal(uncertainLabel.notAttemptedCount, 1);
+	assert.equal(flagCalledAfterLabelDisconnect, false);
+	let deterministicFlagCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = async () => {
+		deterministicFlagCalls += 1;
+		if (deterministicFlagCalls === 1)
+			throw new Error('Invalid net flag');
+		return { primitiveId: 'valid-flag' };
+	};
+	const rejectedFlag = await handleNetLabelPlaceTask({ placements: [
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'VCC' },
+	] });
+	assert.equal(deterministicFlagCalls, 2);
+	assert.equal(rejectedFlag.commitUnknown, undefined);
+	assert.equal(rejectedFlag.successCount, 1);
+	assert.equal(rejectedFlag.failureCount, 1);
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = originalFlagCreate;
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = originalLabelCreate;
 
 	const modified = await handleNetLabelModifyTask({
 		target: { type: 'pin', componentId: 'component-1', pinIdentifier: '1' },
