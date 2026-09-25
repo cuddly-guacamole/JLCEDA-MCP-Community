@@ -73,6 +73,26 @@ function requiredString(value: unknown, name: string): string {
 	return value.trim();
 }
 
+async function currentSchematicPageUuid(eda: Record<string, unknown>): Promise<string> {
+	const api = eda.dmt_Schematic;
+	const editor = eda.dmt_SelectControl;
+	if (!isPlainObjectRecord(api) || typeof api.getCurrentSchematicPageInfo !== 'function'
+		|| !isPlainObjectRecord(editor) || typeof editor.getCurrentDocumentInfo !== 'function') {
+		throw new TypeError('EDA current schematic page or editor document API is unavailable.');
+	}
+	const [page, document] = await Promise.all([api.getCurrentSchematicPageInfo(), editor.getCurrentDocumentInfo()]);
+	if (!isPlainObjectRecord(page) || typeof page.uuid !== 'string' || !page.uuid.trim()
+		|| !isPlainObjectRecord(document) || document.uuid !== page.uuid) {
+		throw new Error('The active schematic page and editor document are not synchronized.');
+	}
+	return page.uuid.trim();
+}
+
+async function assertSameSchematicPage(eda: Record<string, unknown>, expected: string): Promise<void> {
+	if (await currentSchematicPageUuid(eda) !== expected)
+		throw new Error('The active schematic page changed during the NetPort move.');
+}
+
 function sameCoordinate(first: number, second: number): boolean {
 	return Math.abs(first - second) <= COORDINATE_EPSILON;
 }
@@ -394,18 +414,38 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 	const x = requiredNumber(payload.x, 'x');
 	const y = requiredNumber(payload.y, 'y');
 	const target = { x, y };
+	const pageUuid = await currentSchematicPageUuid(eda);
 	const api = componentApi(eda);
 	const components = await readComponents(api);
+	await assertSameSchematicPage(eda, pageUuid);
 	const current = components.find(component => component.id === id);
 	if (!current)
 		throw new Error(`Current schematic page does not contain primitive ${id}.`);
 	if (current.type !== 'netport')
 		throw new TypeError(`Primitive ${id} is ${current.type || 'unknown'}, not a NetPort.`);
-	if (samePoint(current, target))
-		return { ok: true, action: 'netport_move', id, net: current.net, from: { x: current.x, y: current.y }, to: target, unchanged: true, netlistReadback: await readTargetNetwork(current.net), semanticScope: 'current_schematic_page_hierarchical_port' };
+	const pageReadback = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	if (!isPlainObjectRecord(pageReadback) || pageReadback.ok !== true || pageReadback.pageUuid !== pageUuid
+		|| typeof pageReadback.connectivityPrimitivesSnapshot !== 'string') {
+		throw new Error(`Cannot verify the NetPort's current page: ${isPlainObjectRecord(pageReadback) ? String(pageReadback.error ?? 'schematic_read failed') : 'schematic_read failed'}`);
+	}
+	const pagePrimitives: unknown = JSON.parse(pageReadback.connectivityPrimitivesSnapshot);
+	const netPorts = isPlainObjectRecord(pagePrimitives) ? pagePrimitives.netPorts : undefined;
+	const currentOnPage = Array.isArray(netPorts) ? netPorts.find(port => isPlainObjectRecord(port) && port.primitiveId === id) : undefined;
+	if (!isPlainObjectRecord(currentOnPage) || currentOnPage.net !== current.net
+		|| !samePoint({ x: Number(currentOnPage.x), y: Number(currentOnPage.y) }, current)) {
+		throw new Error(`NetPort ${id} is not confirmed on the active schematic page.`);
+	}
+	await assertSameSchematicPage(eda, pageUuid);
+	if (samePoint(current, target)) {
+		const netlistReadback = await readTargetNetwork(current.net);
+		await assertSameSchematicPage(eda, pageUuid);
+		return { ok: true, action: 'netport_move', pageUuid, id, net: current.net, from: { x: current.x, y: current.y }, to: target, unchanged: true, netlistReadback, semanticScope: 'current_schematic_page_hierarchical_port' };
+	}
 	const otherPort = components.find(component => component.id !== id && (component.type === 'netport' || component.type === 'netflag') && samePoint(component, target) && component.net !== current.net);
 	const wires = await readWires(wireApi(eda));
+	await assertSameSchematicPage(eda, pageUuid);
 	const labels = await readWireNetLabels(eda);
+	await assertSameSchematicPage(eda, pageUuid);
 	const wireNets = effectiveWireNets(wires, components, labels);
 	const otherLabel = unparentedLabels(labels).find(label => samePoint(label, target) && label.net !== current.net);
 	const foreignWire = wires.find(wire => [...(wireNets.get(wire.id) ?? [])].some(name => name !== current.net) && wire.segments.some(segment => pointOnSegment({ x, y }, segment)));
@@ -416,6 +456,7 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		: current.primitive;
 	if (!isPlainObjectRecord(primitive) || typeof primitive.setState_X !== 'function' || typeof primitive.setState_Y !== 'function' || typeof primitive.done !== 'function')
 		throw new TypeError('EDA NetPort state setters or done API are unavailable.');
+	await assertSameSchematicPage(eda, pageUuid);
 	(primitive.setState_X as (value: number) => unknown).call(primitive, x);
 	(primitive.setState_Y as (value: number) => unknown).call(primitive, y);
 	try {
@@ -425,17 +466,22 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		return unknownNativeWrite('netport_move', error, { id, net: current.net, from: { x: current.x, y: current.y }, to: target });
 	}
 	try {
+		await assertSameSchematicPage(eda, pageUuid);
 		const observed = (await readComponents(api)).find(component => component.id === id);
+		await assertSameSchematicPage(eda, pageUuid);
 		const verified = Boolean(observed && samePoint(observed, target) && observed.net === current.net && observed.type === 'netport');
+		const netlistReadback = await readTargetNetwork(current.net);
+		await assertSameSchematicPage(eda, pageUuid);
 		return {
 			ok: verified,
 			action: 'netport_move',
+			pageUuid,
 			id,
 			net: current.net,
 			from: { x: current.x, y: current.y },
 			to: { x, y },
 			observed: observed ? { x: observed.x, y: observed.y, net: observed.net } : null,
-			netlistReadback: await readTargetNetwork(current.net),
+			netlistReadback,
 			commitUnknown: !verified,
 			readbackRequired: true,
 			semanticScope: 'current_schematic_page_hierarchical_port',

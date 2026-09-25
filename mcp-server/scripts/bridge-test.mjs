@@ -1329,6 +1329,42 @@ try {
     latePcbWriteServer.close();
   }
 
+  const latePinNetworkPort = await reservePort();
+  const latePinNetworkServer = new EdaBridgeServer(latePinNetworkPort);
+  let latePinNetworkPeer;
+  try {
+    await latePinNetworkServer.start();
+    const pageContext = { documentUuid: 'pin-document', projectUuid: 'pin-project',
+      pageKind: 'schematic', pageUuid: 'pin-page' };
+    latePinNetworkPeer = await registerEda(`ws://127.0.0.1:${latePinNetworkPort}/bridge/ws${tokenQuery}`,
+      'late-pin-network', pageContext);
+    let heldTask;
+    latePinNetworkPeer.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      heldTask = message;
+      latePinNetworkPeer.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'late-pin-network',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+    });
+    await assert.rejects(latePinNetworkServer.request('/bridge/jlceda/schematic/component-edit',
+      { action: 'modify', primitiveId: 'r1', property: { x: 10 } }, 100), /Request execution timeout/);
+    assert.ok(heldTask);
+    const before = (await latePinNetworkServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(before.requiredReadback, 'schematic_component_state');
+    const processed = waitForMessage(latePinNetworkPeer.socket, message => message.type === 'bridge/heartbeat-ack');
+    latePinNetworkPeer.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'late-pin-network',
+      requestId: heldTask.requestId, leaseTerm: heldTask.leaseTerm,
+      result: { ok: false, reason: 'pin_network_changed', commitUnknown: true, nativeCallSettled: true } }));
+    latePinNetworkPeer.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'late-pin-network', sentAt: Date.now() }));
+    await processed;
+    const after = (await latePinNetworkServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(after.requiredReadback, 'schematic_connectivity_primitives');
+    assert.equal(after.hostRestartRequired, false);
+  } finally {
+    latePinNetworkPeer?.socket.close();
+    latePinNetworkServer.close();
+  }
+
   const lateUnknownPort = await reservePort();
   lateUnknownServer = new EdaBridgeServer(lateUnknownPort);
   await lateUnknownServer.start();
@@ -2058,6 +2094,30 @@ try {
       freshClient?.socket.close();
       editServer.close();
     }
+  }
+
+  const pinNetworkPort = await reservePort();
+  const pinNetworkServer = new EdaBridgeServer(pinNetworkPort);
+  let pinNetworkClient;
+  try {
+    await pinNetworkServer.start();
+    pinNetworkClient = await registerEda(`ws://127.0.0.1:${pinNetworkPort}/bridge/ws${tokenQuery}`,
+      'pin-network-changed', { documentUuid: 'pin-document', projectUuid: 'pin-project',
+        pageKind: 'schematic', pageUuid: 'pin-page' });
+    attachTaskResponder(pinNetworkClient.socket, 'pin-network-changed', () => ({
+      ok: false, action: 'modify', reason: 'pin_network_changed',
+      committed: true, commitUnknown: true, nativeCallSettled: true,
+      pinNetworkChanges: [{ pinNumber: '2', before: 'EN_UVLO', after: '12V_OUT' }],
+    }));
+    const pinNetworkResult = await pinNetworkServer.request('/bridge/jlceda/schematic/component-edit',
+      { action: 'modify', primitiveId: 'r1', property: { x: 10 } }, 2000);
+    assert.equal(pinNetworkResult.reason, 'pin_network_changed');
+    const diagnostic = (await pinNetworkServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(diagnostic.requiredReadback, 'schematic_connectivity_primitives');
+    assert.equal(diagnostic.hostRestartRequired, false);
+  } finally {
+    pinNetworkClient?.socket.close();
+    pinNetworkServer.close();
   }
 
   for (const editAction of ['create', 'modify', 'delete']) {

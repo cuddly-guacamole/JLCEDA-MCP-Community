@@ -34,6 +34,7 @@ function primitive(state) {
 
 async function main() {
 	let pageUuid = 'page-1';
+	const wires = [{ getState_Line: () => [400, 500, 410, 500], getState_Net: () => 'FOREIGN' }];
 	const parts = new Map([
 		['r1', {
 			primitiveId: 'r1',
@@ -75,20 +76,34 @@ async function main() {
 	let callCount = 0;
 	globalThis.eda = {
 		dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: pageUuid }; } },
+		dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: pageUuid }; } },
 		sch_PrimitiveComponent: {
 			async getAll(type, allPages) {
-				assert.equal(type, 'part');
+				assert.ok(type === 'part' || type === undefined);
 				assert.equal(allPages, false);
 				return [...parts.values()].map(primitive);
 			},
 			async getAllPrimitiveId(type, allPages) {
-				assert.equal(type, 'part');
+				assert.ok(type === 'part' || type === undefined);
 				assert.equal(allPages, false);
 				return [...parts.keys()];
 			},
 			async get(id) {
 				const state = parts.get(id);
 				return state ? primitive(state) : undefined;
+			},
+			async getAllPinsByPrimitiveId(id) {
+				const state = parts.get(id);
+				if (!state)
+					return [];
+				return [{
+					getState_PinNumber: () => '1',
+					getState_PinName: () => 'P',
+					getState_PinType: () => 'passive',
+					getState_X: () => state.x,
+					getState_Y: () => state.y,
+					getState_NoConnected: () => false,
+				}];
 			},
 			async modify(id, property) {
 				callCount += 1;
@@ -104,6 +119,8 @@ async function main() {
 				return true;
 			},
 		},
+		sch_PrimitiveWire: { async getAll() { return wires; } },
+		sch_Drc: { async check() { return true; } },
 	};
 	const full = await handleSchematicComponentEditTask({ action: 'read' });
 	assert.deepEqual([full.ok, full.action, full.scope, full.complete, full.pageUuid, full.componentCount], [true, 'read', 'current_schematic_page', true, 'page-1', 2]);
@@ -147,6 +164,12 @@ async function main() {
 	const missing = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'on-another-page', property: { x: 20 } });
 	assert.equal(missing.reason, 'component_not_found');
 	assert.equal(callCount, beforeModifyCalls + 1);
+	const unintendedNet = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'r1', property: { x: 400, y: 500 } });
+	assert.equal(unintendedNet.ok, false);
+	assert.equal(unintendedNet.reason, 'pin_network_changed');
+	assert.equal(unintendedNet.committed, true);
+	assert.equal(unintendedNet.commitUnknown, true);
+	assert.deepEqual(unintendedNet.pinNetworkChanges, [{ pinNumber: '1', before: '', after: 'FOREIGN' }]);
 	const deleted = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'r1' });
 	assert.equal(deleted.ok, true);
 	assert.equal(deleted.deleted, true);

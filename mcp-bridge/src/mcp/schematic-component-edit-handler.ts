@@ -1,4 +1,5 @@
 import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSafeErrorMessage } from '../utils.ts';
+import { handleSchematicReadTask } from './schematic-read-handler.ts';
 
 type Action = 'read' | 'modify' | 'delete';
 type PropertyValue = string | number | boolean;
@@ -21,6 +22,11 @@ interface ComponentState {
 	supplier: string | null;
 	supplierId: string | null;
 	otherProperty: Property;
+}
+
+interface PinNetwork {
+	pinNumber: string;
+	connectedNetworkName: string;
 }
 
 interface ComponentApi extends Record<string, unknown> {
@@ -189,6 +195,31 @@ function requestedValuesMatch(after: ComponentState, requested: Record<string, u
 	return Object.entries(fullOtherProperty).every(([key, value]) => Object.hasOwn(after.otherProperty, key) && after.otherProperty[key] === value);
 }
 
+async function readPinNetworks(primitiveId: string, pageUuid: string): Promise<PinNetwork[]> {
+	const response = await handleSchematicReadTask({});
+	if (!isPlainObjectRecord(response) || response.ok !== true || response.pageUuid !== pageUuid || typeof response.schematicCircuitSnapshot !== 'string')
+		throw new Error(`Cannot verify component pin networks: ${isPlainObjectRecord(response) ? String(response.error ?? 'schematic_read failed') : 'schematic_read failed'}`);
+	const snapshot: unknown = JSON.parse(response.schematicCircuitSnapshot);
+	const components = isPlainObjectRecord(snapshot) ? snapshot.components : undefined;
+	const component = Array.isArray(components) ? components.find(item => isPlainObjectRecord(item) && item.componentInstanceId === primitiveId) : undefined;
+	if (!isPlainObjectRecord(component) || !Array.isArray(component.pins))
+		throw new Error(`Cannot verify component ${primitiveId} pin networks from schematic_read.`);
+	const pins = component.pins.map((pin: unknown) => {
+		if (!isPlainObjectRecord(pin) || typeof pin.pinNumber !== 'string' || typeof pin.connectedNetworkName !== 'string')
+			throw new Error(`Cannot verify component ${primitiveId} pin network state.`);
+		return { pinNumber: pin.pinNumber, connectedNetworkName: pin.connectedNetworkName };
+	});
+	return pins.sort((a, b) => a.pinNumber.localeCompare(b.pinNumber));
+}
+
+function pinNetworkChanges(before: PinNetwork[], after: PinNetwork[]): Array<{ pinNumber: string; before: string; after: string }> {
+	if (before.length !== after.length || before.some((pin, index) => pin.pinNumber !== after[index].pinNumber))
+		throw new Error('Component pin list changed during the move.');
+	return before.flatMap((pin, index) => pin.connectedNetworkName === after[index].connectedNetworkName
+		? []
+		: [{ pinNumber: pin.pinNumber, before: pin.connectedNetworkName, after: after[index].connectedNetworkName }]);
+}
+
 function unknownAfterWrite(action: 'modify' | 'delete', primitiveId: string, error: unknown, before: ComponentState): Record<string, unknown> {
 	return {
 		ok: false,
@@ -261,6 +292,8 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 	if (action === 'modify') {
 		const fullOtherProperty = { ...before.otherProperty, ...(property!.otherProperty as Property | undefined) };
 		const update = { ...property!, otherProperty: fullOtherProperty };
+		const changesGeometry = ['x', 'y', 'rotation', 'mirror'].some(field => Object.hasOwn(property!, field));
+		const beforePinNetworks = changesGeometry ? await readPinNetworks(primitiveId!, pageUuid) : undefined;
 		await assertSamePage(runtime, pageUuid);
 		try {
 			await api.modify!.call(api, primitiveId!, update);
@@ -275,6 +308,13 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 			await assertSamePage(runtime, pageUuid);
 			if (!after || after.primitiveId !== primitiveId || !requestedValuesMatch(after, property!, fullOtherProperty))
 				throw new Error('EDA component state differs from the requested modification.');
+			if (beforePinNetworks) {
+				const afterPinNetworks = await readPinNetworks(primitiveId!, pageUuid);
+				await assertSamePage(runtime, pageUuid);
+				const changes = pinNetworkChanges(beforePinNetworks, afterPinNetworks);
+				if (changes.length > 0)
+					return { ok: false, action, scope: SCOPE, pageUuid, primitiveId, reason: 'pin_network_changed', committed: true, verified: false, commitUnknown: true, readbackRequired: true, nativeCallSettled: true, before, after, pinNetworkChanges: changes };
+			}
 			return { ok: true, action, scope: SCOPE, pageUuid, primitiveId, verified: true, before, after };
 		}
 		catch (error: unknown) {
