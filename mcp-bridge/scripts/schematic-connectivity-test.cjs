@@ -66,6 +66,8 @@ async function main() {
 	let portCreates = 0;
 	let createdPortReadbackDeltaY = 0;
 	globalThis.eda = {
+		dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: 'page-1' }; } },
+		dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: 'page-1' }; } },
 		sch_PrimitiveWire: {
 			async getAll() {
 				wireReads += 1;
@@ -79,6 +81,10 @@ async function main() {
 			},
 		},
 		sch_PrimitiveComponent: {
+			async getAllPrimitiveId(componentType, allPages) {
+				assert.equal(componentType, undefined);
+				return (await this.getAll(undefined, allPages)).map(component => component.getState_PrimitiveId());
+			},
 			async getAll(_type, allPages) {
 				assert.equal(typeof allPages, 'boolean');
 				assert.ok(_type === undefined || _type === 'netport' || _type === 'netflag');

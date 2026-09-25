@@ -187,7 +187,7 @@
   },
   {
     "name": "schematic_read",
-    "description": "读取当前原理图页面的完整电路语义快照。受控恢复可选 includeConnectivityPrimitives=true，同时完整回读导线 ID/几何、NetPort ID/坐标/网络及 NET 属性；方向属性无法由当前 EDA API 验证。",
+    "description": "读取当前原理图页面的完整电路语义快照及页 UUID；切页期间页身份、器件 ID 不一致或返回已识别的旧页图元时报告 PAGE_NOT_READY，稍后重试。受控恢复可选 includeConnectivityPrimitives=true，同时完整回读导线 ID/几何、NetPort ID/坐标/网络及 NET 属性；方向属性无法由当前 EDA API 验证。",
     "inputSchema": {
       "type": "object",
       "properties": {

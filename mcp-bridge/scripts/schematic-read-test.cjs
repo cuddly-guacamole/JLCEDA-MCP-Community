@@ -17,13 +17,29 @@ const existingComponent = {
 
 let currentPage = 'P1';
 globalThis.eda = {
+	dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: currentPage }; } },
+	dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: currentPage }; } },
 	sch_PrimitiveComponent: {
 		async getAll(_componentType, allSchematicPages) {
 			return currentPage === 'P1' || allSchematicPages ? [existingComponent] : [];
 		},
-		async getAllPinsByPrimitiveId() { return []; },
+		async getAllPrimitiveId(componentType, allSchematicPages) {
+			assert.equal(componentType, undefined);
+			return (await this.getAll(undefined, allSchematicPages)).map(component => component.getState_PrimitiveId());
+		},
+		async getAllPinsByPrimitiveId() {
+			return [{
+				getState_PinNumber: () => '1',
+				getState_PinName: () => 'A',
+				getState_PinType: () => 'passive',
+				getState_X: () => 0,
+				getState_Y: () => 0,
+				getState_NoConnected: () => false,
+			}];
+		},
 	},
 	sch_PrimitiveWire: { async getAll() { return []; } },
+	sch_PrimitiveAttribute: { async getAll() { return []; } },
 	sch_Drc: { async check() { return true; } },
 };
 
@@ -36,7 +52,58 @@ async function readCount() {
 async function main() {
 	assert.equal(await readCount(), 1);
 	currentPage = 'P2';
-	assert.equal(await readCount(), 0, 'a newly opened empty page must not include earlier-page components');
+	const emptyPage = await handleSchematicReadTask({});
+	assert.equal(emptyPage.ok, true);
+	assert.equal(emptyPage.pageUuid, 'P2');
+	assert.equal(JSON.parse(emptyPage.schematicCircuitSnapshot).componentCount, 0, 'a newly opened empty page must not include earlier-page components');
+	const emptyFullPage = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	assert.equal(emptyFullPage.ok, true);
+	assert.equal(JSON.parse(emptyFullPage.connectivityPrimitivesSnapshot).pageUuid, 'P2');
+	const currentPageGetAll = globalThis.eda.sch_PrimitiveComponent.getAll;
+	const currentPageIds = globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId;
+	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
+		? [{
+				getState_PrimitiveId: () => 'stale-port',
+				getState_Net: () => 'OLD',
+				getState_X: () => 0,
+				getState_Y: () => 0,
+			}]
+		: [];
+	const stalePort = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
+	assert.equal(stalePort.errorCode, 'PAGE_NOT_READY', 'filtered NetPort read must agree with the current-page component list');
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [existingComponent];
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => [];
+	for (const payload of [{}, { includeConnectivityPrimitives: true }]) {
+		const stale = await handleSchematicReadTask(payload);
+		assert.equal(stale.ok, false);
+		assert.equal(stale.errorCode, 'PAGE_NOT_READY', 'stale old-page components must not be accepted as P2');
+		assert.equal(stale.reason, 'page_not_ready');
+	}
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = currentPageIds;
+	const currentPagePins = globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId;
+	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = async () => [];
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [existingComponent];
+	for (const payload of [{}, { includeConnectivityPrimitives: true }]) {
+		const stale = await handleSchematicReadTask(payload);
+		assert.equal(stale.errorCode, 'PAGE_NOT_READY', JSON.stringify(stale));
+	}
+	const frame = { ...existingComponent, getState_PrimitiveId: () => 'frame-1', getState_Designator: () => 'FRAME1' };
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [frame];
+	const zeroPinPage = await handleSchematicReadTask({});
+	assert.equal(zeroPinPage.ok, true, 'a legitimate current-page zero-pin component must remain readable');
+	assert.equal(zeroPinPage.pageUuid, 'P2');
+	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = currentPagePins;
+	globalThis.eda.sch_PrimitiveComponent.getAll = currentPageGetAll;
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'P1' });
+	assert.equal((await handleSchematicReadTask({})).errorCode, 'PAGE_NOT_READY', 'document and page UUID mismatch must fail');
+	for (const payload of [{}, { includeConnectivityPrimitives: true }]) {
+		globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = (() => {
+			let calls = 0;
+			return async () => ({ uuid: ++calls === 1 ? 'P2' : 'P3' });
+		})();
+		assert.equal((await handleSchematicReadTask(payload)).errorCode, 'PAGE_NOT_READY', 'document switch during read must fail');
+	}
+	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: currentPage });
 
 	let portX = 0;
 	let pinX = 100;
@@ -113,11 +180,6 @@ async function main() {
 		getState_X: () => 5,
 		getState_Y: () => 0,
 	};
-	globalThis.eda.dmt_Schematic = {
-		async getCurrentSchematicPageInfo() {
-			return { uuid: currentPage };
-		},
-	};
 	globalThis.eda.sch_PrimitiveWire.getAll = async () => wires;
 	globalThis.eda.sch_PrimitiveComponent.getAll = async type => type === 'netport'
 		? [{
@@ -127,11 +189,7 @@ async function main() {
 				getState_Y: () => 0,
 			}]
 		: type === 'netflag' ? [netFlag] : [netPort, device, netFlag];
-	globalThis.eda.sch_PrimitiveAttribute = {
-		async getAll() {
-			return [label];
-		},
-	};
+	globalThis.eda.sch_PrimitiveAttribute.getAll = async () => [label];
 	const completeReadback = await handleSchematicReadTask({ includeConnectivityPrimitives: true });
 	assert.equal(completeReadback.ok, true);
 	const serialized = toSerializable(completeReadback);
@@ -176,6 +234,11 @@ async function main() {
 		return async () => ({ uuid: ++calls === 1 ? 'P2' : 'P3' });
 	})();
 	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'page switch during readback must fail');
+	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = (() => {
+		let calls = 0;
+		return async () => ({ uuid: ++calls === 1 ? 'P2' : 'P3' });
+	})();
+	assert.equal((await handleSchematicReadTask({})).errorCode, 'PAGE_NOT_READY', 'page switch during ordinary read must fail');
 	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = async () => ({ uuid: currentPage });
 	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = async () => undefined;
 	assert.equal((await handleSchematicReadTask({ includeConnectivityPrimitives: true })).ok, false, 'failed pin read must not clear recovery');
