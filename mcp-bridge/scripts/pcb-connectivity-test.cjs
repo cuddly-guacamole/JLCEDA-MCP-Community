@@ -50,6 +50,8 @@ async function main() {
 		pcb_PrimitiveLine: {
 			async getAllPrimitiveId() { throw new Error('full-board line ID scan must not be used'); },
 			async create(net, layer, startX, startY, endX, endY, lineWidth) {
+				if (lineCreateMode === 'validation')
+					throw new TypeError('Invalid line width');
 				lineCreates++;
 				const primitive = linePrimitive(`line-${lineCreates}`, net, layer, startX, startY, endX, endY, lineWidth);
 				lines.set(primitive.getState_PrimitiveId(), primitive);
@@ -57,6 +59,8 @@ async function main() {
 					return undefined;
 				if (lineCreateMode === 'reject')
 					throw new Error('RPC Call create Timed Out');
+				if (lineCreateMode === 'disconnect')
+					throw new Error('Connection closed during create');
 				return primitive;
 			},
 			async get(id) { return lines.get(id); },
@@ -116,6 +120,18 @@ async function main() {
 	assert.equal(nativeTimeout.commitUnknown, true);
 	assert.equal(nativeTimeout.nativeCallSettled, false);
 	assert.match(nativeTimeout.error, /Timed Out/);
+	lineCreateMode = 'disconnect';
+	const disconnected = await handlePcbConnectivityTask(line);
+	assert.equal(disconnected.commitUnknown, true);
+	assert.equal(disconnected.nativeCallSettled, false);
+	lineCreateMode = 'validation';
+	const beforeValidation = lineCreates;
+	const nativeValidation = await handlePcbConnectivityTask(line);
+	assert.equal(nativeValidation.ok, false);
+	assert.equal(nativeValidation.reason, 'native_create_rejected');
+	assert.equal(nativeValidation.commitUnknown, undefined);
+	assert.equal(nativeValidation.readbackRequired, undefined);
+	assert.equal(lineCreates, beforeValidation);
 
 	viaReadbackMode = 'throws';
 	const missingReadback = await handlePcbConnectivityTask(via);

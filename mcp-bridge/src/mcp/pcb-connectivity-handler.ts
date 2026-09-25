@@ -41,16 +41,16 @@ async function verifyNet(api: Record<string, unknown>, net: string): Promise<voi
 		throw new TypeError(`PCB network ${net} does not exist on the current page.`);
 }
 
-function unresolvedNativeCreate(action: PcbConnectivityAction, error: unknown): Record<string, unknown> {
-	// A rejected RPC may still finish inside EDA after the JavaScript promise rejects.
+function nativeCreateFailure(action: PcbConnectivityAction, error: unknown): Record<string, unknown> {
+	const message = toSafeErrorMessage(error);
+	// A timed-out or disconnected RPC can finish inside EDA after it rejects here.
+	const commitUnknown = /timed?\s*out|disconnect|connection\s+(?:closed|lost|reset)|socket\s+(?:closed|hang up)|ECONNRESET|EPIPE/i.test(message);
 	return {
 		ok: false,
 		action,
-		reason: 'native_create_failed',
-		error: toSafeErrorMessage(error),
-		commitUnknown: true,
-		readbackRequired: true,
-		nativeCallSettled: false,
+		reason: commitUnknown ? 'native_create_result_unknown' : 'native_create_rejected',
+		error: message,
+		...(commitUnknown ? { commitUnknown: true, readbackRequired: true, nativeCallSettled: false } : {}),
 	};
 }
 
@@ -103,7 +103,7 @@ async function handleLineCreate(payload: Record<string, unknown>, eda: Record<st
 		created = await (lineApi.create as (...args: unknown[]) => Promise<unknown>).call(lineApi, net, layer, startX, startY, endX, endY, lineWidth);
 	}
 	catch (error: unknown) {
-		return unresolvedNativeCreate('line_create', error);
+		return nativeCreateFailure('line_create', error);
 	}
 	const primitiveId = getSyncState(created, 'getState_PrimitiveId', '');
 	if (typeof primitiveId !== 'string' || primitiveId.length === 0)
@@ -142,7 +142,7 @@ async function handleViaCreate(payload: Record<string, unknown>, eda: Record<str
 		created = await (viaApi.create as (...args: unknown[]) => Promise<unknown>).call(viaApi, net, x, y, holeDiameter, diameter);
 	}
 	catch (error: unknown) {
-		return unresolvedNativeCreate('via_create', error);
+		return nativeCreateFailure('via_create', error);
 	}
 	const primitiveId = getSyncState(created, 'getState_PrimitiveId', '');
 	if (typeof primitiveId !== 'string' || primitiveId.length === 0)
