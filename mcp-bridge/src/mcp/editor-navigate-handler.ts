@@ -18,7 +18,6 @@ interface CurrentDocument {
 	tabId?: string;
 }
 
-const READBACK_WAIT_MS = 2_000;
 const READBACK_INTERVAL_MS = 200;
 const NATIVE_RESULT_UNKNOWN = /timed?\s*out|disconnect|connection\s+(?:closed|lost|reset)|socket\s+(?:closed|hang up)|ECONNRESET|EPIPE/i;
 
@@ -113,8 +112,7 @@ function isTarget(current: CurrentDocument, target: TargetDocument, tabId?: stri
 		&& (tabId === undefined || current.tabId === tabId);
 }
 
-async function waitForTarget(runtime: EdaApi, target: TargetDocument, tabId?: string): Promise<CurrentDocument> {
-	const deadline = Date.now() + READBACK_WAIT_MS;
+async function waitForTarget(runtime: EdaApi, target: TargetDocument, deadline: number, tabId?: string): Promise<CurrentDocument> {
 	let current: CurrentDocument = {};
 	let lastError: unknown;
 	do {
@@ -152,6 +150,8 @@ function uncertainNavigation(operation: string, target: TargetDocument, error: u
 export async function handleEditorNavigateTask(payload: unknown): Promise<unknown> {
 	if (!isPlainObjectRecord(payload))
 		throw new TypeError('editor_navigate payload must be an object.');
+	const startedAt = Date.now();
+	const timeoutMs = typeof payload.timeoutMs === 'number' ? payload.timeoutMs : 30_000;
 	const operation = payload.operation;
 	if (operation !== 'open' && operation !== 'activate')
 		throw new TypeError('operation must be open or activate.');
@@ -186,11 +186,20 @@ export async function handleEditorNavigateTask(payload: unknown): Promise<unknow
 			throw error;
 		return uncertainNavigation(operation, target, error, false, requestedTabId);
 	}
+	if (operation === 'activate' && nativeResult === false) {
+		try {
+			const current = await readCurrent(runtime, target.pageKind);
+			if (isTarget(current, target, requestedTabId))
+				return { ok: true, operation, ...target, tabId: current.tabId, pageUuid: current.pageUuid, changed: true, verified: true };
+		}
+		catch { /* The native rejection remains deterministic. */ }
+		return { ok: false, operation, ...target, tabId: requestedTabId, reason: 'native_activation_rejected', changed: false, verified: false, commitUnknown: false, nativeCallSettled: true };
+	}
 	const tabId = operation === 'open' && typeof nativeResult === 'string' && nativeResult.trim()
 		? nativeResult.trim()
 		: requestedTabId;
 	try {
-		const current = await waitForTarget(runtime, target, tabId);
+		const current = await waitForTarget(runtime, target, startedAt + timeoutMs - 1_000, tabId);
 		if (!isTarget(current, target, tabId))
 			throw new Error(`EDA active editor identity does not match ${documentUuid}${tabId ? ` in tab ${tabId}` : ''}.`);
 		return { ok: true, operation, ...target, tabId: current.tabId, pageUuid: current.pageUuid, changed: true, verified: true };

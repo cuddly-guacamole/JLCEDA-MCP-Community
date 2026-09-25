@@ -127,6 +127,18 @@ async function main() {
 	};
 	await assert.rejects(() => handleEditorNavigateTask({ operation: 'activate', projectUuid, documentUuid: 'pcb-1', tabId: 'pcb-1@project-1' }), /Tab is no longer available/);
 	globalThis.eda.dmt_EditorControl.activateDocument = originalActivate;
+	globalThis.eda.dmt_EditorControl.activateDocument = async () => false;
+	const rejectedActivation = await handleEditorNavigateTask({ operation: 'activate', projectUuid, documentUuid: 'pcb-1', tabId: 'pcb-1@project-1' });
+	assert.equal(rejectedActivation.reason, 'native_activation_rejected');
+	assert.equal(rejectedActivation.commitUnknown, false);
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/editor/navigate', {}, rejectedActivation), false);
+	globalThis.eda.dmt_EditorControl.activateDocument = async (tabId) => {
+		changeDocument(tabId.split('@')[0], tabId);
+		return false;
+	};
+	const appliedDespiteFalse = await handleEditorNavigateTask({ operation: 'activate', projectUuid, documentUuid: 'pcb-1', tabId: 'pcb-1@project-1' });
+	assert.equal(appliedDespiteFalse.verified, true);
+	globalThis.eda.dmt_EditorControl.activateDocument = originalActivate;
 	globalThis.eda.dmt_EditorControl.openDocument = async (documentUuid) => {
 		changeDocument(documentUuid, `${documentUuid}@${projectUuid}`);
 		return undefined;
@@ -135,9 +147,17 @@ async function main() {
 	assert.equal(appliedWithoutTabResult.verified, true);
 	assert.equal(appliedWithoutTabResult.tabId, 'page-1@project-1');
 	globalThis.eda.dmt_EditorControl.openDocument = originalOpen;
+	globalThis.eda.dmt_EditorControl.openDocument = async (documentUuid) => {
+		setTimeout(() => changeDocument(documentUuid, `${documentUuid}@${projectUuid}`), 2_300);
+		return `${documentUuid}@${projectUuid}`;
+	};
+	const delayedPage = await handleEditorNavigateTask({ operation: 'open', projectUuid, documentUuid: 'page-2', timeoutMs: 8_000 });
+	assert.equal(delayedPage.verified, true);
+	assert.equal(delayedPage.pageUuid, 'page-2');
+	globalThis.eda.dmt_EditorControl.openDocument = originalOpen;
 
 	globalThis.eda.dmt_SelectControl.getCurrentDocumentInfo = async () => ({ uuid: 'wrong-document', tabId: 'pcb-1@project-1', parentProjectUuid: projectUuid });
-	const mismatched = await handleEditorNavigateTask({ operation: 'open', projectUuid, documentUuid: 'pcb-1' });
+	const mismatched = await handleEditorNavigateTask({ operation: 'open', projectUuid, documentUuid: 'pcb-1', timeoutMs: 5_000 });
 	assert.equal(mismatched.commitUnknown, true);
 	assert.equal(mismatched.nativeCallSettled, true);
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/editor/navigate', {}, mismatched), false);

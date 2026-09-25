@@ -49,7 +49,7 @@ export async function handleProjectInfoTask(payload: unknown): Promise<unknown> 
 	const pcb = await callEda(eda, 'dmt_Pcb', 'getCurrentPcbInfo');
 	const document = await callEda(eda, 'dmt_SelectControl', 'getCurrentDocumentInfo');
 	const pages = includePages
-		? await callEda(eda, 'dmt_Schematic', 'getCurrentSchematicAllSchematicPagesInfo')
+		? await callEda(eda, 'dmt_Schematic', 'getAllSchematicPagesInfo')
 		: undefined;
 	const schematics = includeSchematics
 		? await callEda(eda, 'dmt_Schematic', 'getAllSchematicsInfo')
@@ -70,7 +70,7 @@ export async function handleProjectInfoTask(payload: unknown): Promise<unknown> 
 		schematic: await toSerializableAsync(schematic),
 		pcb: await toSerializableAsync(pcb),
 		currentDocument: await toSerializableAsync(document),
-		...(includePages ? { schematicPages: await serializeInventory(pages, 'dmt_Schematic', 'getCurrentSchematicAllSchematicPagesInfo', limit) } : {}),
+		...(includePages ? { schematicPages: await serializeInventory(pages, 'dmt_Schematic', 'getAllSchematicPagesInfo', limit) } : {}),
 		...(includeSchematics ? { schematics: await serializeInventory(schematics, 'dmt_Schematic', 'getAllSchematicsInfo', limit) } : {}),
 		...(includePcbs ? { pcbs: await serializeInventory(pcbs, 'dmt_Pcb', 'getAllPcbsInfo', limit) } : {}),
 		...(includeBoards ? { boards: await serializeInventory(boards, 'dmt_Board', 'getAllBoardsInfo', limit) } : {}),

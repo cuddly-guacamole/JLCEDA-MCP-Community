@@ -1851,7 +1851,7 @@
   },
   {
     "name": "project_info",
-    "description": "Read a concise snapshot of the current project, board, schematic, PCB, document, and optional bounded project-document inventories.",
+    "description": "读取当前工程、板、原理图、PCB 和活动文档；默认列出当前工程全部原理图图页，也可按数量上限列出其他文档目录。在 PCB 页上同样可读取原理图图页目录。",
     "inputSchema": {
       "type": "object",
       "properties": {

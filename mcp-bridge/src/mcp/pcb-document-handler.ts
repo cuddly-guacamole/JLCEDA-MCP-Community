@@ -341,6 +341,18 @@ export async function handlePcbDocumentTask(payload: unknown): Promise<unknown> 
 				requiresNativeConfirmation: false,
 			};
 		}
+		if (documentInfo?.uuid !== pcbInfo.uuid
+			|| (typeof documentInfo?.parentProjectUuid === 'string' && typeof projectInfo?.uuid === 'string'
+				&& documentInfo.parentProjectUuid !== projectInfo.uuid)) {
+			return {
+				ok: false,
+				action,
+				importContext,
+				reason: 'pcb_page_not_ready',
+				commitState: 'not_started',
+				requiresNativeConfirmation: false,
+			};
+		}
 		if (pcbInfo && (typeof pcbInfo.parentBoardName !== 'string' || !pcbInfo.parentBoardName.trim())) {
 			return {
 				ok: false,
