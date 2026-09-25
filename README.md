@@ -17,7 +17,7 @@ PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔�
 - `schematic_document_action`：检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置；执行视图导航、图元选择、图元属性/BBox 读取、保存和变更导入。
 - `schematic_layout_check`：基于结构化 EDA 几何估算原理图符号、引脚、属性文本、网络标签和导线重叠，报告密集区域与可选页面越界；`mode: "fix"` 仅在 `confirm: true` 时移动属性文本。
 - `schematic_connectivity_action`：预览新导线与现有导线的接触、明确允许接触后创建导线，并创建或移动当前图页 NetPort；单条新导线最多传入 256 个坐标点。返回图元和网络回读状态。NetPort 适合同页连接与层次图端口，跨页连接应使用跨页连接标识。
-- `schematic_read`：读取当前原理图页的电路语义和页 UUID；MCP 新建或切换图页前记录旧页器件 ID，若切页时文档身份、器件 ID 列表或旧页图元未同步，返回 `PAGE_NOT_READY`，稍后重试。
+- `schematic_read`：读取当前原理图页的电路语义和页 UUID；核对图页与文档身份、器件列表和当前图元 ID 列表，未同步时返回 `PAGE_NOT_READY`。复制页可以合法共享图元 ID。
 - `schematic_component_edit`：完整读取当前原理图页的普通器件状态，或按图元 ID 修改位置、旋转、镜像、位号与 BOM 属性及删除器件。修改会保留未指定的 BOM 扩展属性，写后核对结果；提交状态不明时，需在原图页完整读回普通器件后再决定是否重试。
 - `schematic_pages_manage`：在 `confirm: true` 时创建、复制、重命名或完整重排原理图页面。重排必须提供每个当前页面 UUID，Bridge 会重新读取并验证结果；不提供删除功能。
 - `pcb_drc_check`：读取 PCB 设计规则检查结果。

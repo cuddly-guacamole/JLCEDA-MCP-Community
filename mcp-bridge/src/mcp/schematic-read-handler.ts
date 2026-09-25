@@ -13,7 +13,6 @@
 import { getSyncState, safeCall } from '../utils';
 
 class PageNotReadyError extends Error {}
-const observedComponentPages = new Map<string, string>();
 
 interface PageContext {
 	pageUuid: string;
@@ -56,24 +55,6 @@ async function assertCurrentComponentIds(components: unknown[]): Promise<string[
 		throw new PageNotReadyError('当前原理图器件列表与图元 ID 列表不一致，图页可能尚未加载完成，请重试。');
 	}
 	return ids;
-}
-
-/** 在切换或新建图页前记录当前页 ID，识别首次读取时仍返回的旧页缓存。 */
-export async function observeCurrentSchematicComponentPage(): Promise<void> {
-	try {
-		const context = await readPageContext();
-		const ids = await eda.sch_PrimitiveComponent.getAllPrimitiveId(undefined, false);
-		if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim()))
-			return;
-		await assertSamePageContext(context);
-		for (const id of ids) {
-			if (!observedComponentPages.has(id))
-				observedComponentPages.set(id, context.pageUuid);
-		}
-	}
-	catch {
-		// The page transition must still be possible if pre-transition observation is unavailable.
-	}
 }
 
 function requiredState<T>(primitive: unknown, getter: string): T {
@@ -507,8 +488,6 @@ export async function handleSchematicReadTask(payload: unknown): Promise<unknown
 		const result = await readSchematicCircuit();
 		if (!result.ok)
 			return { ok: false, error: result.error };
-		if (result.componentIds.some(id => observedComponentPages.has(id) && observedComponentPages.get(id) !== context.pageUuid))
-			throw new PageNotReadyError('当前图页返回了其他图页的器件，请等待图页加载完成后重试。');
 		const connectivityPrimitives = includeConnectivityPrimitives
 			? await readConnectivityPrimitives(context.pageUuid)
 			: undefined;
@@ -520,8 +499,6 @@ export async function handleSchematicReadTask(payload: unknown): Promise<unknown
 			}
 		}
 		await assertSamePageContext(context);
-		for (const id of result.componentIds)
-			observedComponentPages.set(id, context.pageUuid);
 		return {
 			ok: true,
 			pageUuid: context.pageUuid,

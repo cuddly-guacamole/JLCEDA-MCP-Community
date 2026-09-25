@@ -34,7 +34,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生调用超时以及写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。诊断包含 `hostRestartRequired:true` 时先重启原宿主并传 `hostRestartConfirmed:true`；读回失败继续隔离，只查 `/context` 不会解除。
 
-`schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对器件列表和当前页图元 ID。通过 MCP 新建、复制、打开、激活、关闭或删除图页前会记录旧页器件 ID；若新建或切换图页后尚未同步，即使是首次读取新页也返回 `PAGE_NOT_READY`。不要把此时的旧页快照用于放置或解除写入隔离。成功结果包含 `pageUuid`。
+`schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对器件列表和当前图元 ID。复制页可以合法复用源页图元 ID；若读取期间身份或列表未同步，则返回 `PAGE_NOT_READY`，等待加载后重试。成功结果包含 `pageUuid`。
 
 ## 工具说明
 

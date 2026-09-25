@@ -1,5 +1,4 @@
 import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSerializableAsync } from '../utils.ts';
-import { observeCurrentSchematicComponentPage } from './schematic-read-handler.ts';
 
 type SchematicPagesOperation = 'create' | 'copy' | 'rename' | 'reorder';
 
@@ -131,7 +130,6 @@ export async function handleSchematicPagesManageTask(payload: unknown): Promise<
 	if (operation === 'create') {
 		rejectUnexpectedFields(payload, ['schematicUuid']);
 		const schematicUuid = requiredString(payload, 'schematicUuid');
-		await observeCurrentSchematicComponentPage();
 		const pageUuid = await getMethod(api, 'createSchematicPage').call(api, schematicUuid);
 		return {
 			ok: typeof pageUuid === 'string' && pageUuid.length > 0,
@@ -147,7 +145,6 @@ export async function handleSchematicPagesManageTask(payload: unknown): Promise<
 		const sourcePageUuid = requiredString(payload, 'sourcePageUuid');
 		const sourcePage = await getPageByUuid(api, sourcePageUuid);
 		const schematicUuid = optionalString(payload, 'schematicUuid') ?? sourcePage.parentSchematicUuid as string;
-		await observeCurrentSchematicComponentPage();
 		const pageUuid = await getMethod(api, 'copySchematicPage').call(api, sourcePageUuid, schematicUuid);
 		return {
 			ok: typeof pageUuid === 'string' && pageUuid.length > 0,

@@ -15,6 +15,7 @@ const existingComponent = {
 	getState_Name: () => 'Resistor',
 	getState_SubPartName: () => '',
 };
+const copiedPageUuid = '4b381791f8233c92';
 
 let currentPage = 'P1';
 globalThis.eda = {
@@ -23,6 +24,10 @@ globalThis.eda = {
 		async createSchematicPage() {
 			currentPage = 'P2';
 			return 'P2';
+		},
+		async copySchematicPage() {
+			currentPage = copiedPageUuid;
+			return copiedPageUuid;
 		},
 	},
 	dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: currentPage }; } },
@@ -38,7 +43,7 @@ globalThis.eda = {
 	},
 	sch_PrimitiveComponent: {
 		async getAll(_componentType, allSchematicPages) {
-			return currentPage === 'P1' || allSchematicPages ? [existingComponent] : [];
+			return currentPage === 'P1' || currentPage === copiedPageUuid || allSchematicPages ? [existingComponent] : [];
 		},
 		async getAllPrimitiveId(componentType, allSchematicPages) {
 			assert.equal(componentType, undefined);
@@ -69,21 +74,28 @@ async function readCount() {
 async function main() {
 	const originalGetAll = globalThis.eda.sch_PrimitiveComponent.getAll;
 	const originalGetAllIds = globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId;
+	assert.equal(await readCount(), 1);
+	await handleApiInvokeTask({ apiFullName: 'eda.dmt_Schematic.copySchematicPage', args: ['P1', 'schematic-1'] });
+	const copiedPage = await handleSchematicReadTask({});
+	assert.equal(copiedPage.ok, true, 'a copied page may legitimately retain its source component IDs');
+	assert.equal(copiedPage.pageUuid, copiedPageUuid);
+	assert.equal(JSON.parse(copiedPage.schematicCircuitSnapshot).componentCount, 1);
+	currentPage = 'P1';
 	await handleApiInvokeTask({ apiFullName: 'eda.dmt_Schematic.createSchematicPage', args: ['schematic-1'] });
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [existingComponent];
-	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['old-page-component'];
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => [];
 	await handleApiInvokeTask({ apiFullName: 'eda.dmt_EditorControl.activateDocument', args: ['P2'] });
 	const firstRead = await handleSchematicReadTask({});
-	assert.equal(firstRead.errorCode, 'PAGE_NOT_READY', 'first read after creating and activating P2 must reject cached P1 IDs');
+	assert.equal(firstRead.errorCode, 'PAGE_NOT_READY', 'first read after creating and activating P2 must reject a component list that disagrees with its current IDs');
 	globalThis.eda.sch_PrimitiveComponent.getAll = originalGetAll;
 	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = originalGetAllIds;
 	currentPage = 'P1';
 	const anotherOldComponent = { ...existingComponent, getState_PrimitiveId: () => 'old-page-component-2' };
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [anotherOldComponent];
-	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['old-page-component-2'];
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => [];
 	await handleApiInvokeTask({ apiFullName: 'eda.dmt_EditorControl.openDocument', args: ['P3'] });
 	const firstReadAfterOpen = await handleSchematicReadTask({});
-	assert.equal(firstReadAfterOpen.errorCode, 'PAGE_NOT_READY', 'first read after opening P3 must reject cached P1 IDs');
+	assert.equal(firstReadAfterOpen.errorCode, 'PAGE_NOT_READY', 'first read after opening P3 must reject a component list that disagrees with its current IDs');
 	globalThis.eda.sch_PrimitiveComponent.getAll = originalGetAll;
 	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = originalGetAllIds;
 	currentPage = 'P1';
@@ -119,11 +131,6 @@ async function main() {
 	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = currentPageIds;
 	const currentPagePins = globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId;
 	globalThis.eda.sch_PrimitiveComponent.getAllPinsByPrimitiveId = async () => [];
-	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [existingComponent];
-	for (const payload of [{}, { includeConnectivityPrimitives: true }]) {
-		const stale = await handleSchematicReadTask(payload);
-		assert.equal(stale.errorCode, 'PAGE_NOT_READY', JSON.stringify(stale));
-	}
 	const frame = { ...existingComponent, getState_PrimitiveId: () => 'frame-1', getState_Designator: () => 'FRAME1' };
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [frame];
 	const zeroPinPage = await handleSchematicReadTask({});
