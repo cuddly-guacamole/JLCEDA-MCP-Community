@@ -7,6 +7,8 @@ type ConnectivityAction = 'wire_preview' | 'wire_create' | 'netport_create' | 'n
 // EDA readback may differ from grid coordinates by a few floating-point ulps.
 const COORDINATE_EPSILON = 1e-6;
 const MAX_WIRE_LINE_COORDINATES = 512;
+const WIRE_READBACK_ATTEMPTS = 12;
+const WIRE_READBACK_INTERVAL_MS = 250;
 
 function unknownCommitAfterReadback(action: Exclude<ConnectivityAction, 'wire_preview'>, error: unknown, context: Record<string, unknown>): Record<string, unknown> {
 	return {
@@ -391,10 +393,20 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		return unknownNativeWrite('wire_create', error, { net: net ?? null });
 	}
 	try {
-		const after = await readWires(api);
-		const afterIds = new Set(after.map(wire => wire.id));
-		const changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
-		const removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
+		let changedWireIds: string[] = [];
+		let removedWireIds: string[] = [];
+		// EDA can resolve create before getAll exposes the returned wire. Wait for
+		// the new ID or a changed/removed existing wire before judging the commit.
+		for (let attempt = 0; attempt < WIRE_READBACK_ATTEMPTS; attempt++) {
+			if (attempt > 0)
+				await new Promise<void>(resolve => globalThis.setTimeout(resolve, WIRE_READBACK_INTERVAL_MS));
+			const after = await readWires(api);
+			const afterIds = new Set(after.map(wire => wire.id));
+			changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
+			removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
+			if (changedWireIds.length > 0 || removedWireIds.length > 0)
+				break;
+		}
 		const unexpectedChangedWireIds = changedWireIds.filter(id => beforeById.has(id) && !allowed.has(id));
 		const unexpectedRemovedWireIds = removedWireIds.filter(id => !allowed.has(id));
 		const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
@@ -415,6 +427,7 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 			portTouches,
 			labelTouches,
 			readbackRequired: true,
+			nativeCallSettled: true,
 		};
 	}
 	catch (error: unknown) {
