@@ -322,6 +322,14 @@ async function main() {
 	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, unknownLayoutResult), true);
 	assert.equal(requiresHostRestartForResult(layoutPath, { apiFullName: 'eda.pcb_Document.autoRouting' }, unknownLayoutResult), true);
 	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, { ok: true, commitState: 'complete' }), false);
+	const connectivityPath = '/bridge/jlceda/pcb/connectivity';
+	const unsettledConnectivity = { ok: false, commitUnknown: true, nativeCallSettled: false };
+	assert.equal(requiresHostRestartForResult(connectivityPath, { action: 'line_create' }, unsettledConnectivity), true);
+	assert.equal(requiresHostRestartForResult(connectivityPath, { action: 'via_create' }, { ...unsettledConnectivity, nativeCallSettled: true }), false);
+	const connectivityQuarantine = new BridgeTaskQuarantine();
+	if (requiresHostRestartForResult(connectivityPath, { action: 'line_create' }, unsettledConnectivity))
+		connectivityQuarantine.requireHostRestart(connectivityPath);
+	assert.equal(connectivityQuarantine.requiresHostRestart(), true);
 	const layoutQuarantine = new BridgeTaskQuarantine();
 	let resolveLateLayoutResult;
 	const lateLayoutResult = new Promise((resolve) => {

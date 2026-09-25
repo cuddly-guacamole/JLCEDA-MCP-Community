@@ -47,13 +47,20 @@ export class BridgeTaskQuarantine {
 }
 
 export function requiresHostRestartForResult(path: string, payload: unknown, result: unknown): boolean {
+	if (!result || typeof result !== 'object' || Array.isArray(result)) {
+		return false;
+	}
+	const response = result as Record<string, unknown>;
+	if (path === '/bridge/jlceda/pcb/connectivity') {
+		return response.ok === false
+			&& response.commitUnknown === true
+			&& response.nativeCallSettled === false;
+	}
 	if (path !== '/bridge/jlceda/api/invoke'
-		|| !payload || typeof payload !== 'object' || Array.isArray(payload)
-		|| !result || typeof result !== 'object' || Array.isArray(result)) {
+		|| !payload || typeof payload !== 'object' || Array.isArray(payload)) {
 		return false;
 	}
 	const apiFullName = (payload as Record<string, unknown>).apiFullName;
-	const response = result as Record<string, unknown>;
 	return typeof apiFullName === 'string'
 		&& ['eda.pcb_document.autolayout', 'eda.pcb_document.autorouting'].includes(apiFullName.trim().toLowerCase())
 		&& response.ok === false

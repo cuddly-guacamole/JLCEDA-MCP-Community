@@ -248,9 +248,12 @@ export class ToolDispatcher {
       let duplicate = false;
       let awaitingExit = false;
       let primitiveIds: string[] = [];
+      let removedDuplicateIds: string[] = [];
       let candidatePrimitiveIds: string[] = [];
       let designatorChanges: unknown[] = [];
       let annotationWarning = '';
+      let commitUnknown = false;
+      let readbackRequired = false;
       let errorMessage = '';
       let sessionId = '';
       try {
@@ -271,12 +274,20 @@ export class ToolDispatcher {
         while (Date.now() < deadline) {
           await delay(250);
           const checkResult = await this.bridgeServer.request(`${placementPath}/check`, { sessionId }, 5000);
-          if (!isPlainObjectRecord(checkResult) || checkResult.ok !== true) {
-            throw new Error(String(isPlainObjectRecord(checkResult) ? checkResult.error ?? 'placement check failed' : 'placement check returned invalid data'));
-          }
+          if (!isPlainObjectRecord(checkResult))
+            throw new Error('placement check returned invalid data');
           primitiveIds = Array.isArray(checkResult.primitiveIds)
             ? checkResult.primitiveIds.filter((id): id is string => typeof id === 'string')
             : primitiveIds;
+          removedDuplicateIds = Array.isArray(checkResult.removedDuplicateIds)
+            ? checkResult.removedDuplicateIds.filter((id): id is string => typeof id === 'string')
+            : removedDuplicateIds;
+          if (checkResult.ok !== true) {
+            commitUnknown = checkResult.commitUnknown === true;
+            readbackRequired = checkResult.readbackRequired === true;
+            errorMessage = String(checkResult.error ?? 'placement check failed');
+            break;
+          }
           awaitingExit = checkResult.awaitingExit === true;
           if (awaitingExit && Array.isArray(checkResult.candidatePrimitiveIds)) {
             candidatePrimitiveIds = [...new Set([
@@ -301,7 +312,7 @@ export class ToolDispatcher {
           }
         }
 
-        if (!placed && !userCancelled && !duplicate) {
+        if (!placed && !userCancelled && !duplicate && !errorMessage) {
           errorMessage = awaitingExit
             ? `Placement was observed but the EDA placement mode was not exited within ${String(timeoutSeconds)} seconds; press Esc and inspect the schematic`
             : `Placement timed out after ${String(timeoutSeconds)} seconds; inspect the schematic before retrying`;
@@ -326,6 +337,8 @@ export class ToolDispatcher {
         duplicate,
         awaitingExit,
         primitiveIds,
+        ...(removedDuplicateIds.length > 0 ? { removedDuplicateIds } : {}),
+        ...(commitUnknown ? { commitUnknown, readbackRequired } : {}),
         ...(awaitingExit ? { candidatePrimitiveIds } : {}),
         designatorChanges,
         ...(annotationWarning ? { annotationWarning } : {}),
