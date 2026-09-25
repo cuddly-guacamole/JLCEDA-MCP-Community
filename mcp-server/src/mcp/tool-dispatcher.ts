@@ -251,6 +251,7 @@ export class ToolDispatcher {
       let removedDuplicateIds: string[] = [];
       let candidatePrimitiveIds: string[] = [];
       let designatorChanges: unknown[] = [];
+      let restoredDesignators: unknown[] = [];
       let annotationWarning = '';
       let commitUnknown = false;
       let readbackRequired = false;
@@ -296,6 +297,7 @@ export class ToolDispatcher {
             ])];
           }
           designatorChanges = Array.isArray(checkResult.designatorChanges) ? checkResult.designatorChanges : [];
+          restoredDesignators = Array.isArray(checkResult.restoredDesignators) ? checkResult.restoredDesignators : [];
           annotationWarning = typeof checkResult.annotationWarning === 'string' ? checkResult.annotationWarning : '';
           if (checkResult.duplicate === true) {
             duplicate = true;
@@ -341,6 +343,7 @@ export class ToolDispatcher {
         ...(commitUnknown ? { commitUnknown, readbackRequired } : {}),
         ...(awaitingExit ? { candidatePrimitiveIds } : {}),
         designatorChanges,
+        ...(restoredDesignators.length > 0 ? { restoredDesignators } : {}),
         ...(annotationWarning ? { annotationWarning } : {}),
         attempts: 1,
         ...(placed || userCancelled ? {} : { error: errorMessage || 'placement failed' }),

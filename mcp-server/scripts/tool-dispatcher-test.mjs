@@ -127,7 +127,7 @@ const batchBridge = {
       firstCheckCount += 1;
       return firstCheckCount === 1
         ? { ok: true, placed: false, awaitingExit: true, candidatePrimitiveIds: ['floating-id'], userCancelled: false }
-        : { ok: true, placed: true, primitiveIds: ['first-id'], removedDuplicateIds: ['first-extra'], userCancelled: false };
+        : { ok: true, placed: true, primitiveIds: ['first-id'], removedDuplicateIds: ['first-extra'], restoredDesignators: [{ primitiveId: 'old-u', before: 'U15', after: 'U4' }], userCancelled: false };
     }
     if (path.endsWith('/check')) return { ok: true, placed: true, primitiveIds: ['second-id'], userCancelled: false };
     if (path.endsWith('/close')) return { ok: true };
@@ -138,6 +138,7 @@ const batchResult = await new ToolDispatcher(batchBridge).dispatch({ name: 'comp
 assert.equal(batchResult.structuredContent.ok, true);
 assert.deepEqual(batchResult.structuredContent.results.map((item) => item.primitiveIds), [['first-id'], ['second-id']]);
 assert.deepEqual(batchResult.structuredContent.results[0].removedDuplicateIds, ['first-extra']);
+assert.deepEqual(batchResult.structuredContent.results[0].restoredDesignators, [{ primitiveId: 'old-u', before: 'U15', after: 'U4' }]);
 assert.equal(batchResult.structuredContent.results[0].candidatePrimitiveIds, undefined);
 assert.deepEqual(batchCalls, [
   '/bridge/jlceda/component/place',
