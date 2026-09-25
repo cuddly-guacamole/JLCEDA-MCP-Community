@@ -103,6 +103,14 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(textTool?.inputSchema, 'pcb_text_manage must be advertised');
     const schematicTextTool = toolsResponse.result.tools.find((tool) => tool.name === 'schematic_text_manage');
     assert.ok(schematicTextTool?.inputSchema, 'schematic_text_manage must be advertised');
+    const layerTool = toolsResponse.result.tools.find((tool) => tool.name === 'pcb_layer_manage');
+    assert.ok(layerTool?.inputSchema, 'pcb_layer_manage must be advertised');
+    assert.ok(findPropertySchemas(layerTool.inputSchema, 'confirm').some(schema => schema.const === true),
+      'pcb_layer_manage must publish confirm=true for set');
+    assert.ok(layerTool.inputSchema.oneOf?.some(rule => rule.properties?.action?.const === 'set' && rule.required?.includes('confirm')),
+      'pcb_layer_manage set must require confirmation in the advertised schema');
+    assert.ok(layerTool.inputSchema.oneOf?.every(rule => rule.properties?.timeoutMs?.maximum === 120000),
+      'pcb_layer_manage read and set must publish an adjustable timeout');
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -116,6 +124,7 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/pour-manage')), 'bridge_recover_client must publish PCB pour state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/region-manage')), 'bridge_recover_client must publish PCB region state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/text-manage')), 'bridge_recover_client must publish PCB text state readback');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/layer-manage')), 'bridge_recover_client must publish PCB copper-layer state readback');
     const expectedPageSchemas = findPropertySchemas(recoverTool.inputSchema, 'expectedPageUuid');
     assert.ok(expectedPageSchemas.some((schema) => schema.type === 'string'), 'bridge_recover_client must publish the optional page UUID');
     const actionSchemas = findPropertySchemas(recoverTool.inputSchema, 'action');
@@ -232,6 +241,26 @@ async function testProtocolVersion(protocolVersion) {
     const boardOutlineReadResponse = JSON.parse(boardOutlineReadLine);
     assert.equal(boardOutlineReadResponse.id, 10);
     assert.match(JSON.stringify(boardOutlineReadResponse), /No ready EDA client connected/);
+
+    const unconfirmedLayerLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 11, method: 'tools/call',
+      params: { ...(modern ? params : {}), name: 'pcb_layer_manage', arguments: { action: 'set', copperLayerCount: 4 } },
+    }) + '\n');
+    const [unconfirmedLayerLine] = await Promise.race([unconfirmedLayerLinePromise, lineTimeout]);
+    const unconfirmedLayerResponse = JSON.parse(unconfirmedLayerLine);
+    assert.equal(unconfirmedLayerResponse.id, 11);
+    assert.match(JSON.stringify(unconfirmedLayerResponse), /confirm/);
+
+    const confirmedLayerLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 12, method: 'tools/call',
+      params: { ...(modern ? params : {}), name: 'pcb_layer_manage', arguments: { action: 'set', confirm: true, copperLayerCount: 4, timeoutMs: 120000 } },
+    }) + '\n');
+    const [confirmedLayerLine] = await Promise.race([confirmedLayerLinePromise, lineTimeout]);
+    const confirmedLayerResponse = JSON.parse(confirmedLayerLine);
+    assert.equal(confirmedLayerResponse.id, 12);
+    assert.match(JSON.stringify(confirmedLayerResponse), /No ready EDA client connected/);
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {

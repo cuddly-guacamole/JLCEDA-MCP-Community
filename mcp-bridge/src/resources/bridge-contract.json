@@ -449,6 +449,16 @@
 			"readOnly": true
 		},
 		{
+			"toolName": "pcb_layer_manage",
+			"path": "/bridge/jlceda/pcb/layer-manage",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "pcb_realtime_drc",
 			"path": "/bridge/jlceda/pcb/realtime-drc",
 			"owner": "bridge",
