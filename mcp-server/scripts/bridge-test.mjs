@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { WebSocket } from 'ws';
 import { EdaBridgeServer } from '../dist/mcp/bridge-client.js';
 import { isReadOnlyBridgeRequest, validateBridgeClientMessage } from '../dist/mcp/bridge-contract.js';
+import { ToolDispatcher } from '../dist/mcp/tool-dispatcher.js';
 
 async function reservePort() {
   const server = createServer();
@@ -991,16 +992,24 @@ try {
           apiFullName: 'eda.pcb_Document.autoRouting', ok: false, commitState: 'unknown', commitUnknown: true,
           retryBlocked: true, error: 'RPC Call autoRouting Timed Out',
           routingObservation: { status: 'changed', scope: 'requested_nets_only', pageUuid: 'routing-pcb', provisional: true,
-            nets: [{ net: 'VCC', before: { length: 0, routingPrimitiveCount: 0 }, after: { length: 10.5, routingPrimitiveCount: 1 } }] },
+            nets: [{ net: 'VCC', beforeLength: 0, beforeRoutingPrimitiveCount: 0, afterLength: 10.5, afterRoutingPrimitiveCount: 1 }],
+            addedRoutingPrimitiveIds: { VCC: ['track-1'] }, removedRoutingPrimitiveIds: { VCC: [] } },
         },
       }));
     });
-    const uncertain = await nativeRoutingServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] }, 2000);
+    const routingToolResult = await new ToolDispatcher(nativeRoutingServer).dispatch({
+      name: 'api_invoke', arguments: { apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] },
+    });
+    const uncertain = routingToolResult.structuredContent;
     assert.equal(uncertain.commitUnknown, true);
     assert.equal(uncertain.routingObservation.status, 'changed', 'provisional readback should reach the caller');
+    assert.equal(uncertain.routingObservation.nets[0].afterLength, 10.5);
+    assert.deepEqual(uncertain.routingObservation.addedRoutingPrimitiveIds, { VCC: ['track-1'] });
+    assert.equal(JSON.parse(routingToolResult.content[0].text).routingObservation.nets[0].afterRoutingPrimitiveCount, 1);
     const snapshot = await nativeRoutingServer.request('/bridge/admin/clients', {}, 2000);
     const diagnostic = snapshot.clients[0].quarantine.diagnostics[0];
     assert.equal(diagnostic.requiredReadback, 'pcb_routing_state');
+    assert.equal(diagnostic.hostRestartRequired, true);
     assert.equal(diagnostic.uncertaintyReason, 'native autoRouting timeout');
     assert.equal(diagnostic.context.pageUuid, 'routing-pcb');
     await assert.rejects(nativeRoutingServer.request('/bridge/test/write-after-routing-timeout', {}, 2000), /writes are blocked pending recovery readback/);
@@ -1045,8 +1054,10 @@ try {
       action: 'readback', confirm: true, recoveryId: recovery.recoveryId, clientId: 'native-routing-fresh', hostRestartConfirmed: true,
       readbackPath: '/bridge/jlceda/api/invoke', readbackPayload: { apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [] },
     };
+    assert.equal(isReadOnlyBridgeRequest(routeReadback.readbackPath, routeReadback.readbackPayload), true,
+      'the exact PCB Line.getAll recovery payload must be classified as read-only');
     await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', { ...routeReadback, hostRestartConfirmed: undefined }, 2000), /original EDA host was restarted/);
-    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', { ...routeReadback, readbackPath: '/bridge/jlceda/context' }, 2000), /autoRouting requires eda.pcb_PrimitiveLine.getAll/);
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', { ...routeReadback, readbackPath: '/bridge/jlceda/context', readbackPayload: {} }, 2000), /autoRouting requires eda.pcb_PrimitiveLine.getAll/);
     await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /original Bridge client must disconnect/);
     nativeRoutingOld.socket.close();
     await waitUntil(async () => (await nativeRoutingServer.request('/bridge/admin/clients', {}, 2000)).clients.find(client => client.clientId === 'native-routing-old')?.ready === false);

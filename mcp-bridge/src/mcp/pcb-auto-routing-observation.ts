@@ -71,20 +71,24 @@ export function compareAutoRoutingSnapshots(before: AutoRoutingSnapshot, after: 
 		|| before.nets.some((net, index) => net.net !== after.nets[index].net)) {
 		return { status: 'unavailable', scope: 'requested_nets_only', reason: 'PCB page or requested networks changed during readback.' };
 	}
+	const addedRoutingPrimitiveIds: Record<string, string[]> = Object.create(null);
+	const removedRoutingPrimitiveIds: Record<string, string[]> = Object.create(null);
 	const nets = before.nets.map((previous, index) => {
 		const current = after.nets[index];
 		const previousIds = new Set(previous.routingPrimitiveIds);
 		const currentIds = new Set(current.routingPrimitiveIds);
 		const added = current.routingPrimitiveIds.filter(id => !previousIds.has(id));
 		const removed = previous.routingPrimitiveIds.filter(id => !currentIds.has(id));
+		addedRoutingPrimitiveIds[previous.net] = added.slice(0, REPORTED_ID_LIMIT);
+		removedRoutingPrimitiveIds[previous.net] = removed.slice(0, REPORTED_ID_LIMIT);
 		return {
 			net: previous.net,
-			before: { length: previous.length, routingPrimitiveCount: previous.routingPrimitiveIds.length },
-			after: { length: current.length, routingPrimitiveCount: current.routingPrimitiveIds.length },
+			beforeLength: previous.length,
+			beforeRoutingPrimitiveCount: previous.routingPrimitiveIds.length,
+			afterLength: current.length,
+			afterRoutingPrimitiveCount: current.routingPrimitiveIds.length,
 			addedRoutingPrimitiveCount: added.length,
-			addedRoutingPrimitiveIds: added.slice(0, REPORTED_ID_LIMIT),
 			removedRoutingPrimitiveCount: removed.length,
-			removedRoutingPrimitiveIds: removed.slice(0, REPORTED_ID_LIMIT),
 			idsTruncated: added.length > REPORTED_ID_LIMIT || removed.length > REPORTED_ID_LIMIT,
 			observedChange: added.length > 0 || removed.length > 0 || previous.length !== current.length,
 		};
@@ -95,6 +99,8 @@ export function compareAutoRoutingSnapshots(before: AutoRoutingSnapshot, after: 
 		pageUuid: before.pageUuid,
 		provisional: true,
 		nets,
+		addedRoutingPrimitiveIds,
+		removedRoutingPrimitiveIds,
 	};
 }
 

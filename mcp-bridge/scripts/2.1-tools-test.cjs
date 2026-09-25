@@ -844,14 +844,27 @@ async function main() {
 	assert.equal(changedRouting.routingObservation.status, 'changed');
 	assert.equal(changedRouting.routingObservation.provisional, true);
 	assert.equal(changedRouting.routingObservation.pageUuid, 'pcb-1');
-	assert.deepEqual(changedRouting.routingObservation.nets[0].before, { length: 0, routingPrimitiveCount: 0 });
-	assert.deepEqual(changedRouting.routingObservation.nets[0].after, { length: 65.677034, routingPrimitiveCount: 1 });
-	assert.deepEqual(changedRouting.routingObservation.nets[0].addedRoutingPrimitiveIds, ['track-1']);
+	const serializedRouting = JSON.parse(JSON.stringify(await toSerializableAsync(changedRouting)));
+	assert.equal(serializedRouting.routingObservation.status, 'changed');
+	assert.equal(serializedRouting.routingObservation.nets[0].net, 'VCC');
+	assert.equal(serializedRouting.routingObservation.nets[0].beforeLength, 0);
+	assert.equal(serializedRouting.routingObservation.nets[0].beforeRoutingPrimitiveCount, 0);
+	assert.equal(serializedRouting.routingObservation.nets[0].afterLength, 65.677034);
+	assert.equal(serializedRouting.routingObservation.nets[0].afterRoutingPrimitiveCount, 1);
+	assert.deepEqual(serializedRouting.routingObservation.addedRoutingPrimitiveIds, { VCC: ['track-1'] });
+	assert.deepEqual(serializedRouting.routingObservation.removedRoutingPrimitiveIds, { VCC: [] });
+	assert.equal(JSON.stringify(serializedRouting).includes('[MaxDepthExceeded]'), false, 'the actual Bridge wire payload must retain routing observation details');
 	globalThis.eda.pcb_Document.autoRouting = async () => {
 		throw new Error('RPC Call autoRouting Timed Out');
 	};
 	const unchangedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
-	assert.equal(unchangedRouting.routingObservation.status, 'unchanged');
+	const serializedUnchangedRouting = JSON.parse(JSON.stringify(await toSerializableAsync(unchangedRouting)));
+	assert.equal(serializedUnchangedRouting.routingObservation.status, 'unchanged');
+	assert.equal(serializedUnchangedRouting.routingObservation.nets[0].beforeLength, 65.677034);
+	assert.equal(serializedUnchangedRouting.routingObservation.nets[0].afterLength, 65.677034);
+	assert.equal(serializedUnchangedRouting.routingObservation.nets[0].beforeRoutingPrimitiveCount, 1);
+	assert.equal(serializedUnchangedRouting.routingObservation.nets[0].afterRoutingPrimitiveCount, 1);
+	assert.deepEqual(serializedUnchangedRouting.routingObservation.addedRoutingPrimitiveIds, { VCC: [] });
 	assert.equal(unchangedRouting.commitUnknown, true, 'no observed change must not imply a safe retry');
 	globalThis.eda.pcb_Document.autoRouting = async () => {
 		routingPageUuid = 'pcb-2';
