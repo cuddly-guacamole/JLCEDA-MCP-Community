@@ -14,6 +14,11 @@ async function reservePort() {
 async function registerEda(port, clientId, token, reportedPageUuid = 'pcb-one') {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/bridge/ws?token=${token}`);
   await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });
+  socket.on('message', data => {
+    const message = JSON.parse(data.toString());
+    if (message.type === 'bridge/probe' && message.clientId === clientId)
+      socket.send(JSON.stringify({ type: 'bridge/probe-ack', clientId, probeId: message.probeId }));
+  });
   const welcome = new Promise(resolve => {
     const onMessage = data => {
       if (JSON.parse(data.toString()).type === 'bridge/welcome') { socket.off('message', onMessage); resolve(); }
@@ -21,7 +26,7 @@ async function registerEda(port, clientId, token, reportedPageUuid = 'pcb-one') 
     socket.on('message', onMessage);
   });
   const context = { documentUuid: 'document-one', projectUuid: 'project-one', pageKind: 'pcb', pageUuid: reportedPageUuid };
-  socket.send(JSON.stringify({ type: 'bridge/hello', clientId, bridgeVersion: '2.3.2', context }));
+  socket.send(JSON.stringify({ type: 'bridge/hello', clientId, bridgeVersion: '2.3.2', selectionProbeVersion: 1, context }));
   await welcome;
   socket.send(JSON.stringify({ type: 'bridge/ready', clientId, readyAt: Date.now() }));
   const heartbeatAck = new Promise(resolve => {
