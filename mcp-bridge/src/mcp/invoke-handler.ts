@@ -49,8 +49,11 @@ function pcbRoutingPrimitive(primitive: unknown, kind: string): Record<string, u
 	const primitiveId = state('PrimitiveId');
 	if (typeof primitiveId !== 'string' || primitiveId.length === 0)
 		return undefined;
-	const net = state('Net');
-	if (typeof net !== 'string')
+	// getSyncState treats null as a missing value; here null is the EDA's
+	// explicit state for unnetted board-outline and silkscreen polylines.
+	const nativeNet = typeof raw.getState_Net === 'function' ? raw.getState_Net.call(primitive) : undefined;
+	const net = nativeNet === undefined ? raw.net : nativeNet;
+	if (typeof net !== 'string' && net !== null)
 		return undefined;
 	const primitiveLock = state('PrimitiveLock');
 	if (typeof primitiveLock !== 'boolean')
