@@ -2034,6 +2034,97 @@ try {
     }
   }
 
+  for (const pourAction of ['create', 'modify', 'delete', 'rebuild']) {
+    const pourPort = await reservePort();
+    const pourServer = new EdaBridgeServer(pourPort);
+    let oldClient;
+    let freshClient;
+    try {
+      await pourServer.start();
+      const pourUrl = `ws://127.0.0.1:${pourPort}/bridge/ws${tokenQuery}`;
+      const pageContext = { documentUuid: 'pour-document', projectUuid: 'pour-project',
+        pageKind: 'pcb', pageUuid: 'pour-page' };
+      oldClient = await registerEda(pourUrl, `pour-${pourAction}-old`, pageContext);
+      oldClient.socket.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        oldClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: `pour-${pourAction}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+        oldClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: `pour-${pourAction}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm,
+          result: { ok: false, action: pourAction, commitUnknown: true,
+            nativeCallSettled: pourAction === 'rebuild' } }));
+      });
+      const writePayload = pourAction === 'create'
+        ? { action: 'create', net: 'GND', layer: 1, polygonSource: ['L', 0, 0, 10, 0, 10, 10, 'C'] }
+        : pourAction === 'modify'
+          ? { action: 'modify', primitiveId: 'pour-1', property: { pourPriority: 2 } }
+          : { action: pourAction, primitiveId: 'pour-1' };
+      assert.equal((await pourServer.request('/bridge/jlceda/pcb/pour-manage', writePayload, 2000)).commitUnknown, true);
+      const diagnostic = (await pourServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+      assert.equal(diagnostic.requiredReadback, 'pcb_pour_state');
+      assert.equal(diagnostic.hostRestartRequired, pourAction !== 'rebuild');
+      assert.equal(diagnostic.pageBound, true);
+      await assert.rejects(pourServer.request('/bridge/jlceda/pcb/pour-manage', writePayload, 2000),
+        /writes are blocked pending recovery readback/);
+      const recovery = await pourServer.request('/bridge/admin/recover-client', {
+        action: 'recover', confirm: true, requestId: diagnostic.requestId,
+      }, 2000);
+      oldClient.socket.close();
+      await waitUntil(async () => (await pourServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `pour-${pourAction}-old`)?.ready === false);
+      freshClient = await registerEda(pourUrl, `pour-${pourAction}-fresh`, pageContext);
+      const pour = { primitiveId: 'pour-1', net: 'GND', layer: 1,
+        polygonSource: ['L', 0, 0, 10, 0, 10, 10, 'C'], pourFillMethod: 'solid',
+        preserveSilos: false, pourName: '', pourPriority: 1, lineWidth: 0.1, primitiveLock: false };
+      const filled = { primitiveId: 'poured-1', pourPrimitiveId: 'pour-1', fillCount: 1,
+        fillGeometryDigest: 'fnv1a64:9a4c0a1f44d91e2b' };
+      const snapshot = { ok: true, action: 'read', scope: 'current_pcb_page', complete: true,
+        pageUuid: 'pour-page', pourCount: 1, pours: [pour], pouredCount: 1, poured: [filled] };
+      let readback = snapshot;
+      attachTaskResponder(freshClient.socket, `pour-${pourAction}-fresh`, message => {
+        if (message.path === '/bridge/jlceda/context')
+          return { currentDocumentInfo: { uuid: 'pour-document', parentProjectUuid: 'pour-project' },
+            currentProjectInfo: { uuid: 'pour-project' }, currentPcbInfo: { uuid: 'pour-page' } };
+        assert.equal(message.path, '/bridge/jlceda/pcb/pour-manage');
+        assert.deepEqual(message.payload, { action: 'read' });
+        return readback;
+      });
+      const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+        clientId: `pour-${pourAction}-fresh`, hostRestartConfirmed: true,
+        readbackPath: '/bridge/jlceda/pcb/pour-manage', readbackPayload: { action: 'read' } };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', {
+        ...recoveryReadback, readbackPath: '/bridge/jlceda/context', readbackPayload: {},
+      }, 2000), /requires pcb_pour_manage action=read/);
+      if (pourAction !== 'rebuild')
+        await assert.rejects(pourServer.request('/bridge/admin/recover-client', {
+          ...recoveryReadback, hostRestartConfirmed: false,
+        }, 2000), /original EDA host was restarted/);
+      readback = { ...snapshot, pourCount: 2 };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /pour state readback was incomplete/);
+      readback = { ...snapshot, pouredCount: 2 };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /pour state readback was incomplete/);
+      readback = { ...snapshot, pageUuid: 'another-page' };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /from another page/);
+      readback = { ...snapshot, pours: [{ ...pour, polygonSource: ['BAD', 0, 0] }] };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /pour border readback was incomplete/);
+      readback = { ...snapshot, poured: [{ ...filled, fillCount: null }] };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /poured fill readback was incomplete/);
+      readback = { ...snapshot, poured: [{ ...filled, fillGeometryDigest: '' }] };
+      await assert.rejects(pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /poured fill readback was incomplete/);
+      readback = snapshot;
+      const verified = await pourServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+      assert.equal(verified.readbackVerified, true);
+      assert.deepEqual(verified.readback.pours, [pour]);
+      assert.deepEqual(verified.readback.poured, [filled]);
+      assert.equal(verified.writesRemainBlocked, false);
+    } finally {
+      oldClient?.socket.close();
+      freshClient?.socket.close();
+      pourServer.close();
+    }
+  }
+
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
   assert.equal(pageMutationServer.validateCompleteSchematicPages({

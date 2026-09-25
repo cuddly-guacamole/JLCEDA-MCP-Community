@@ -46,8 +46,8 @@
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "可选的执行图页 UUID 核对值，必须与诊断记录一致；不能补充缺失的执行图页身份。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
-        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 器件创建、修改或删除结果不明时使用 pcb_component_edit 及 {\"action\":\"read\"}，完整读回当前 PCB 页器件状态；原理图器件修改或删除同理使用 schematic_component_edit；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll。" }
+        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/pcb/pour-manage", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
+        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 器件创建、修改或删除同理使用 pcb_component_edit；原理图器件修改或删除使用 schematic_component_edit；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -783,6 +783,45 @@
       "$defs": {
         "source": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["device", "footprint"] }, "libraryUuid": { "type": "string", "minLength": 1 }, "uuid": { "type": "string", "minLength": 1 } }, "required": ["kind", "libraryUuid", "uuid"], "additionalProperties": false },
         "componentProperty": { "type": "object", "minProperties": 1, "properties": { "layer": { "type": "integer", "enum": [1, 2] }, "x": { "type": "number" }, "y": { "type": "number" }, "rotation": { "type": "number" }, "primitiveLock": { "type": "boolean" }, "addIntoBom": { "type": "boolean" }, "designator": { "type": ["string", "null"] }, "name": { "type": ["string", "null"] }, "uniqueId": { "type": ["string", "null"] }, "manufacturer": { "type": ["string", "null"] }, "manufacturerId": { "type": ["string", "null"] }, "supplier": { "type": ["string", "null"] }, "supplierId": { "type": ["string", "null"] }, "otherProperty": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } } }, "additionalProperties": false }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "pcb_pour_manage",
+    "description": "读取当前 PCB 的全部覆铜边框和填充摘要，或创建、修改、删除覆铜边框及显式重建填充。创建或修改不会自动重建；写入结果不明时先恢复并以 action=read 回读全部边框和填充摘要，避免重复操作。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["read", "create", "modify", "delete", "rebuild"] },
+        "net": { "type": "string", "minLength": 1, "description": "create 时的网络名；请先用 pcb_net_query 核对。" },
+        "layer": { "$ref": "#/$defs/copperLayer", "description": "create 时的铜层 ID：顶层 1、底层 2、内层 15–44；必须在当前 PCB 启用。" },
+        "polygonSource": { "$ref": "#/$defs/polygonSource", "description": "create 时的官方单多边形数据数组；几何由 EDA 验证。" },
+        "pourFillMethod": { "$ref": "#/$defs/pourFillMethod" },
+        "preserveSilos": { "type": "boolean" },
+        "pourName": { "type": "string" },
+        "pourPriority": { "type": "number" },
+        "lineWidth": { "type": "number", "exclusiveMinimum": 0 },
+        "primitiveLock": { "type": "boolean" },
+        "primitiveId": { "type": "string", "minLength": 1, "description": "modify/delete/单个 rebuild 的当前 PCB 覆铜边框 ID。" },
+        "property": { "$ref": "#/$defs/pourProperty", "description": "modify 时仅更新所列属性；polygonSource 替换边框几何。" },
+        "all": { "const": true, "description": "rebuild 时显式重建当前 PCB 全部覆铜。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "required": ["action"],
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "read" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "create" }, "net": { "type": "string", "minLength": 1 }, "layer": { "$ref": "#/$defs/copperLayer" }, "polygonSource": { "$ref": "#/$defs/polygonSource" }, "pourFillMethod": { "$ref": "#/$defs/pourFillMethod" }, "preserveSilos": { "type": "boolean" }, "pourName": { "type": "string" }, "pourPriority": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "net", "layer", "polygonSource"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "primitiveId": { "type": "string", "minLength": 1 }, "property": { "$ref": "#/$defs/pourProperty" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "delete" }, "primitiveId": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "rebuild" }, "primitiveId": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "rebuild" }, "all": { "const": true }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "all"], "additionalProperties": false }
+      ],
+      "$defs": {
+        "copperLayer": { "anyOf": [{ "type": "integer", "enum": [1, 2] }, { "type": "integer", "minimum": 15, "maximum": 44 }] },
+        "polygonSource": { "type": "array", "minItems": 1, "items": { "anyOf": [{ "type": "string", "enum": ["L", "ARC", "CARC", "C", "R", "CIRCLE"] }, { "type": "number" }] } },
+        "pourFillMethod": { "type": "string", "enum": ["45grid", "90grid", "solid"] },
+        "pourProperty": { "type": "object", "minProperties": 1, "properties": { "net": { "type": "string", "minLength": 1 }, "layer": { "$ref": "#/$defs/copperLayer" }, "polygonSource": { "$ref": "#/$defs/polygonSource" }, "pourFillMethod": { "$ref": "#/$defs/pourFillMethod" }, "preserveSilos": { "type": "boolean" }, "pourName": { "type": "string" }, "pourPriority": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false }
       },
       "additionalProperties": false
     }

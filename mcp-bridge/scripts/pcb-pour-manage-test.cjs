@@ -1,0 +1,247 @@
+const assert = require('node:assert/strict');
+const process = require('node:process');
+
+process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', moduleResolution: 'node' });
+require('ts-node/register/transpile-only');
+
+const { handlePcbPourManageTask } = require('../src/mcp/pcb-pour-manage-handler.ts');
+const { requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
+const { toSerializableAsync } = require('../src/utils.ts');
+
+const path = '/bridge/jlceda/pcb/pour-manage';
+const rectangle = ['R', 10, 20, 100, 80, 0, 0];
+
+function makePour(id, patch = {}) {
+	return {
+		primitiveId: id,
+		net: 'GND',
+		layer: 1,
+		polygonSource: rectangle,
+		pourFillMethod: 'solid',
+		preserveSilos: false,
+		pourName: '',
+		pourPriority: 0,
+		lineWidth: 0.2,
+		primitiveLock: false,
+		...patch,
+	};
+}
+
+function primitive(state) {
+	return {
+		getState_PrimitiveId: () => state.primitiveId,
+		getState_Net: () => state.net,
+		getState_Layer: () => state.layer,
+		getState_ComplexPolygon: () => ({ getSource: () => state.polygonSource }),
+		getState_PourFillMethod: () => state.pourFillMethod,
+		getState_PreserveSilos: () => state.preserveSilos,
+		getState_PourName: () => state.pourName,
+		getState_PourPriority: () => state.pourPriority,
+		getState_LineWidth: () => state.lineWidth,
+		getState_PrimitiveLock: () => state.primitiveLock,
+	};
+}
+
+function pouredPrimitive(state) {
+	return {
+		getState_PrimitiveId: () => state.primitiveId,
+		getState_PourPrimitiveId: () => state.pourPrimitiveId,
+		getState_PourFills: () => state.fills,
+	};
+}
+
+function fill(id, source = rectangle, patch = {}) {
+	return {
+		id,
+		fill: true,
+		lineWidth: 0.2,
+		path: { getSourceStrictComplex: () => [source] },
+		...patch,
+	};
+}
+
+async function main() {
+	let pageUuid = 'pcb-1';
+	let writeCount = 0;
+	let serial = 1;
+	const pours = new Map([['pour-1', makePour('pour-1')]]);
+	const poured = new Map([['filled-1', { primitiveId: 'filled-1', pourPrimitiveId: 'pour-1', fills: [fill('a'), fill('b')] }]]);
+	const pourApi = {
+		async getAll(...args) {
+			assert.equal(args.length, 0, 'read must not filter any pour');
+			return [...pours.values()].map(primitive);
+		},
+		async create(net, layer, polygon, pourFillMethod, preserveSilos, pourName, pourPriority, lineWidth, primitiveLock) {
+			writeCount += 1;
+			const id = `new-${serial++}`;
+			const state = makePour(id, {
+				net,
+				layer,
+				polygonSource: polygon.getSource(),
+				pourFillMethod: pourFillMethod ?? 'solid',
+				preserveSilos: preserveSilos ?? false,
+				pourName: pourName ?? '',
+				pourPriority: pourPriority ?? 0,
+				lineWidth: lineWidth ?? 0.2,
+				primitiveLock: primitiveLock ?? false,
+			});
+			pours.set(id, state);
+			return primitive(state);
+		},
+		async modify(id, patch) {
+			writeCount += 1;
+			const state = pours.get(id);
+			assert.ok(state);
+			if (patch.complexPolygon)
+				patch = { ...patch, polygonSource: patch.complexPolygon.getSource() };
+			delete patch.complexPolygon;
+			Object.assign(state, patch);
+			return primitive(state);
+		},
+		async delete(id) {
+			writeCount += 1;
+			pours.delete(id);
+			return true;
+		},
+		async rebuildCopperRegions(ids) {
+			writeCount += 1;
+			const targets = ids ?? [...pours.keys()];
+			for (const id of targets)
+				poured.set(`filled-${id}`, { primitiveId: `filled-${id}`, pourPrimitiveId: id, fills: [fill(`fill-${id}`)] });
+			return targets.map(id => pouredPrimitive(poured.get(`filled-${id}`)));
+		},
+	};
+	globalThis.eda = {
+		dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: pageUuid }; } },
+		pcb_PrimitivePour: pourApi,
+		pcb_PrimitivePoured: {
+			async getAll(...args) {
+				assert.equal(args.length, 0);
+				return [...poured.values()].map(pouredPrimitive);
+			},
+		},
+		pcb_MathPolygon: { createPolygon: source => source[0] === 'BAD' ? undefined : { getSource: () => [...source] } },
+		pcb_Net: {
+			async getAllNets() {
+				return [{ net: 'GND' }, { net: 'VCC' }];
+			},
+		},
+		pcb_Layer: {
+			async getAllLayers() {
+				return [
+					{ id: 1, type: 'SIGNAL', layerStatus: 1, locked: false },
+					{ id: 2, type: 'SIGNAL', layerStatus: 1, locked: false },
+					{ id: 15, type: 'PLANE', layerStatus: 1, locked: false },
+					{ id: 16, type: 'SIGNAL', layerStatus: 0, locked: false },
+				];
+			},
+		},
+	};
+
+	const first = await handlePcbPourManageTask({ action: 'read' });
+	assert.deepEqual([first.ok, first.scope, first.complete, first.pageUuid, first.pourCount, first.pouredCount], [true, 'current_pcb_page', true, 'pcb-1', 1, 1]);
+	assert.deepEqual(first.pours[0].polygonSource, rectangle);
+	assert.deepEqual([first.poured[0].pourPrimitiveId, first.poured[0].fillCount], ['pour-1', 2]);
+	assert.match(first.poured[0].fillGeometryDigest, /^fnv1a64:[0-9a-f]{16}$/);
+	const initialDigest = first.poured[0].fillGeometryDigest;
+	poured.get('filled-1').fills.reverse();
+	assert.equal((await handlePcbPourManageTask({ action: 'read' })).poured[0].fillGeometryDigest, initialDigest, 'fill enumeration order should not affect digest');
+	poured.get('filled-1').fills[0].path = { getSourceStrictComplex: () => [['R', 11, 20, 100, 80, 0, 0]] };
+	assert.notEqual((await handlePcbPourManageTask({ action: 'read' })).poured[0].fillGeometryDigest, initialDigest, 'same fill IDs and count with changed geometry must change digest');
+	poured.get('filled-1').fills = [fill('a'), fill('b')];
+	for (let index = 0; index < 125; index++)
+		pours.set(`extra-${index}`, makePour(`extra-${index}`));
+	pours.get('pour-1').polygonSource = Array.from({ length: 151 }, (_, index) => index);
+	for (let index = 0; index < 125; index++)
+		poured.set(`extra-filled-${index}`, { primitiveId: `extra-filled-${index}`, pourPrimitiveId: 'pour-1', fills: [] });
+	const serializable = await toSerializableAsync(await handlePcbPourManageTask({ action: 'read' }));
+	assert.equal(serializable.pourCount, 126);
+	assert.equal(serializable.pours.length, 126, 'full pour list must not be truncated by bridge serialization');
+	assert.equal(serializable.pours[0].polygonSource.length, 151, 'polygon source must not be truncated by bridge serialization');
+	assert.deepEqual(serializable.pours[0].polygonSource, Array.from({ length: 151 }, (_, index) => index), 'polygon coordinates must survive bridge serialization');
+	assert.equal(serializable.poured.length, 126, 'full poured list must not be truncated by bridge serialization');
+	assert.match(serializable.poured.find(item => item.primitiveId === 'extra-filled-0').fillGeometryDigest, /^fnv1a64:[0-9a-f]{16}$/, 'an empty fill list must still have a stable digest');
+	for (let index = 0; index < 125; index++)
+		pours.delete(`extra-${index}`);
+	pours.get('pour-1').polygonSource = rectangle;
+	for (let index = 0; index < 125; index++)
+		poured.delete(`extra-filled-${index}`);
+	poured.get('filled-1').fills[0].path = {};
+	await assert.rejects(handlePcbPourManageTask({ action: 'read' }), /getSourceStrictComplex/, 'unreadable fill geometry must fail the snapshot');
+	poured.get('filled-1').fills = [fill('a'), fill('b')];
+	await assert.rejects(handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 3, polygonSource: rectangle }), /copper layer/);
+	await assert.rejects(handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 1, polygonSource: ['R', 1, Number.POSITIVE_INFINITY] }), /polygonSource/);
+	await assert.rejects(handlePcbPourManageTask({ action: 'create', net: 'MISSING', layer: 1, polygonSource: rectangle }), /does not exist/);
+	await assert.rejects(handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 16, polygonSource: rectangle }), /enabled, unlocked copper layer/);
+	assert.equal(writeCount, 0);
+
+	const created = await handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 15, polygonSource: rectangle, pourFillMethod: '45grid', preserveSilos: true, pourName: 'Ground', pourPriority: 2, lineWidth: 0.25, primitiveLock: false });
+	assert.deepEqual([created.ok, created.verified, created.primitiveId, created.pour.layer, created.pour.pourFillMethod], [true, true, 'new-1', 15, '45grid']);
+	assert.equal(created.pour.pourName, 'Ground');
+	assert.equal(poured.has('filled-new-1'), false, 'create does not rebuild copper automatically');
+	const modified = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'new-1', property: { net: 'VCC', layer: 2, polygonSource: ['CIRCLE', 50, 60, 20], pourPriority: 3 } });
+	assert.deepEqual([modified.ok, modified.pour.net, modified.pour.layer, modified.pour.pourPriority], [true, 'VCC', 2, 3]);
+	assert.deepEqual(modified.pour.polygonSource, ['CIRCLE', 50, 60, 20]);
+	const rebuilt = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'new-1' });
+	assert.equal(rebuilt.ok, true);
+	assert.equal(rebuilt.all, false);
+	assert.equal(rebuilt.poured.find(item => item.pourPrimitiveId === 'new-1').fillCount, 1);
+	const rebuiltAll = await handlePcbPourManageTask({ action: 'rebuild', all: true });
+	assert.equal(rebuiltAll.all, true);
+	assert.equal(rebuiltAll.pouredCount, 3);
+	assert.match(rebuiltAll.poured.find(item => item.pourPrimitiveId === 'new-1').fillGeometryDigest, /^fnv1a64:[0-9a-f]{16}$/);
+	await assert.rejects(handlePcbPourManageTask({ action: 'rebuild', all: true, primitiveId: 'new-1' }), /either/);
+	const deleted = await handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-1' });
+	assert.deepEqual([deleted.ok, deleted.deleted, deleted.verified], [true, true, true]);
+	await assert.rejects(handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-1' }), /does not exist/);
+
+	const nativeRebuild = pourApi.rebuildCopperRegions;
+	pourApi.rebuildCopperRegions = async () => [pouredPrimitive({ primitiveId: 'missing-fill', pourPrimitiveId: 'pour-1', fills: [fill('missing')] })];
+	const missingReadback = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
+	assert.deepEqual([missingReadback.commitUnknown, missingReadback.nativeCallSettled], [true, true]);
+	pourApi.rebuildCopperRegions = async () => [pouredPrimitive({ primitiveId: 'filled-1', pourPrimitiveId: 'pour-1', fills: [fill('a', ['R', 99, 20, 100, 80, 0, 0]), fill('b')] })];
+	const changedReadback = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
+	assert.deepEqual([changedReadback.commitUnknown, changedReadback.nativeCallSettled], [true, true], 'same IDs and fill count with changed geometry must fail rebuild verification');
+	pourApi.rebuildCopperRegions = async () => [pouredPrimitive({ primitiveId: 'filled-1', pourPrimitiveId: 'another-pour', fills: [fill('a'), fill('b')] })];
+	const wrongAssociation = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
+	assert.deepEqual([wrongAssociation.commitUnknown, wrongAssociation.nativeCallSettled], [true, true]);
+	pourApi.rebuildCopperRegions = async () => [];
+	const emptyWithExistingFill = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
+	assert.deepEqual([emptyWithExistingFill.commitUnknown, emptyWithExistingFill.nativeCallSettled], [true, true]);
+	pourApi.rebuildCopperRegions = async () => {
+		throw new Error('Native rebuild failed internally');
+	};
+	const unknownRebuild = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
+	assert.deepEqual([unknownRebuild.commitUnknown, unknownRebuild.readbackRequired, unknownRebuild.nativeCallSettled], [true, true, true]);
+	assert.equal(requiresHostRestartForResult(path, { action: 'rebuild' }, unknownRebuild), false);
+	pourApi.rebuildCopperRegions = async () => {
+		throw new Error('RPC call timed out');
+	};
+	const timeoutRebuild = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'pour-1' });
+	assert.deepEqual([timeoutRebuild.commitUnknown, timeoutRebuild.nativeCallSettled], [true, false]);
+	assert.equal(requiresHostRestartForResult(path, { action: 'rebuild' }, timeoutRebuild), true);
+	pourApi.rebuildCopperRegions = nativeRebuild;
+	const nativeModify = pourApi.modify;
+	pourApi.modify = async () => {
+		throw new Error('WebSocket connection closed');
+	};
+	const unknownModify = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'pour-1', property: { pourPriority: 4 } });
+	assert.deepEqual([unknownModify.commitUnknown, unknownModify.nativeCallSettled], [true, false]);
+	pourApi.modify = nativeModify;
+	const nativeCreate = pourApi.create;
+	pourApi.create = async (...args) => {
+		const result = await nativeCreate(...args);
+		pageUuid = 'pcb-2';
+		return result;
+	};
+	const switched = await handlePcbPourManageTask({ action: 'create', net: 'GND', layer: 1, polygonSource: rectangle });
+	assert.deepEqual([switched.commitUnknown, switched.nativeCallSettled], [true, true]);
+	pageUuid = 'pcb-1';
+	pourApi.create = nativeCreate;
+	console.log('PCB pour management tests passed');
+}
+
+main().catch((error) => {
+	console.error(error);
+	process.exitCode = 1;
+});
