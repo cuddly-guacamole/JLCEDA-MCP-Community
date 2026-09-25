@@ -497,21 +497,22 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	}
 	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult)) {
 		const failedNets = Array.isArray(invokeResult.failedNets) && invokeResult.failedNets.length > 0;
-		const reportedFailedNetsOutsideSelection = requestedRoutingNets && Array.isArray(invokeResult.failedNets)
+		const reportedFailedNetsOutsideSelection = requestedRoutingNets?.length && Array.isArray(invokeResult.failedNets)
 			? invokeResult.failedNets.filter((net: unknown): net is string => typeof net === 'string' && !requestedRoutingNets.includes(net))
 			: [];
 		const reportedTotalNetsCountExceedsSelection = requestedRoutingNets !== undefined
+			&& requestedRoutingNets.length > 0
 			&& typeof invokeResult.totalNetsCount === 'number'
 			&& invokeResult.totalNetsCount > requestedRoutingNets.length;
 		const selectionScopeUnconfirmed = reportedFailedNetsOutsideSelection.length > 0 || reportedTotalNetsCountExceedsSelection;
-		const selectionDetails = requestedRoutingNets === undefined
-			? {}
-			: {
-					requestedRoutingNets,
-					reportedFailedNetsOutsideSelection,
-					reportedTotalNetsCountExceedsSelection,
-					selectionScopeUnconfirmed,
-				};
+		const selectionDetails: Record<string, unknown> = {};
+		if (requestedRoutingNets !== undefined)
+			selectionDetails.requestedRoutingNets = requestedRoutingNets;
+		if (requestedRoutingNets?.length) {
+			selectionDetails.reportedFailedNetsOutsideSelection = reportedFailedNetsOutsideSelection;
+			selectionDetails.reportedTotalNetsCountExceedsSelection = reportedTotalNetsCountExceedsSelection;
+			selectionDetails.selectionScopeUnconfirmed = selectionScopeUnconfirmed;
+		}
 		const partialCount = typeof invokeResult.totalNetsCount === 'number'
 			&& typeof invokeResult.successNetsCount === 'number'
 			&& invokeResult.successNetsCount < invokeResult.totalNetsCount;

@@ -769,6 +769,18 @@ async function main() {
 	assert.equal(selectedRouting.reportedTotalNetsCountExceedsSelection, false);
 	assert.equal(selectedRouting.selectionScopeUnconfirmed, false);
 	assert.equal(selectedRouting.ok, undefined);
+	const allUnroutedResult = { success: true, totalNetsCount: 2, successNetsCount: 2, failedNets: [], duration: 45 };
+	globalThis.eda.pcb_Document.autoRouting = async (props) => {
+		assert.deepEqual(props, { RoutingNets: [] });
+		return allUnroutedResult;
+	};
+	const allUnroutedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: [] }] });
+	assert.deepEqual(allUnroutedRouting.result, allUnroutedResult);
+	assert.deepEqual(allUnroutedRouting.requestedRoutingNets, []);
+	assert.equal(allUnroutedRouting.reportedFailedNetsOutsideSelection, undefined);
+	assert.equal(allUnroutedRouting.reportedTotalNetsCountExceedsSelection, undefined);
+	assert.equal(allUnroutedRouting.selectionScopeUnconfirmed, undefined);
+	assert.equal(allUnroutedRouting.ok, undefined, 'an empty RoutingNets array requests all unrouted nets');
 	const scopeMismatchResult = { success: false, totalNetsCount: 62, successNetsCount: 0, failedNets: ['VCC', 'GND'], duration: 0 };
 	globalThis.eda.pcb_Document.autoRouting = async () => scopeMismatchResult;
 	const scopeMismatch = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] });
