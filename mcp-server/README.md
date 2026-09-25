@@ -44,6 +44,8 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `component_place` 启动或检查，以及 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID、位号及 BOM 属性）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。
 
+`component_place_auto` 与 `netlabel_place` 整批默认有 300 秒执行预算，可用 `timeoutMs` 在 25–600 秒内调整；大量器件或标签建议按实际 EDA 速度设置。`netlabel_place` 创建结果未定时停止剩余标签，恢复时使用 `schematic_read` 的 `includeConnectivityPrimitives:true` 完整读回普通 NET 属性及 NetFlag 图元，诊断要求重启时先重启原宿主。
+
 可写 `api_invoke` 的原生 RPC 超时或断线会阻止后续写入；诊断要求宿主重启时，使用新 Bridge 核对目标文档和受影响图元，再恢复写入。只读 `api_invoke` 的失败不进入写入恢复。
 
 Server 提供 `schematic_document_action`，用于受限地检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置，并执行视图导航、图元选择、属性读取、保存和变更导入。

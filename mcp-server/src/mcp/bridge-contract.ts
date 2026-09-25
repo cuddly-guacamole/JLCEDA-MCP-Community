@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-type TimeoutPolicyName = 'default' | 'api' | 'standard-read' | 'extended-read';
+type TimeoutPolicyName = 'default' | 'api' | 'standard-read' | 'extended-read' | 'batch-write';
 
 interface TimeoutPolicy {
   defaultMs: number;

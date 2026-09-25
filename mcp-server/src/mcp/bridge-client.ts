@@ -211,9 +211,10 @@ function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
 }
 
 function isSchematicConnectivityMutation(path: string, payload: unknown): boolean {
-  return path === '/bridge/jlceda/schematic/connectivity'
-    && isRecord(payload)
-    && (payload.action === 'wire_create' || payload.action === 'netport_create' || payload.action === 'netport_move');
+  return path === '/bridge/jlceda/netlabel/place'
+    || (path === '/bridge/jlceda/schematic/connectivity'
+      && isRecord(payload)
+      && (payload.action === 'wire_create' || payload.action === 'netport_create' || payload.action === 'netport_move'));
 }
 
 function isSchematicPlacementWrite(path: string): boolean {
@@ -1460,6 +1461,9 @@ export class EdaBridgeServer {
     const executionContext = session.diagnostic.context;
     if (session.diagnostic.pageBound && (!executionContext?.pageKind || !executionContext.pageUuid))
       throw new Error('Timed-out write has no verified execution-time page identity; writes remain blocked.');
+    const requestedPageUuid = optionalString(payload.expectedPageUuid);
+    if (requestedPageUuid && (!session.diagnostic.pageBound || requestedPageUuid !== executionContext?.pageUuid))
+      throw new Error('expectedPageUuid does not match the verified execution-time page identity; writes remain blocked.');
     const expectedDocumentUuid = session.diagnostic.pageBound
       ? executionContext?.documentUuid ?? optionalString(payload.expectedDocumentUuid)
       : optionalString(payload.expectedDocumentUuid);
@@ -1747,9 +1751,11 @@ export class EdaBridgeServer {
     if (!isRecord(primitives) || primitives.scope !== 'current_schematic_page' || primitives.complete !== true
       || primitives.pageUuid !== diagnostic.context?.pageUuid
       || diagnostic.context?.pageKind !== 'schematic'
-      || !Array.isArray(primitives.wires) || !Array.isArray(primitives.netPorts) || !Array.isArray(primitives.netLabels)
+      || !Array.isArray(primitives.wires) || !Array.isArray(primitives.netPorts)
+      || !Array.isArray(primitives.netFlags) || !Array.isArray(primitives.netLabels)
       || !Number.isSafeInteger(primitives.wireCount) || primitives.wireCount !== primitives.wires.length
       || !Number.isSafeInteger(primitives.netPortCount) || primitives.netPortCount !== primitives.netPorts.length
+      || !Number.isSafeInteger(primitives.netFlagCount) || primitives.netFlagCount !== primitives.netFlags.length
       || !Number.isSafeInteger(primitives.netLabelCount) || primitives.netLabelCount !== primitives.netLabels.length
       || !isRecord(semantic) || !Array.isArray(semantic.components) || !Array.isArray(semantic.networks)
       || semantic.componentCount !== semantic.components.length || semantic.networkCount !== semantic.networks.length) {
@@ -1767,6 +1773,12 @@ export class EdaBridgeServer {
         || !optionalString(port.net) || !Number.isFinite(port.x) || !Number.isFinite(port.y))
         throw new Error('Schematic NetPort readback was incomplete; writes remain blocked.');
       ids.add(port.primitiveId as string);
+    }
+    for (const flag of primitives.netFlags) {
+      if (!isRecord(flag) || !optionalString(flag.primitiveId) || ids.has(flag.primitiveId as string)
+        || !optionalString(flag.net) || !Number.isFinite(flag.x) || !Number.isFinite(flag.y))
+        throw new Error('Schematic NetFlag readback was incomplete; writes remain blocked.');
+      ids.add(flag.primitiveId as string);
     }
     for (const label of primitives.netLabels) {
       if (!isRecord(label) || !optionalString(label.primitiveId) || ids.has(label.primitiveId as string)

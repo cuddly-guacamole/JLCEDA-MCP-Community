@@ -151,6 +151,12 @@
 			"minMs": 5000,
 			"maxMs": 120000,
 			"allowOverride": true
+		},
+		"batch-write": {
+			"defaultMs": 300000,
+			"minMs": 25000,
+			"maxMs": 600000,
+			"allowOverride": true
 		}
 	},
 	"operations": [
@@ -269,13 +275,13 @@
 			"toolName": "component_place_auto",
 			"path": "/bridge/jlceda/component/place-auto",
 			"owner": "bridge",
-			"timeoutPolicy": "default"
+			"timeoutPolicy": "batch-write"
 		},
 		{
 			"toolName": "netlabel_place",
 			"path": "/bridge/jlceda/netlabel/place",
 			"owner": "bridge",
-			"timeoutPolicy": "default"
+			"timeoutPolicy": "batch-write"
 		},
 		{
 			"toolName": "netlabel_modify",

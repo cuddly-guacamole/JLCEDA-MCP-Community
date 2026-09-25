@@ -613,7 +613,7 @@ try {
     recoveryId: recoveryStart.recoveryId,
     clientId: 'wrong-recovery-page',
     expectedPageUuid: 'another-page',
-  }, 2000), /pageUuid does not match/);
+  }, 2000), /expectedPageUuid does not match/);
   const freshRecoveryClient = await registerEda(
     `ws://127.0.0.1:${recoveryPort}/bridge/ws${tokenQuery}`,
     'recovered-page',
@@ -1414,7 +1414,7 @@ try {
   unverifiedWriteServer.close();
   unverifiedWriteServer = undefined;
 
-  for (const [action, nativeCallSettled] of [['wire_create', true], ['netport_create', true], ['netport_move', true], ['wire_create', false]]) {
+  for (const [action, nativeCallSettled] of [['wire_create', true], ['netport_create', true], ['netport_move', true], ['wire_create', false], ['netlabel_place', false]]) {
     const connectivityRecoveryPort = await reservePort();
     const connectivityRecoveryServer = new EdaBridgeServer(connectivityRecoveryPort);
     let oldClient;
@@ -1439,12 +1439,15 @@ try {
           result: { ok: false, action, commitUnknown: true, nativeCallSettled },
         }));
       });
-      const writePayload = action === 'wire_create'
+      const writePath = action === 'netlabel_place' ? '/bridge/jlceda/netlabel/place' : '/bridge/jlceda/schematic/connectivity';
+      const writePayload = action === 'netlabel_place'
+        ? { placements: [{ componentId: 'component-1', pinIdentifier: '1', netName: 'SIG' }] }
+        : action === 'wire_create'
         ? { action, line: [0, 0, 10, 0] }
         : action === 'netport_create'
           ? { action, net: 'SIG', x: 10, y: 0 }
           : { action, id: 'port-1', x: 10, y: 0 };
-      assert.equal((await connectivityRecoveryServer.request('/bridge/jlceda/schematic/connectivity', writePayload, 2000)).commitUnknown, true);
+      assert.equal((await connectivityRecoveryServer.request(writePath, writePayload, 2000)).commitUnknown, true);
       const diagnostic = (await connectivityRecoveryServer.request('/bridge/admin/clients', {}, 2000)).clients
         .find(client => client.clientId === `connectivity-${action}-old`).quarantine.diagnostics[0];
       assert.equal(diagnostic.requiredReadback, 'schematic_connectivity_primitives', `${action} needs primitive readback`);
@@ -1463,6 +1466,7 @@ try {
         scope: 'current_schematic_page', complete: true, pageUuid: 'connectivity-page',
         wireCount: 1, wires: [{ primitiveId: 'wire-1', net: 'SIG', line: [0, 0, 10, 0] }],
         netPortCount: 1, netPorts: [{ primitiveId: 'port-1', net: 'SIG', x: 10, y: 0 }],
+        netFlagCount: 1, netFlags: [{ primitiveId: 'flag-1', net: 'SIG', x: 20, y: 0 }],
         netLabelCount: 0, netLabels: [],
       };
       const semantic = { componentCount: 0, networkCount: 0, components: [], networks: [] };
@@ -1497,9 +1501,11 @@ try {
       await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /netlist read failed/);
       readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify({ ...primitives, wireCount: 2 }) };
       await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /connectivity readback was incomplete/);
+      readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify({ ...primitives, netFlagCount: 2 }) };
+      await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /connectivity readback was incomplete/);
       readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify({ ...primitives, pageUuid: 'other-page' }) };
       await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /from another page/);
-      await assert.rejects(connectivityRecoveryServer.request('/bridge/jlceda/schematic/connectivity', writePayload, 2000), /writes are blocked pending recovery readback/);
+      await assert.rejects(connectivityRecoveryServer.request(writePath, writePayload, 2000), /writes are blocked pending recovery readback/);
       readbackResult = { ok: true, schematicCircuitSnapshot: JSON.stringify(semantic), connectivityPrimitivesSnapshot: JSON.stringify(primitives) };
       const verified = await connectivityRecoveryServer.request('/bridge/admin/recover-client', readbackRequest, 2000);
       assert.equal(verified.readbackVerified, true);

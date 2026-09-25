@@ -98,6 +98,10 @@ assert.deepEqual(duplicateCalls, [
 ]);
 assert.equal(calls.find(call => call.path === '/bridge/jlceda/component/place/start').payload.timeoutSeconds, 30,
   'the overall placement window must still be passed to the Bridge session');
+await dispatcher.dispatch({ name: 'component_place_auto', arguments: { components: [{ uuid: 'one' }] } });
+assert.equal(calls.at(-1).timeoutMs, 302000, 'coordinate batches need a longer Bridge execution budget');
+await dispatcher.dispatch({ name: 'netlabel_place', arguments: { placements: [{ componentId: 'one' }], timeoutMs: 420000 } });
+assert.equal(calls.at(-1).timeoutMs, 422000, 'label batches must pass the override with transport grace');
 
 const uncertainCleanupBridge = {
   async request(path) {

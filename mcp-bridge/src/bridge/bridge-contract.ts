@@ -4,7 +4,7 @@ export interface BridgeOperation {
 	toolName?: string;
 	path: string;
 	owner: 'server' | 'bridge';
-	timeoutPolicy?: 'default' | 'api' | 'standard-read' | 'extended-read';
+	timeoutPolicy?: 'default' | 'api' | 'standard-read' | 'extended-read' | 'batch-write';
 	readOnly?: boolean;
 	readOnlyIf?: { field: string; equals: unknown; defaultValue?: unknown };
 	readOnlyUnless?: { field: string; equals: unknown };
@@ -21,7 +21,7 @@ interface MessageShape {
 export const BRIDGE_CONTRACT = contract as {
 	contractVersion: string;
 	protocol: { version: number; clientMessages: Record<string, MessageShape>; serverMessages: Record<string, MessageShape> };
-	timeoutPolicies: Record<'default' | 'api' | 'standard-read' | 'extended-read', { defaultMs: number; minMs: number; maxMs: number; allowOverride: boolean }>;
+	timeoutPolicies: Record<'default' | 'api' | 'standard-read' | 'extended-read' | 'batch-write', { defaultMs: number; minMs: number; maxMs: number; allowOverride: boolean }>;
 	operations: BridgeOperation[];
 	internalOperations: BridgeOperation[];
 };

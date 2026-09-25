@@ -25,6 +25,9 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/api/invoke', { timeoutMs: 
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', {}), 30000);
 assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', { timeoutMs: 4999 }), /5000/);
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/select', { timeoutMs: 1 }), 25000);
+assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', {}), 300000);
+assert.equal(resolveContractTimeoutMs('/bridge/jlceda/netlabel/place', { timeoutMs: 420000 }), 420000);
+assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', { timeoutMs: 600001 }), /600000/);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
 for (const action of [undefined, 'status', 'selection', 'primitive_by_id', 'primitives_in_region', 'convert_canvas_to_data', 'navigate_to_coordinates', 'navigate_to_region', 'zoom_to_board_outline'])
 	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', action === undefined ? {} : { action }), true);
@@ -56,7 +59,7 @@ assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName:
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: ' EDA.SCH_PRIMITIVECOMPONENT.GETALL ', args: [null, false] }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.GETALL', args: [null, true] }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.CREATE', args: [] }), false);
-for (const path of ['/bridge/jlceda/schematic/connectivity', '/bridge/jlceda/component/place/start', '/bridge/jlceda/api/invoke'])
+for (const path of ['/bridge/jlceda/schematic/connectivity', '/bridge/jlceda/netlabel/place', '/bridge/jlceda/component/place/start', '/bridge/jlceda/api/invoke'])
 	assert.equal(requiresHostRestartForResult(path, { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: false }), true);
 assert.equal(requiresHostRestartForResult('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: true }), false);
 

@@ -494,7 +494,9 @@ async function main() {
 		flagCalledAfterLabelDisconnect = true;
 		return { primitiveId: 'unexpected-flag' };
 	};
-	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => { throw new Error('connection lost'); };
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => {
+		throw new Error('connection lost');
+	};
 	const uncertainLabel = await handleNetLabelPlaceTask({ placements: [
 		{ componentId: 'component-1', pinIdentifier: '1', netName: 'UART_TX' },
 		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },

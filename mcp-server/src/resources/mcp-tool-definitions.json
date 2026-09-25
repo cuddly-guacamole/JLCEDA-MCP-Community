@@ -43,11 +43,11 @@
         "clientId": { "type": "string", "minLength": 1, "description": "readback 时 bridge_clients 返回的全新 Bridge clientId。" },
         "expectedDocumentUuid": { "type": "string", "minLength": 1 },
         "expectedProjectUuid": { "type": "string", "minLength": 1 },
-        "expectedPageUuid": { "type": "string", "minLength": 1, "description": "原始诊断未记录图页 UUID 时可补充；已记录时以诊断中的 pageUuid 为准。" },
+        "expectedPageUuid": { "type": "string", "minLength": 1, "description": "可选的执行图页 UUID 核对值，必须与诊断记录一致；不能补充缺失的执行图页身份。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID、位号和 BOM 扩展属性；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
+        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接或网络标识写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}，完整读回导线、NetPort、NetFlag、NET 属性和语义网表；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID、位号和 BOM 扩展属性；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -379,7 +379,7 @@
   },
   {
     "name": "component_place_auto",
-    "description": "自动将器件放置到原理图的指定坐标。支持智能布局或网格/线性布局；已有器件或本批次已放置器件位号变化、或无法核对时停止剩余批次并返回当前位号及已放置明细。",
+    "description": "自动将器件放置到原理图的指定坐标。支持网格/线性布局；逐件核对当前图页与图元 ID，已有器件位号变化时尝试恢复，无法核对时停止剩余批次。整批默认超时 300 秒，大批量可调 timeoutMs。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -510,6 +510,13 @@
               "default": 0
             }
           }
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 25000,
+          "maximum": 600000,
+          "default": 300000,
+          "description": "整批坐标放置的执行超时，单位毫秒；大型批次可适当提高。"
         }
       },
       "required": [
@@ -519,7 +526,7 @@
   },
   {
     "name": "netlabel_place",
-    "description": "在指定器件引脚位置放置网络标签，通过网络标签代替导线实现电气连接。电源和地网络创建对应网络标识；普通网络标签需要 EDA v4，EDA 3.x 会直接报告不支持。",
+    "description": "在指定器件引脚位置放置网络标签，通过网络标签代替导线实现电气连接。电源和地网络创建对应网络标识；普通网络标签需要 EDA v4，EDA 3.x 会直接报告不支持。整批默认超时 300 秒，大批量可调 timeoutMs；原生创建结果未定时停止批次。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -550,6 +557,13 @@
           },
           "minItems": 1,
           "maxItems": 100
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 25000,
+          "maximum": 600000,
+          "default": 300000,
+          "description": "整批网络标识放置的执行超时，单位毫秒；大型批次可适当提高。"
         }
       },
       "required": [
