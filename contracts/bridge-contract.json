@@ -506,6 +506,12 @@
 			"timeoutPolicy": "standard-read"
 		},
 		{
+			"toolName": "board_setup",
+			"path": "/bridge/jlceda/board/setup",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read"
+		},
+		{
 			"toolName": "pcb_documents_manage",
 			"path": "/bridge/jlceda/pcb/documents-manage",
 			"owner": "bridge",

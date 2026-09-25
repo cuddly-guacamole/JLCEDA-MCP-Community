@@ -3,6 +3,7 @@ import { handleApiIndexTask } from '../mcp/api-index-handler.ts';
 import { handleApiSearchTask } from '../mcp/api-search-handler.ts';
 import { handleAutoLayoutTask } from '../mcp/auto-layout-handler.ts';
 import { handleAutoRoutingTask } from '../mcp/auto-routing-handler.ts';
+import { handleBoardSetupTask } from '../mcp/board-setup-handler.ts';
 import { handleCanvasSnapshotTask } from '../mcp/canvas-snapshot-handler.ts';
 import { handleComponentPlaceAutoTask } from '../mcp/component-place-auto-handler.ts';
 import {
@@ -63,6 +64,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/api/index': handleApiIndexTask,
 	'/bridge/jlceda/api/search': handleApiSearchTask,
 	'/bridge/jlceda/api/invoke': handleApiInvokeTask,
+	'/bridge/jlceda/board/setup': handleBoardSetupTask,
 	'/bridge/jlceda/auto/layout': handleAutoLayoutTask,
 	'/bridge/jlceda/auto/routing': handleAutoRoutingTask,
 	'/bridge/jlceda/component/place/check': handleComponentPlaceCheckTask,
