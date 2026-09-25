@@ -187,15 +187,15 @@
   },
   {
     "name": "pcb_read",
-    "description": "按需读取当前 PCB 页的语义快照及页 UUID。默认仅返回器件与网络；sections 可选择焊盘、布线、覆铜、板框和区域，或传 [\"all\"] 读取全部。所选部分必须完整且属于同一 PCB，否则失败；焊盘包括独立焊盘与器件焊盘的身份、坐标和网络。",
+    "description": "按需读取当前 PCB 页的语义快照及页 UUID。默认仅返回器件与网络；sections 可选择焊盘、布线、覆铜、板框、区域和文本，或传 [\"all\"] 读取全部。所选部分必须完整且属于同一 PCB，否则失败；焊盘包括独立焊盘与器件焊盘的身份、坐标和网络。",
     "inputSchema": {
       "type": "object",
       "properties": {
         "sections": {
           "type": "array",
-          "items": { "type": "string", "enum": ["components", "pads", "nets", "routing", "pours", "outline", "regions", "all"] },
+          "items": { "type": "string", "enum": ["components", "pads", "nets", "routing", "pours", "outline", "regions", "text", "all"] },
           "minItems": 1,
-          "maxItems": 7,
+          "maxItems": 8,
           "uniqueItems": true,
           "default": ["components", "nets"],
           "description": "选择读取的部分；仅 [\"all\"] 代表全部。焊盘读取需逐个读取器件引脚，大 PCB 可提高 timeoutMs。"

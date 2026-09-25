@@ -20,7 +20,7 @@ function primitive(values) {
 	});
 }
 
-const component = primitive({
+const componentValues = {
 	PrimitiveId: 'U1',
 	Layer: 1,
 	X: 10,
@@ -38,7 +38,9 @@ const component = primitive({
 	Supplier: null,
 	SupplierId: null,
 	OtherProperty: {},
-});
+};
+const component = primitive(componentValues);
+const mechanicalComponent = primitive({ ...componentValues, PrimitiveId: 'mechanical-1', Designator: 'M1' });
 
 function pad(id, parent) {
 	return primitive({
@@ -74,20 +76,47 @@ const region = primitive({
 	LineWidth: 0.2,
 	PrimitiveLock: false,
 });
+const textStyle = {
+	PrimitiveId: 'text-1',
+	Layer: 3,
+	X: 10,
+	Y: 20,
+	FontFamily: 'default',
+	FontSize: 45,
+	LineWidth: 6,
+	AlignMode: 3,
+	Rotation: 0,
+	Reverse: false,
+	Expansion: 0,
+	Mirror: false,
+	PrimitiveLock: false,
+};
+const boardText = primitive({ ...textStyle, Text: 'LABEL' });
+const designatorText = primitive({
+	...textStyle,
+	PrimitiveId: 'attribute-1',
+	ParentPrimitiveId: 'U1',
+	Key: 'Designator',
+	Value: 'U1',
+	KeyVisible: false,
+	ValueVisible: true,
+});
 
 globalThis.eda = {
 	dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: page }; } },
 	pcb_PrimitiveComponent: {
 		async getAll() {
 			calls.components += 1;
-			return [component];
+			return [component, mechanicalComponent];
 		},
 		async getAllPrimitiveId() {
 			calls.componentIds += 1;
-			return ['U1'];
+			return ['U1', 'mechanical-1'];
 		},
 		async getAllPinsByPrimitiveId(id) {
 			calls.pins += 1;
+			if (id === 'mechanical-1')
+				return undefined;
 			assert.equal(id, 'U1');
 			return [pad('pin-1', 'U1')];
 		},
@@ -112,6 +141,8 @@ globalThis.eda = {
 	pcb_PrimitivePour: { async getAll() { return []; } },
 	pcb_PrimitivePoured: { async getAll() { return []; } },
 	pcb_PrimitiveRegion: { async getAll() { return [region]; } },
+	pcb_PrimitiveString: { async getAll() { return [boardText]; } },
+	pcb_PrimitiveAttribute: { async getAll() { return [designatorText]; } },
 };
 
 async function main() {
@@ -119,8 +150,8 @@ async function main() {
 	assert.equal(basic.complete, true);
 	assert.equal(basic.pageUuid, 'pcb-1');
 	assert.deepEqual(basic.includedSections, ['components', 'nets']);
-	assert.deepEqual(basic.omittedSections, ['pads', 'routing', 'pours', 'outline', 'regions']);
-	assert.equal(basic.componentCount, 1);
+	assert.deepEqual(basic.omittedSections, ['pads', 'routing', 'pours', 'outline', 'regions', 'text']);
+	assert.equal(basic.componentCount, 2);
 	assert.equal(basic.netCount, 130);
 	assert.equal(basic.pads, undefined);
 	assert.equal(calls.pads, 0);
@@ -135,6 +166,10 @@ async function main() {
 	assert.equal(all.outlineLineCount, 1);
 	assert.equal(all.regionCount, 1);
 	assert.equal(all.pourCount, 0);
+	assert.equal(all.stringCount, 1);
+	assert.equal(all.attributeCount, 1);
+	assert.equal(all.strings[0].text, 'LABEL');
+	assert.equal(all.attributes[0].parentPrimitiveId, 'U1');
 	assert.deepEqual(all.omittedSections, []);
 	const serialized = await toSerializableAsync(all);
 	assert.equal(serialized.pads.length, 131);

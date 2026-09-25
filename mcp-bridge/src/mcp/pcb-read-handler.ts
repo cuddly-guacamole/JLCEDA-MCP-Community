@@ -4,10 +4,11 @@ import { handlePcbComponentEditTask } from './pcb-component-edit-handler.ts';
 import { handlePcbPourManageTask } from './pcb-pour-manage-handler.ts';
 import { handlePcbRegionManageTask } from './pcb-region-manage-handler.ts';
 import { handlePcbRoutingEditTask } from './pcb-routing-edit-handler.ts';
+import { handlePcbTextManageTask } from './pcb-text-manage-handler.ts';
 
-type Section = 'components' | 'pads' | 'nets' | 'routing' | 'pours' | 'outline' | 'regions';
+type Section = 'components' | 'pads' | 'nets' | 'routing' | 'pours' | 'outline' | 'regions' | 'text';
 
-const SECTIONS: Section[] = ['components', 'pads', 'nets', 'routing', 'pours', 'outline', 'regions'];
+const SECTIONS: Section[] = ['components', 'pads', 'nets', 'routing', 'pours', 'outline', 'regions', 'text'];
 const DEFAULT_SECTIONS: Section[] = ['components', 'nets'];
 
 function requestedSections(payload: Record<string, unknown>): Section[] {
@@ -87,6 +88,8 @@ async function readPads(runtime: Record<string, unknown>, componentIds?: string[
 		const batches = await Promise.all(ids.slice(offset, offset + 8).map(id =>
 			(componentApi.getAllPinsByPrimitiveId as (id: string) => Promise<unknown>).call(componentApi, id as string)));
 		for (const batch of batches) {
+			if (batch === undefined)
+				continue;
 			if (!Array.isArray(batch))
 				throw new TypeError('EDA component pad list is not readable.');
 			for (const item of batch) {
@@ -170,10 +173,17 @@ export async function handlePcbReadTask(payload: unknown): Promise<unknown> {
 				result[`${outputField.slice(0, -1)}Count`] = (read[field] as unknown[]).length;
 			}
 		}
-		else {
+		else if (section === 'regions') {
 			const read = sectionResult(await handlePcbRegionManageTask({ action: 'read' }), section, expectedPageUuid, ['regions']);
 			result.regions = read.regions;
 			result.regionCount = (read.regions as unknown[]).length;
+		}
+		else {
+			const read = sectionResult(await handlePcbTextManageTask({ action: 'read' }), section, expectedPageUuid, ['strings', 'attributes']);
+			result.strings = read.strings;
+			result.stringCount = (read.strings as unknown[]).length;
+			result.attributes = read.attributes;
+			result.attributeCount = (read.attributes as unknown[]).length;
 		}
 		if (await pageUuid(runtime) !== expectedPageUuid)
 			throw new Error('The active PCB changed during pcb_read. Retry on the intended page.');

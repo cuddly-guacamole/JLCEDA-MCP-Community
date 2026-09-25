@@ -54,7 +54,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_board_outline_manage` 的 `read` 返回当前 PCB 板框层 11 的直线、圆弧和折线，或按 `kind` 与 `primitiveId` 读取单个图元。`create` 使用板框层与空网络，EDA 回读也可能为 `null`；`modify` 和 `delete` 仅接受板框层图元，折线接受可序列化的 `polygonSource`；一段轮廓无需独立闭合。写后回读同板图元；创建未新增图元时返回 `applied:false`，新增图元与请求不符时返回 `applied:true`、实际图元和差异。结果不明时用 `bridge_recover_client action=readback` 指定无参数 `eda.pcb_PrimitiveLine.getAll`，Server 会补读圆弧、折线、过孔和网络，再由调用者核对板框变化；诊断要求宿主重启时先重启原宿主。
 
-`pcb_read` 默认读取当前 PCB 的器件和网络；`sections` 可从 `components`、`pads`、`nets`、`routing`、`pours`、`outline`、`regions` 中选择，或传 `["all"]`。结果包含同一 `pageUuid`、`includedSections`、`omittedSections` 和所选部分的不截断数组及数量。`pads` 包括独立焊盘和器件焊盘的 ID、父器件 ID、层、焊盘号、位置、角度、网络及焊盘类型；逐件读取器件焊盘可能较慢，可调整 `timeoutMs`。复杂焊盘外形不在此语义快照中。任一所选部分读取失败或图页改变时整次调用失败。
+`pcb_read` 默认读取当前 PCB 的器件和网络；`sections` 可从 `components`、`pads`、`nets`、`routing`、`pours`、`outline`、`regions`、`text` 中选择，或传 `["all"]`。结果包含同一 `pageUuid`、`includedSections`、`omittedSections` 和所选部分的不截断数组及数量。`text` 包含独立文本与器件属性；`pads` 包括独立焊盘和器件焊盘的 ID、父器件 ID、层、焊盘号、位置、角度、网络及焊盘类型；逐件读取器件焊盘可能较慢，可调整 `timeoutMs`。复杂焊盘外形不在此语义快照中。任一所选部分读取失败或图页改变时整次调用失败。
 
 `pcb_region_manage` 的 `read` 返回当前 PCB 全部禁止区域和约束区域，或按 `primitiveId` 查询单个区域，包括多轮廓区域。`create` 指定层、单轮廓 `polygonSource` 和至少一条区域规则；规则编号 2/5/6/7/8 分别禁止元件、导线、填充、覆铜和内电层，9 表示跟随区域约束规则。`modify` 可用单轮廓或多轮廓 `polygonSource` 修改现有区域，`delete` 删除单个区域。写入结果不明时用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/region-manage"`、`readbackPayload:{"action":"read"}`，核对同一 PCB 的全部区域；诊断要求宿主重启时先重启原宿主。
 

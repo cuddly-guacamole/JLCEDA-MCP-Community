@@ -36,7 +36,7 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `pcb_text_manage` 完整读取当前 PCB 的独立 String 与器件 Attribute，也可按类型、图元 ID 或父器件 ID 查询。独立文本可创建、修改、删除；现有器件属性可修改值、可见性与样式，写后重新 `get()` 验证。官方 `pcb_PrimitiveAttribute.create()` 不生效，故不暴露属性单独创建。未知提交要求同板完整文本与属性回读。
 
-`pcb_read` 复用已有的器件、布线、覆铜、板框和区域读取处理器，并补充独立焊盘、器件焊盘和全部网络。默认仅读器件和网络，`sections:["all"]` 才读取全部；只返回同一 PCB UUID 的完整所选部分，数组不截断。焊盘部分包含身份、位置和网络，不包含复杂焊盘外形。
+`pcb_read` 复用已有的器件、布线、覆铜、板框、区域和文本读取处理器，并补充独立焊盘、器件焊盘和全部网络。默认仅读器件和网络，`sections:["all"]` 才读取全部；只返回同一 PCB UUID 的完整所选部分，数组不截断。文本部分包括独立 String 与器件 Attribute；焊盘部分包含身份、位置和网络，不包含复杂焊盘外形。
 
 `pcb_connectivity_action` 可在指定网络上创建 PCB 直线走线或通孔。`line_create` 需要 `net`、`layer`、`startX/startY`、`endX/endY` 和 `lineWidth`；`via_create` 需要 `net`、`x/y`、`holeDiameter` 和 `diameter`，单位为 EDA 当前画布数据单位。默认先确认网络已存在；明确传入 `allowNewNet:true` 可在独立 PCB 上创建新网络。直线目标层必须是已启用、未锁定的 `SIGNAL` 或 `PLANE` 铜层。写入后使用原生单 ID 查询核对网络和几何；原生调用超时、缺少返回 ID 或回读失败时报告 `commitUnknown:true`，等待受控恢复核对 PCB 布线状态后再写入。
 
