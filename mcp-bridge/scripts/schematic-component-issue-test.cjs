@@ -780,6 +780,54 @@ async function main() {
 	assert.equal(uncertainReadback.nativeCallSettled, true);
 	assert.match(uncertainReadback.annotationWarning, /readback failed/);
 
+	let timedOutCreateCalls = 0;
+	const timedOutCreateComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return timedOutCreateComponents; },
+		async create() {
+			timedOutCreateCalls += 1;
+			if (timedOutCreateCalls === 2)
+				throw new Error('RPC Call create Timed Out');
+			const created = primitive('first-created', 'R1');
+			timedOutCreateComponents.push(created);
+			return created;
+		},
+	};
+	const timedOutCreate = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
+		{ uuid: 'third', libraryUuid: 'library' },
+	] });
+	assert.equal(timedOutCreate.ok, false);
+	assert.equal(timedOutCreateCalls, 2);
+	assert.equal(timedOutCreate.placedCount, 1);
+	assert.equal(timedOutCreate.failedCount, 1);
+	assert.equal(timedOutCreate.notAttemptedCount, 1);
+	assert.deepEqual(timedOutCreate.placedComponents.map(item => item.primitiveId), ['first-created']);
+	assert.equal(timedOutCreate.commitUnknown, true);
+	assert.equal(timedOutCreate.readbackRequired, true);
+	assert.equal(timedOutCreate.nativeCallSettled, false);
+	assert.match(timedOutCreate.creationWarning, /Timed Out/);
+
+	let rejectedCreateCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return []; },
+		async create() {
+			rejectedCreateCalls += 1;
+			if (rejectedCreateCalls === 1)
+				throw new Error('Invalid library device');
+			return primitive('second-created', 'R1');
+		},
+	};
+	const rejectedCreate = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'invalid', libraryUuid: 'library' },
+		{ uuid: 'valid', libraryUuid: 'library' },
+	] });
+	assert.equal(rejectedCreateCalls, 2);
+	assert.equal(rejectedCreate.failedCount, 1);
+	assert.equal(rejectedCreate.placedCount, 1);
+	assert.equal(rejectedCreate.commitUnknown, undefined);
+
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => {
 		throw new Error('readback failed');
 	};

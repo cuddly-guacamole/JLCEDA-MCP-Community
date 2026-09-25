@@ -321,6 +321,10 @@ function resolveComponentCreateApi(): ComponentCreateApi {
 	};
 }
 
+function isUnknownCreateResult(errorMessage: string): boolean {
+	return /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i.test(errorMessage);
+}
+
 /**
  * 处理器件自动坐标放置任务。
  * @param payload 任务参数。
@@ -358,6 +362,7 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 	const api = resolveComponentCreateApi();
 	let trackedDesignators: Map<string, string>;
 	let annotationWarning: string | undefined;
+	let creationWarning: string | undefined;
 	try {
 		trackedDesignators = await readSchematicDesignators(api);
 	}
@@ -423,11 +428,18 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			});
 		}
 		catch (error: unknown) {
+			const errorMessage = toSafeErrorMessage(error);
 			failedComponents.push({
 				uuid: component.uuid,
 				libraryUuid: component.libraryUuid,
-				error: toSafeErrorMessage(error),
+				error: errorMessage,
 			});
+			if (isUnknownCreateResult(errorMessage)) {
+				commitUnknown = true;
+				nativeCallSettled = false;
+				creationWarning = `器件创建结果未知，EDA 可能仍在完成放置：${errorMessage}`;
+				break;
+			}
 			continue;
 		}
 
@@ -460,10 +472,10 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 	}
 	const notAttemptedCount = components.length - placedComponents.length - failedComponents.length;
 
-	if (failedComponents.length > 0 || annotationWarning) {
+	if (failedComponents.length > 0 || annotationWarning || creationWarning) {
 		return {
 			ok: false,
-			needsReview: Boolean(annotationWarning),
+			needsReview: Boolean(annotationWarning || creationWarning),
 			placedCount: placedComponents.length,
 			failedCount: failedComponents.length,
 			totalCount: components.length,
@@ -473,10 +485,13 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			designatorChanges,
 			restoredDesignators,
 			annotationWarning,
+			...(creationWarning ? { creationWarning } : {}),
 			...(commitUnknown ? { commitUnknown: true, readbackRequired: true, nativeCallSettled } : {}),
-			message: annotationWarning
-				? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；器件位号需核对。`
-				: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
+			message: creationWarning
+				? `器件创建结果未知；已确认放置 ${String(placedComponents.length)} 个，${String(notAttemptedCount)} 个未尝试。请先回读当前原理图。`
+				: annotationWarning
+					? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；器件位号需核对。`
+					: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
 		};
 	}
 
