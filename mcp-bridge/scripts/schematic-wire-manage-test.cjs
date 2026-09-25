@@ -6,6 +6,7 @@ require('ts-node/register/transpile-only');
 
 const { handleSchematicWireManageTask } = require('../src/mcp/schematic-wire-manage-handler.ts');
 const { requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
+const { toSerializableAsync } = require('../src/utils.ts');
 
 function wirePrimitive(wire) {
 	return {
@@ -67,6 +68,14 @@ async function main() {
 	assert.equal(JSON.parse(largeRead.wiresSnapshot).length, 127, 'the full-page JSON snapshot is not truncated at 120 wires');
 	for (let index = 0; index < 125; index += 1)
 		wires.delete(`extra-${index}`);
+	const longLine = Array.from({ length: 121 }, (_, index) => [index + 1000, 0]).flat();
+	wires.set('long-wire', { primitiveId: 'long-wire', line: longLine, net: '', color: null, lineWidth: null, lineType: null });
+	const targetedLongRead = await toSerializableAsync(await handleSchematicWireManageTask({ action: 'read', primitiveId: 'long-wire' }));
+	assert.equal(targetedLongRead.wire.line.length, longLine.length, 'targeted line must survive Bridge serialization');
+	const longStyleWrite = await toSerializableAsync(await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'long-wire', property: { color: '#000000' } }));
+	assert.equal(longStyleWrite.before.line.length, longLine.length);
+	assert.equal(longStyleWrite.after.line.length, longLine.length);
+	wires.delete('long-wire');
 	const style = await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { color: '#AA0000', lineWidth: 5, lineType: 1 } });
 	assert.equal(style.ok, true);
 	assert.equal(style.after.color, '#AA0000');
@@ -75,10 +84,21 @@ async function main() {
 	const geometry = await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { line: [0, 0, 50, 0] } });
 	assert.equal(geometry.ok, true);
 	assert.deepEqual(geometry.after.line, [0, 0, 50, 0]);
+	const unnormalizedModify = globalThis.eda.sch_PrimitiveWire.modify;
+	globalThis.eda.sch_PrimitiveWire.modify = async (id, property) => {
+		await unnormalizedModify(id, property);
+		if (property.line)
+			wires.get(id).line = [[0, 0, 25, 0], [25, 0, 50, 0]];
+	};
+	const normalizedReadback = await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { line: [0, 0, 50, 0] } });
+	assert.equal(normalizedReadback.ok, true, 'native line segment splitting preserves requested geometry');
+	globalThis.eda.sch_PrimitiveWire.modify = unnormalizedModify;
 	const foreign = await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { line: [0, 0, 200, 0] }, allowedWireIds: ['w2'] });
 	assert.equal(foreign.ok, false);
 	assert.equal(foreign.reason, 'wire_contact_conflict');
-	assert.deepEqual(wires.get('w1').line, [0, 0, 50, 0]);
+	const serializedForeign = await toSerializableAsync(foreign);
+	assert.ok(JSON.parse(serializedForeign.previewSnapshot).touches.some(touch => touch.primitiveId === 'w2'), 'preview diagnostics survive Bridge serialization');
+	assert.deepEqual(wires.get('w1').line, [[0, 0, 25, 0], [25, 0, 50, 0]]);
 	const renamed = await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { net: 'C' } });
 	assert.equal(renamed.ok, true);
 	assert.equal(renamed.after.net, 'C');
@@ -86,6 +106,8 @@ async function main() {
 	wires.get('w2').net = 'C';
 	const connectedRename = await handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { net: 'D' }, allowedWireIds: ['w2'] });
 	assert.equal(connectedRename.reason, 'connected_wire_net_change');
+	const serializedRename = await toSerializableAsync(connectedRename);
+	assert.ok(JSON.parse(serializedRename.previewsSnapshot).some(preview => preview.touches.some(touch => touch.primitiveId === 'w2')));
 	assert.equal(wires.get('w1').net, 'C');
 	wires.get('w2').line = [200, 0, 300, 0];
 	wires.get('w1').line = [[0, 0, 25, 0], [25, 0, 50, 0]];
@@ -103,7 +125,7 @@ async function main() {
 	globalThis.eda.sch_PrimitiveWire.modify = originalModify;
 	await assert.rejects(handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: { line: [0, 0, 10, 10] } }), /horizontal or vertical/);
 	await assert.rejects(handleSchematicWireManageTask({ action: 'modify', primitiveId: 'w1', property: {} }), /non-empty/);
-	assert.equal(nativeCalls, 5);
+	assert.equal(nativeCalls, 7);
 	const deleted = await handleSchematicWireManageTask({ action: 'delete', primitiveId: 'w1' });
 	assert.deepEqual([deleted.ok, deleted.deleted, deleted.verified, deleted.wireCountAfter], [true, true, true, 1]);
 	const missing = await handleSchematicWireManageTask({ action: 'delete', primitiveId: 'w1' });

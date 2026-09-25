@@ -1,4 +1,4 @@
-import { getEdaRuntime, isPlainObjectRecord, toSafeErrorMessage } from '../utils.ts';
+import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSafeErrorMessage } from '../utils.ts';
 import { handleSchematicConnectivityTask } from './schematic-connectivity-handler.ts';
 import { handleSchematicReadTask } from './schematic-read-handler.ts';
 
@@ -62,7 +62,10 @@ function readWire(primitive: unknown): WireState {
 		|| (lineType !== null && (typeof lineType !== 'number' || !Number.isInteger(lineType)))) {
 		throw new TypeError('EDA wire has incomplete ID, net, or style state.');
 	}
-	return { primitiveId, line, net, color, lineWidth, lineType };
+	const outputLine = Array.isArray(line)
+		? preserveBoundedArray(line.map(part => Array.isArray(part) ? preserveBoundedArray([...part]) : part))
+		: line;
+	return { primitiveId, line: outputLine, net, color, lineWidth, lineType };
 }
 
 async function pageSnapshot(): Promise<PageSnapshot | { ok: false; error: string; errorCode?: string }> {
@@ -179,18 +182,45 @@ function segments(value: unknown): string[] {
 	const paths = Array.isArray(value[0])
 		? value.every(part => Array.isArray(part) && part.length === 2) ? [value.flat()] : value
 		: [value];
-	const result: string[] = [];
+	const intervals = new Map<string, Array<[number, number]>>();
+	const otherSegments: string[] = [];
 	for (const path of paths) {
 		if (!Array.isArray(path))
 			continue;
 		for (let index = 0; index + 3 < path.length; index += 2) {
-			const a = [path[index], path[index + 1]];
-			const b = [path[index + 2], path[index + 3]];
-			if ([...a, ...b].some(coordinate => typeof coordinate !== 'number' || !Number.isFinite(coordinate)))
+			const coordinates = [path[index], path[index + 1], path[index + 2], path[index + 3]];
+			if (coordinates.some(coordinate => typeof coordinate !== 'number' || !Number.isFinite(coordinate)))
 				continue;
-			const endpoints = [a, b].map(point => point.map(coordinate => Math.round((coordinate as number) / COORDINATE_EPSILON)).join(','));
-			result.push(endpoints.sort().join('|'));
+			const [x1, y1, x2, y2] = (coordinates as number[]).map(coordinate => Math.round(coordinate / COORDINATE_EPSILON));
+			if (x1 === x2 && y1 === y2)
+				continue;
+			if (x1 === x2 || y1 === y2) {
+				const key = x1 === x2 ? `V:${x1}` : `H:${y1}`;
+				const first = x1 === x2 ? y1 : x1;
+				const second = x1 === x2 ? y2 : x2;
+				const group = intervals.get(key) ?? [];
+				group.push([Math.min(first, second), Math.max(first, second)]);
+				intervals.set(key, group);
+			}
+			else {
+				otherSegments.push(`D:${[[x1, y1], [x2, y2]].map(point => point.join(',')).sort().join('|')}`);
+			}
 		}
+	}
+	const result = [...otherSegments];
+	for (const [key, group] of intervals) {
+		group.sort((first, second) => first[0] - second[0]);
+		let [start, end] = group[0];
+		for (const [nextStart, nextEnd] of group.slice(1)) {
+			if (nextStart <= end) {
+				end = Math.max(end, nextEnd);
+			}
+			else {
+				result.push(`${key}:${start}:${end}`);
+				[start, end] = [nextStart, nextEnd];
+			}
+		}
+		result.push(`${key}:${start}:${end}`);
 	}
 	return result.sort();
 }
@@ -257,7 +287,7 @@ export async function handleSchematicWireManageTask(payload: unknown): Promise<u
 		for (const line of lines) {
 			const preview = await handleSchematicConnectivityTask({ action: 'wire_preview', line, net: expectedNet || undefined, allowedWireIds: [primitiveId, ...allowedWireIds] });
 			if (!isPlainObjectRecord(preview) || preview.canCreate !== true)
-				return { ok: false, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, reason: 'wire_contact_conflict', preview };
+				return { ok: false, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, reason: 'wire_contact_conflict', previewSnapshot: JSON.stringify(preview) };
 			previews.push(preview);
 			if (property!.line !== undefined && Array.isArray(preview.touches)) {
 				for (const touch of preview.touches) {
@@ -275,7 +305,7 @@ export async function handleSchematicWireManageTask(payload: unknown): Promise<u
 				|| (Array.isArray(preview.labelTouches) && preview.labelTouches.length > 0))
 			|| snapshot.netLabels.some(label => label.parentWireId === primitiveId);
 			if (otherWireTouches || namedTerminalTouches)
-				return { ok: false, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, reason: 'connected_wire_net_change', previews };
+				return { ok: false, action, scope: SCOPE, pageUuid: snapshot.pageUuid, primitiveId, reason: 'connected_wire_net_change', previewsSnapshot: JSON.stringify(previews) };
 		}
 		await assertSamePage(runtime, snapshot.pageUuid);
 	}
