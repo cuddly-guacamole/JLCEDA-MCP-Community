@@ -93,6 +93,8 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'eda_context'));
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'pcb_component_edit'));
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'pcb_pour_manage'));
+    const routingTool = toolsResponse.result.tools.find((tool) => tool.name === 'pcb_routing_edit');
+    assert.ok(routingTool?.inputSchema, 'pcb_routing_edit must be advertised');
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -186,6 +188,30 @@ async function testProtocolVersion(protocolVersion) {
     const invalidPourCallResponse = JSON.parse(invalidPourCallLine);
     assert.equal(invalidPourCallResponse.id, 7);
     assert.match(JSON.stringify(invalidPourCallResponse), /property must contain at least one field/);
+
+    const invalidRoutingCallLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 8, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'pcb_routing_edit',
+        arguments: { action: 'modify', kind: 'line', primitiveId: 'line-1', property: {} },
+      },
+    }) + '\n');
+    const [invalidRoutingCallLine] = await Promise.race([invalidRoutingCallLinePromise, lineTimeout]);
+    const invalidRoutingCallResponse = JSON.parse(invalidRoutingCallLine);
+    assert.equal(invalidRoutingCallResponse.id, 8);
+    assert.match(JSON.stringify(invalidRoutingCallResponse), /property must contain at least one field/);
+
+    const routingReadLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 9, method: 'tools/call',
+      params: { ...(modern ? params : {}), name: 'pcb_routing_edit', arguments: { action: 'read' } },
+    }) + '\n');
+    const [routingReadLine] = await Promise.race([routingReadLinePromise, lineTimeout]);
+    const routingReadResponse = JSON.parse(routingReadLine);
+    assert.equal(routingReadResponse.id, 9);
+    assert.match(JSON.stringify(routingReadResponse), /No ready EDA client connected/);
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {

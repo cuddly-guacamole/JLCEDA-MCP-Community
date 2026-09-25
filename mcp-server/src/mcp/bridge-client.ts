@@ -335,6 +335,12 @@ function isPcbConnectivityMutation(path: string, payload: unknown): boolean {
     && (payload.action === 'line_create' || payload.action === 'via_create');
 }
 
+function isPcbRoutingEditMutation(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/pcb/routing-edit'
+    && isRecord(payload)
+    && (payload.action === 'create' || payload.action === 'modify' || payload.action === 'delete');
+}
+
 const PCB_ROUTING_READBACK_APIS = [
   'eda.pcb_PrimitiveLine.getAll',
   'eda.pcb_PrimitiveArc.getAll',
@@ -872,7 +878,7 @@ export class EdaBridgeServer {
       if (diagnostic?.clientId === peer.clientId
         && isRecord(message.result)
         && ((diagnostic.requiredReadback === 'pcb_routing_state'
-          && diagnostic.path === '/bridge/jlceda/pcb/connectivity'
+          && (diagnostic.path === '/bridge/jlceda/pcb/connectivity' || diagnostic.path === '/bridge/jlceda/pcb/routing-edit')
           && (message.result.nativeCallSettled === true
             || (message.result.ok === true && message.result.verified === true)))
           || ((diagnostic.requiredReadback === 'pcb_component_state'
@@ -1287,7 +1293,8 @@ export class EdaBridgeServer {
         ? { requiredReadback: 'pcb_pour_state' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
       ...((isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
-        || isPcbConnectivityMutation(pending.path ?? '', pending.payload))
+        || isPcbConnectivityMutation(pending.path ?? '', pending.payload)
+        || isPcbRoutingEditMutation(pending.path ?? '', pending.payload))
         ? { requiredReadback: 'pcb_routing_state' as const,
             hostRestartRequired: !nativeCallSettled || isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) }
         : {}),
@@ -1814,7 +1821,8 @@ export class EdaBridgeServer {
     const number = (item: unknown): boolean => typeof item === 'number' && Number.isFinite(item);
     const kind = apiFullName.toLowerCase();
     const validPrimitive = (primitive: unknown): boolean => {
-      if (!isRecord(primitive) || !optionalString(primitive.primitiveId) || typeof primitive.net !== 'string')
+      if (!isRecord(primitive) || !optionalString(primitive.primitiveId) || typeof primitive.net !== 'string'
+        || typeof primitive.primitiveLock !== 'boolean')
         return false;
       if (kind.includes('primitivevia'))
         return number(primitive.x) && number(primitive.y) && number(primitive.holeDiameter) && number(primitive.diameter)
@@ -1831,7 +1839,8 @@ export class EdaBridgeServer {
         }
       }
       return number(primitive.startX) && number(primitive.startY) && number(primitive.endX) && number(primitive.endY)
-        && (!kind.includes('primitivearc') || number(primitive.arcAngle));
+        && (!kind.includes('primitivearc') || (number(primitive.arcAngle)
+          && (primitive.interactiveMode === 1 || primitive.interactiveMode === 2)));
     };
     if (!isRecord(value)
       || optionalString(value.apiFullName)?.toLowerCase() !== apiFullName.toLowerCase()

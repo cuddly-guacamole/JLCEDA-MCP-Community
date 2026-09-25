@@ -1006,6 +1006,8 @@ try {
     let readbackPageUuid = 'wrong-pcb';
     let incompleteViaReadback = false;
     let missingViaGeometry = false;
+    let missingRoutingLock = false;
+    let missingArcMode = false;
     let switchPageAfterNets = false;
     let routingPrimitiveCalls = 0;
     attachTaskResponder(nativeRoutingFresh.socket, 'native-routing-fresh', message => {
@@ -1021,13 +1023,16 @@ try {
       assert.equal(message.payload.includeCompleteRouting, true);
       const primitiveId = `${message.payload.apiFullName}-1`;
       const primitive = message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll'
-        ? { primitiveId, net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1 }
+        ? { primitiveId, net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1, primitiveLock: false }
         : message.payload.apiFullName === 'eda.pcb_PrimitivePolyline.getAll'
-          ? { primitiveId, net: 'VCC', layer: 1, polygonSource: '["L",0,0,1,1]', lineWidth: 0.2 }
+          ? { primitiveId, net: 'VCC', layer: 1, polygonSource: '["L",0,0,1,1]', lineWidth: 0.2, primitiveLock: false }
           : { primitiveId, net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 1, endY: 1, lineWidth: 0.2,
-            ...(message.payload.apiFullName === 'eda.pcb_PrimitiveArc.getAll' ? { arcAngle: 90 } : {}) };
+            primitiveLock: false,
+            ...(message.payload.apiFullName === 'eda.pcb_PrimitiveArc.getAll' ? { arcAngle: 90, interactiveMode: 1 } : {}) };
       const routingPrimitives = [primitive];
       if (missingViaGeometry && message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll') delete primitive.x;
+      if (missingRoutingLock && message.payload.apiFullName === 'eda.pcb_PrimitiveLine.getAll') delete primitive.primitiveLock;
+      if (missingArcMode && message.payload.apiFullName === 'eda.pcb_PrimitiveArc.getAll') delete primitive.interactiveMode;
       return { apiFullName: message.payload.apiFullName, routingPrimitives, routingPrimitiveCount: incompleteViaReadback && message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll' ? 2 : 1 };
     });
     const routeReadback = {
@@ -1049,6 +1054,12 @@ try {
     missingViaGeometry = true;
     await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
     missingViaGeometry = false;
+    missingRoutingLock = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
+    missingRoutingLock = false;
+    missingArcMode = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
+    missingArcMode = false;
     switchPageAfterNets = true;
     await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /Readback pageUuid does not match/);
     switchPageAfterNets = false;
@@ -1117,9 +1128,9 @@ try {
         if (message.path === '/bridge/jlceda/api/invoke') {
           const apiFullName = message.payload.apiFullName;
           const routingPrimitives = apiFullName === 'eda.pcb_PrimitiveLine.getAll'
-            ? [{ primitiveId: 'line-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2 }]
+            ? [{ primitiveId: 'line-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2, primitiveLock: false }]
             : apiFullName === 'eda.pcb_PrimitiveVia.getAll'
-              ? [{ primitiveId: 'via-1', net: 'VCC', x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6, viaType: 1 }]
+              ? [{ primitiveId: 'via-1', net: 'VCC', x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6, viaType: 1, primitiveLock: false }]
               : [];
           return { apiFullName, routingPrimitives, routingPrimitiveCount: routingPrimitives.length };
         }
@@ -1145,6 +1156,96 @@ try {
       oldClient?.socket.close();
       freshClient?.socket.close();
       pcbWriteServer.close();
+    }
+  }
+
+  for (const [caseName, writePayload, nativeCallSettled] of [
+    ['create-arc', { action: 'create', kind: 'arc', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 10, arcAngle: 90 }, false],
+    ['create-polyline', { action: 'create', kind: 'polyline', net: 'VCC', layer: 1, polygonSource: [0, 0, 'L', 10, 0, 10, 10] }, true],
+    ['modify-via', { action: 'modify', kind: 'via', primitiveId: 'via-1', property: { diameter: 0.6 } }, false],
+    ['delete-line', { action: 'delete', kind: 'line', primitiveId: 'line-1' }, true],
+  ]) {
+    const editPort = await reservePort();
+    const editServer = new EdaBridgeServer(editPort);
+    const editUrl = `ws://127.0.0.1:${editPort}/bridge/ws${tokenQuery}`;
+    const context = { documentUuid: 'routing-edit-document', projectUuid: 'routing-edit-project',
+      pageKind: 'pcb', pageUuid: 'routing-edit-page' };
+    let oldClient;
+    let freshClient;
+    try {
+      await editServer.start();
+      oldClient = await registerEda(editUrl, `${caseName}-old`, context);
+      oldClient.socket.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        oldClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: `${caseName}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context }));
+        oldClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: `${caseName}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm,
+          result: { ok: false, action: writePayload.action, kind: writePayload.kind,
+            commitUnknown: true, readbackRequired: true, nativeCallSettled } }));
+      });
+      assert.equal((await editServer.request('/bridge/jlceda/pcb/routing-edit', writePayload, 2000)).commitUnknown, true);
+      const diagnostic = (await editServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+      assert.equal(diagnostic.requiredReadback, 'pcb_routing_state');
+      assert.equal(diagnostic.hostRestartRequired, !nativeCallSettled);
+      assert.equal(diagnostic.context.pageUuid, context.pageUuid);
+      await assert.rejects(editServer.request('/bridge/jlceda/pcb/routing-edit', writePayload, 2000),
+        /writes are blocked pending recovery readback/);
+      const recovery = await editServer.request('/bridge/admin/recover-client', {
+        action: 'recover', confirm: true, requestId: diagnostic.requestId,
+      }, 2000);
+      oldClient.socket.close();
+      await waitUntil(async () => (await editServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `${caseName}-old`)?.ready === false);
+      freshClient = await registerEda(editUrl, `${caseName}-fresh`, context);
+      attachTaskResponder(freshClient.socket, `${caseName}-fresh`, message => {
+        if (message.path === '/bridge/jlceda/context')
+          return { currentDocumentInfo: { uuid: context.documentUuid, parentProjectUuid: context.projectUuid },
+            currentProjectInfo: { uuid: context.projectUuid }, currentPcbInfo: { uuid: context.pageUuid } };
+        if (message.path === '/bridge/jlceda/net/query-pcb')
+          return { ok: true, mode: 'all', total: 1, offset: 0, returned: 1,
+            nets: [{ net: 'VCC', length: 12 }], truncated: false };
+        if (message.path === '/bridge/jlceda/api/invoke') {
+          const apiFullName = message.payload.apiFullName;
+          assert.equal(message.payload.includeCompleteRouting, true);
+          const routingPrimitives = apiFullName === 'eda.pcb_PrimitiveArc.getAll'
+            ? [{ primitiveId: 'arc-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 10,
+                arcAngle: 90, interactiveMode: 1, lineWidth: 0.2, primitiveLock: false }]
+            : apiFullName === 'eda.pcb_PrimitivePolyline.getAll'
+              ? [{ primitiveId: 'polyline-1', net: 'VCC', layer: 1,
+                  polygonSource: '[0,0,"L",10,0,10,10]', lineWidth: 0.2, primitiveLock: false }]
+              : apiFullName === 'eda.pcb_PrimitiveVia.getAll'
+                ? [{ primitiveId: 'via-1', net: 'VCC', x: 10, y: 10, holeDiameter: 0.3,
+                    diameter: 0.6, viaType: 0, primitiveLock: false }]
+                : [{ primitiveId: 'line-1', net: 'VCC', layer: 1, startX: 0, startY: 0,
+                    endX: 10, endY: 0, lineWidth: 0.2, primitiveLock: false }];
+          return { apiFullName, routingPrimitives, routingPrimitiveCount: routingPrimitives.length };
+        }
+        return { ok: true };
+      });
+      const readbackRequest = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+        clientId: `${caseName}-fresh`, readbackPath: '/bridge/jlceda/api/invoke',
+        readbackPayload: { apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [] },
+        ...(!nativeCallSettled ? { hostRestartConfirmed: true } : {}) };
+      await assert.rejects(editServer.request('/bridge/admin/recover-client', {
+        ...readbackRequest, readbackPath: '/bridge/jlceda/pcb/routing-edit', readbackPayload: { action: 'read' },
+      }, 2000), /requires eda.pcb_PrimitiveLine.getAll/);
+      if (!nativeCallSettled)
+        await assert.rejects(editServer.request('/bridge/admin/recover-client', {
+          ...readbackRequest, hostRestartConfirmed: undefined,
+        }, 2000), /original EDA host was restarted/);
+      const verified = await editServer.request('/bridge/admin/recover-client', readbackRequest, 2000);
+      assert.equal(verified.readbackVerified, true);
+      assert.equal(verified.routingSnapshot.primitives.arc.length, 1);
+      assert.equal(verified.routingSnapshot.primitives.polyline.length, 1);
+      assert.equal(verified.routingSnapshot.primitives.via.length, 1);
+      assert.equal(verified.routingSnapshot.nets[0].net, 'VCC');
+      assert.equal(verified.writesRemainBlocked, false);
+    } finally {
+      oldClient?.socket.close();
+      freshClient?.socket.close();
+      editServer.close();
     }
   }
 

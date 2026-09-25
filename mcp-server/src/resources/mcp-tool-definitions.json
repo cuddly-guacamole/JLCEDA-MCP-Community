@@ -47,7 +47,7 @@
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/pcb/pour-manage", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 器件创建、修改或删除同理使用 pcb_component_edit；原理图器件修改或删除使用 schematic_component_edit；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll。" }
+        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 器件创建、修改或删除同理使用 pcb_component_edit；PCB 走线编辑、autoRouting 与直线/过孔创建使用无参 eda.pcb_PrimitiveLine.getAll，恢复流程会补读全部圆弧、折线、过孔及网络；原理图器件修改或删除使用 schematic_component_edit；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -822,6 +822,56 @@
         "polygonSource": { "type": "array", "minItems": 1, "items": { "anyOf": [{ "type": "string", "enum": ["L", "ARC", "CARC", "C", "R", "CIRCLE"] }, { "type": "number" }] } },
         "pourFillMethod": { "type": "string", "enum": ["45grid", "90grid", "solid"] },
         "pourProperty": { "type": "object", "minProperties": 1, "properties": { "net": { "type": "string", "minLength": 1 }, "layer": { "$ref": "#/$defs/copperLayer" }, "polygonSource": { "$ref": "#/$defs/polygonSource" }, "pourFillMethod": { "$ref": "#/$defs/pourFillMethod" }, "preserveSilos": { "type": "boolean" }, "pourName": { "type": "string" }, "pourPriority": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "pcb_routing_edit",
+    "description": "完整读取当前 PCB 页铜层的直线、圆弧、折线和过孔，或按类型及图元 ID 读取、修改、删除；不包含板框、丝印等非铜层图形。可创建圆弧与折线；直线和过孔创建使用 pcb_connectivity_action。删除后以同类 getAll 的 ID 列表核对，原生 get(id) 删除占位对象不会误报未知提交。写入结果不明时先恢复并回读全部走线、过孔和网络。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["read", "create", "modify", "delete"] },
+        "kind": { "type": "string", "enum": ["line", "arc", "polyline", "via"] },
+        "primitiveId": { "type": "string", "minLength": 1 },
+        "net": { "type": "string", "minLength": 1, "description": "create 时的已存在 PCB 网络名。" },
+        "layer": { "$ref": "#/$defs/copperLayer", "description": "create 时的已启用铜层 ID。" },
+        "startX": { "type": "number" },
+        "startY": { "type": "number" },
+        "endX": { "type": "number" },
+        "endY": { "type": "number" },
+        "arcAngle": { "type": "number", "description": "角度制；负值表示顺时针。" },
+        "polygonSource": { "$ref": "#/$defs/polygonSource", "description": "官方单多边形源数组，例如 [0,0,\"L\",100,0,100,100]。" },
+        "lineWidth": { "type": "number", "exclusiveMinimum": 0 },
+        "interactiveMode": { "type": "integer", "enum": [1, 2], "description": "圆弧交互模式：1 两点圆弧，2 中心圆弧。" },
+        "primitiveLock": { "type": "boolean" },
+        "property": { "type": "object", "minProperties": 1, "description": "modify 的属性补丁；字段依 kind 限定。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "required": ["action"],
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "read" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "read" }, "kind": { "$ref": "#/$defs/kind" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "primitiveId"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "create" }, "kind": { "const": "arc" }, "net": { "$ref": "#/$defs/net" }, "layer": { "$ref": "#/$defs/copperLayer" }, "startX": { "type": "number" }, "startY": { "type": "number" }, "endX": { "type": "number" }, "endY": { "type": "number" }, "arcAngle": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "interactiveMode": { "type": "integer", "enum": [1, 2] }, "primitiveLock": { "type": "boolean" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "net", "layer", "startX", "startY", "endX", "endY", "arcAngle"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "create" }, "kind": { "const": "polyline" }, "net": { "$ref": "#/$defs/net" }, "layer": { "$ref": "#/$defs/copperLayer" }, "polygonSource": { "$ref": "#/$defs/polygonSource" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "net", "layer", "polygonSource"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "kind": { "const": "line" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "property": { "$ref": "#/$defs/lineProperty" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "kind": { "const": "arc" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "property": { "$ref": "#/$defs/arcProperty" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "kind": { "const": "polyline" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "property": { "$ref": "#/$defs/polylineProperty" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "kind": { "const": "via" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "property": { "$ref": "#/$defs/viaProperty" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "delete" }, "kind": { "$ref": "#/$defs/kind" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "timeoutMs": { "$ref": "#/$defs/timeoutMs" } }, "required": ["action", "kind", "primitiveId"], "additionalProperties": false }
+      ],
+      "$defs": {
+        "kind": { "type": "string", "enum": ["line", "arc", "polyline", "via"] },
+        "primitiveId": { "type": "string", "minLength": 1 },
+        "net": { "type": "string", "minLength": 1 },
+        "copperLayer": { "anyOf": [{ "type": "integer", "enum": [1, 2] }, { "type": "integer", "minimum": 15, "maximum": 44 }] },
+        "polygonSource": { "type": "array", "minItems": 1, "items": { "anyOf": [{ "type": "string", "enum": ["L", "ARC", "CARC", "C", "R", "CIRCLE"] }, { "type": "number" }] } },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 },
+        "lineProperty": { "type": "object", "minProperties": 1, "properties": { "net": { "$ref": "#/$defs/net" }, "layer": { "$ref": "#/$defs/copperLayer" }, "startX": { "type": "number" }, "startY": { "type": "number" }, "endX": { "type": "number" }, "endY": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false },
+        "arcProperty": { "type": "object", "minProperties": 1, "properties": { "net": { "$ref": "#/$defs/net" }, "layer": { "$ref": "#/$defs/copperLayer" }, "startX": { "type": "number" }, "startY": { "type": "number" }, "endX": { "type": "number" }, "endY": { "type": "number" }, "arcAngle": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "interactiveMode": { "type": "integer", "enum": [1, 2] }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false },
+        "polylineProperty": { "type": "object", "minProperties": 1, "properties": { "net": { "$ref": "#/$defs/net" }, "layer": { "$ref": "#/$defs/copperLayer" }, "polygonSource": { "$ref": "#/$defs/polygonSource" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false },
+        "viaProperty": { "type": "object", "minProperties": 1, "properties": { "net": { "$ref": "#/$defs/net" }, "x": { "type": "number" }, "y": { "type": "number" }, "holeDiameter": { "type": "number", "exclusiveMinimum": 0 }, "diameter": { "type": "number", "exclusiveMinimum": 0 }, "primitiveLock": { "type": "boolean" } }, "additionalProperties": false }
       },
       "additionalProperties": false
     }

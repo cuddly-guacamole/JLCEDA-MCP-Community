@@ -768,32 +768,35 @@ async function main() {
 	assert.equal(uncertainRouting.commitState, 'unknown');
 	assert.equal(uncertainRouting.commitUnknown, true);
 	assert.equal(uncertainRouting.retryBlocked, true);
-	const linePrimitives = Array.from({ length: 125 }, (_, index) => ({ primitiveId: `line-${index}`, net: 'VCC', layer: 1, startX: index, startY: 0, endX: index + 1, endY: 1, lineWidth: 0.2 }));
+	const linePrimitives = Array.from({ length: 125 }, (_, index) => ({ primitiveId: `line-${index}`, net: 'VCC', layer: 1, startX: index, startY: 0, endX: index + 1, endY: 1, lineWidth: 0.2, primitiveLock: false }));
 	globalThis.eda.pcb_PrimitiveLine = {
 		async getAll() { return linePrimitives; },
 	};
 	globalThis.eda.pcb_PrimitiveArc = {
-		async getAll() { return [{ primitiveId: 'arc-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 1, endY: 1, arcAngle: 90, lineWidth: 0.2 }]; },
+		async getAll() { return [{ primitiveId: 'arc-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 1, endY: 1, arcAngle: 90, interactiveMode: 1, lineWidth: 0.2, primitiveLock: false }]; },
 	};
 	globalThis.eda.pcb_PrimitivePolyline = {
-		async getAll() { return [{ primitiveId: 'polyline-1', net: 'VCC', layer: 1, polygon: { getSource: () => ['L', 0, 0, 1, 1] }, lineWidth: 0.2 }]; },
+		async getAll() { return [{ primitiveId: 'polyline-1', net: 'VCC', layer: 1, polygon: { getSource: () => ['L', 0, 0, 1, 1] }, lineWidth: 0.2, primitiveLock: false }]; },
 	};
 	globalThis.eda.pcb_PrimitiveVia = {
-		async getAll() { return [{ primitiveId: 'via-1', net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1 }]; },
+		async getAll() { return [{ primitiveId: 'via-1', net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1, primitiveLock: true }]; },
 	};
 	const lineReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [], includeCompleteRouting: true });
 	assert.equal(lineReadback.result.length, 120, 'ordinary API result remains bounded');
 	assert.equal((await toSerializableAsync(lineReadback)).routingPrimitives.length, 125, 'complete routing geometry must not be truncated');
 	assert.equal(lineReadback.routingPrimitives[124].endX, 125);
+	assert.equal(lineReadback.routingPrimitives[124].primitiveLock, false);
 	linePrimitives[0] = { ...linePrimitives[0], net: undefined };
 	await assert.rejects(() => handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [], includeCompleteRouting: true }), /omitted an ID or geometry/);
 	linePrimitives[0].net = 'VCC';
 	const arcReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveArc.getAll', args: [], includeCompleteRouting: true });
 	assert.equal(arcReadback.routingPrimitives[0].arcAngle, 90);
+	assert.equal(arcReadback.routingPrimitives[0].interactiveMode, 1);
 	const polylineReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitivePolyline.getAll', args: [], includeCompleteRouting: true });
 	assert.equal(polylineReadback.routingPrimitives[0].polygonSource, '["L",0,0,1,1]');
 	const viaReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveVia.getAll', args: [], includeCompleteRouting: true });
 	assert.equal(viaReadback.routingPrimitives[0].diameter, 0.6);
+	assert.equal(viaReadback.routingPrimitives[0].primitiveLock, true);
 	await assert.rejects(() => handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: ['VCC'], includeCompleteRouting: true }), /only supported/);
 
 	const project = await handleProjectInfoTask({ includePages: true });
