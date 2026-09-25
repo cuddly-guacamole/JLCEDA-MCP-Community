@@ -127,6 +127,18 @@ function segmentsFromWireLine(line: unknown): Segment[] {
 	return segmentsFromFlatLine(line);
 }
 
+function readableWireLine(line: unknown): boolean {
+	const flat = (path: unknown): boolean => Array.isArray(path) && path.length >= 4 && path.length % 2 === 0
+		&& path.every(value => typeof value === 'number' && Number.isFinite(value));
+	if (!Array.isArray(line) || line.length === 0)
+		return false;
+	if (!Array.isArray(line[0]))
+		return flat(line);
+	if (line.every(part => Array.isArray(part) && part.length === 2))
+		return line.length >= 2 && line.every(part => part.every((value: unknown) => typeof value === 'number' && Number.isFinite(value)));
+	return line.every(flat);
+}
+
 function orientation(a: Point, b: Point, c: Point): number {
 	return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
 }
@@ -165,9 +177,10 @@ async function readWires(api: Record<string, unknown>): Promise<WireState[]> {
 		const id = String(getSyncState(primitive, 'getState_PrimitiveId', ''));
 		if (!id)
 			throw new TypeError('EDA wire has no primitive ID, so safe intersection checks are unavailable.');
-		const segments = segmentsFromWireLine(line);
-		if (segments.length === 0)
+		if (!readableWireLine(line))
 			throw new TypeError(`EDA wire ${id} has no readable line geometry, so safe intersection checks are unavailable.`);
+		// A native point wire has valid coordinates but contributes no contact segment.
+		const segments = segmentsFromWireLine(line);
 		return {
 			id,
 			net: String(getSyncState(primitive, 'getState_Net', '')),

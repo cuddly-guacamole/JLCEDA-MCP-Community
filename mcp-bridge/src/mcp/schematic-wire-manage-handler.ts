@@ -153,8 +153,9 @@ function finiteLinePaths(value: unknown): number[][] | null {
 		? [value]
 		: value.every(part => Array.isArray(part) && part.length === 2) ? [value.flat()] : value;
 	if (paths.some(path => !Array.isArray(path) || path.length < 4 || path.length % 2 !== 0
-		|| path.some(coordinate => typeof coordinate !== 'number' || !Number.isFinite(coordinate))))
+		|| path.some(coordinate => typeof coordinate !== 'number' || !Number.isFinite(coordinate)))) {
 		return null;
+	}
 	return paths as number[][];
 }
 
