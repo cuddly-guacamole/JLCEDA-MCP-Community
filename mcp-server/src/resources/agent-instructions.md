@@ -2,10 +2,9 @@
 
 ## 规则指令
 
-- 所有任务必须使用 todo list 管理执行过程；开始前建立步骤，执行中持续更新 `not-started`、`in-progress`、`completed` 状态。
-- 执行任务前先理解用户意图，确认任务目标、执行范围和所需结果。
-- 多步任务必须逐步执行，每完成一步都要确认结果是否符合预期，再继续下一步。
-- 输出结果时，先说明本次使用的工具和执行依据，再给出实际结果。
+- 执行前理解用户意图、目标和范围；多步或有风险的任务可用 todo list 跟踪，简单读取或单步操作无需强制建表。
+- 写入前核对目标图页及必要参数，写入后按操作影响范围核对结果；独立的只读步骤可合并执行，避免重复读取已知上下文。
+- 回复先给出实际结果，再简要说明关键依据、验证情况及尚未解决的问题；仅在有助于理解时列出使用的工具。
 
 ## 工具调用约束
 
@@ -28,15 +27,15 @@
 - `pcb_connectivity_action` 创建直线或过孔的提交状态不明时，使用无参数 `eda.pcb_PrimitiveLine.getAll` 作为恢复回读入口；Server 会继续读回全部直线、圆弧、折线、过孔的网络与几何及网络长度。若诊断包含 `hostRestartRequired:true`，先重启原 EDA 宿主并在读回时传 `hostRestartConfirmed:true`；原生创建已经结束而图元回读失败时，只需原客户端断开、恢复会话后的新客户端和完整同板回读。
 - 交互放置的 `component/place/start` 或 `component/place/check` 若返回 `commitUnknown:true`，恢复回读须用 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 和 `args:[null,false]`；Server 会自动请求不截断的 `schematicComponentIds`、位号及 BOM 属性，并核对执行时图页及回读前后的图页身份。查看候选 `primitiveIds` 在完整列表中是否仍存在后再决定是否清理或重试；诊断要求重启时先退出放置模式并重启原宿主。
 - 可写 `api_invoke` 遇到原生 RPC 超时或断线时会保留未确认写入诊断。诊断要求重启时，先重启原宿主，再用全新 Bridge 核对目标文档和受影响图元；只读调用的失败不进入写入恢复。
-- `schematic_read`：在器件选型（`component_select`）或器件放置（`component_place`）需要当前页辅助上下文时调用；上述三种连接写入的受控恢复是另一项明确用途。仅覆盖当前激活页面；返回 `PAGE_NOT_READY` 时等待图页加载并重试，不要使用旧页数据推断当前页。普通原理图检查、审查、功能分析、连线核查等场景应使用 `schematic_review`。
+- `schematic_read`：读取当前激活原理图页的器件、网络和按需请求的连接图元，适合当前页定位、局部连线核查、写后验证及受控恢复。返回 `PAGE_NOT_READY` 时等待图页加载并重试，不要使用旧页数据推断当前页。需要全工程网表、多页关系或完整 BOM 时使用 `schematic_review`。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`components` 为器件列表，每个器件含 `componentDesignator`（位号）、`componentSymbolName`（符号名）、`pins`（引脚列表，每个引脚含 `pinNumber`、`pinSignalName`、`pinElectricalType`、`connectedNetworkName`（引脚所连网络名，空字符串表示工具未能识别到连接——可能是引脚真正悬空，也可能是该引脚位于复用块（Reuse Block）内部、复用块内部导线对 API 不可见所致；若 `drcCheckPassed` 为 `true`，则空值大概率属于工具限制而非真实错误，应提示用户自行在原理图中核实）、`hasNoConnectMark`）；`networks` 为网络列表，每个网络含 `networkName` 和 `connectedPinRefs`（连接该网络的所有引脚引用，格式为位号.引脚号）。
-- `schematic_review`：当用户需要检查或审查原理图、分析电路功能、审查器件选型合理性、核对连线逻辑、判断电路能否正常工作、输出功能性分析报告，或分析多页原理图、查看完整 BOM、追踪跨页信号时，必须调用此工具。
+- `schematic_review`：需要全工程网表、多页原理图关系、完整 BOM 或跨页信号时调用；当前页的局部问题可先用 `schematic_read` 定位。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`netlistText` 为全工程网表文件原始文本，包含所有原理图页面的器件与网络连接关系。
-  获取数据后，必须输出与 `schematic_read` 相同的六类分析项（以专业 Markdown 表格形式呈现）：①电路功能概述；②器件清单与选型合理性；③电源方案分析；④信号与连线检查；⑤保护与可靠性分析；⑥整体可用性评估。分析须覆盖所有页面的器件与网络。
-- `schematic_connectivity_action`：创建导线前先用 `wire_preview` 查看当前页电气接触；没有连接点的纯十字交叉不算接触。确认意图后在 `wire_create.allowedWireIds` 中明确列出允许接触的导线 ID；写入后用 `schematic_review` 检查网表。若返回 `commitUnknown: true`，先核对当前图页，避免直接重复写入；按时或迟到的未知结果都会保留恢复诊断。`netport_create` 是创建同页连接/层次图端口的选项，结果会回读当前页图元和目标网络；它不等于跨页连接标识。移动已有端口用 `netport_move`，不要对 NetPort 调用仅支持普通器件的 `sch_PrimitiveComponent.modify`。
+  根据用户问题报告相关发现；全面设计审查可覆盖电路功能、器件选型、电源、信号连线、保护可靠性和整体可用性，但无需为简单问题强制输出六张表。作全工程结论时检查相关页面和网络，不把当前页快照当成全工程依据。
+- `schematic_connectivity_action`：创建导线前先用 `wire_preview` 查看当前页电气接触；没有连接点的纯十字交叉不算接触。确认意图后在 `wire_create.allowedWireIds` 中明确列出允许接触的导线 ID；写入后用当前页连接图元与语义网表核对，涉及跨页关系时再用 `schematic_review`。若返回 `commitUnknown: true`，先核对当前图页，避免直接重复写入；按时或迟到的未知结果都会保留恢复诊断。`netport_create` 是创建同页连接/层次图端口的选项，结果会回读当前页图元和目标网络；它不等于跨页连接标识。移动已有端口用 `netport_move`，不要对 NetPort 调用仅支持普通器件的 `sch_PrimitiveComponent.modify`。
 - `schematic_wire_manage`：修改或删除已有导线前先 `action:read` 核对当前图页目标 ID；几何修改传平铺正交 `property.line`，接触其他导线时明确列出 `allowedWireIds`。修改网络名只用于没有接触其他导线或显式网络标识的导线。写入后审查网表；结果不明时用 `schematic_read`、`includeConnectivityPrimitives:true` 完整回读原图页，诊断要求时先重启原宿主。
-- `component_select`：当用户要求搜索、筛选或确认具体器件型号时，必须调用此工具返回候选列表并等待用户确认。keyword 只写用户给出的型号或描述本身，禁止擅自追加封装、尺寸、引脚数或任何其他限定词；仅对电阻、电容、电感这类需要数值的器件才允许补充带单位的阻值/容值/感值参数，例如 `1kΩ`、`100nF`、`10uH`。用户确认后的结果即为最终结果，不得擅自改选或要求重新选择；用户取消或跳过时视为永久放弃该器件，必须立即停止针对该器件的所有选型动作，**禁止**以任何方式重试，包括但不限于：换关键词、换描述、换型号、拆分关键词、加宽或缩小筛选范围后再次调用 `component_select`；跳过后直接跳到下一步，不得就该器件再做任何动作。
-- `component_select` 与 `component_place`：电源/地符号（`VCC`、`GND` 及其变体）**禁止**调用 `component_select` 搜索，**禁止**调用 `component_place` 放置，**禁止**通过任何其他方式放置。电源/地符号只能由用户在 EDA 中手动放置。`component_place` 仅用于放置已经确认好的普通器件列表，调用前必须确认每个器件都已具备有效的 `uuid` 和 `libraryUuid`，并按最终放置顺序一次传入。
+- `component_select`：需要搜索或筛选器件时调用；`keyword` 或精确 `properties` 应反映用户给定的型号及封装、尺寸、引脚数等实际约束，电阻、电容、电感的数值须带单位。用户已明确授权代为选型且候选满足约束时，可按规格、库存和价格选择并继续；若候选有会影响设计的取舍且用户未授权决定，再请用户选择。用户已提供可用的精确器件 `uuid` 和 `libraryUuid` 时，无需重复搜索或确认。用户取消或跳过当前选型时停止该次尝试；用户后来提出新要求时可重新选择。
+- `component_place`：用于按顺序交互放置普通器件；放置前核对每件的 `uuid`、`libraryUuid` 与当前设计意图。电源/地网络标识应使用 `netlabel_place` 在指定引脚放置 NetFlag 并回读连接，不能把它当作普通器件搜索或放置。
 
 ## 2.1 PCB 工具约束
 
@@ -53,7 +52,7 @@
 - `editor_navigate`：先用 `project_info` 核对当前工程和目标原理图图页或 PCB UUID；`operation:open` 传 `projectUuid` 与 `documentUuid`。已有标签的 `operation:activate` 还需 `tabId`，可由 `eda.dmt_EditorControl.getSplitScreenTree` 获取。成功后检查返回的文档、图页和标签身份；`commitUnknown:true` 时按目标 `documentUuid`、原 `projectUuid` 使用 `bridge_recover_client` 和 `/bridge/jlceda/context` 回读，诊断要求时先重启原宿主，不要盲目重试。
 - `pcb_layer_manage`：需要调整 PCB 铜层总数时，先 `action:read` 核对当前图页和层数，再以 `action:set` 提供 2–32 的偶数 `copperLayerCount`。EDA 不允许移除仍有图元的内层。写后回读同页层数及图层清单；提交不明时使用 `bridge_recover_client`，指定 `readbackPath:"/bridge/jlceda/pcb/layer-manage"` 和 `readbackPayload:{"action":"read"}`，诊断要求时先重启原 EDA 宿主。
 - `pcb_realtime_drc`：默认只查询实时 DRC 状态；只有用户明确要求时才执行 `start` 或 `stop`。
-- `component_select`：可使用 `properties.supplierId` 等 0.4.15 精确字段查询器件。`keyword` 与 `properties` 二选一，结果仍必须等待用户确认后才能放置。
+- `component_select`：可使用 `properties.supplierId` 等 0.4.15 精确字段查询器件。`keyword` 与 `properties` 二选一；结果按用户已给出的选择或授权处理，确有未决取舍时再请求确认。
 - `netlabel_place`：先通过 `eda_context` 确认编辑器版本。普通网络标签的官方 API 从 EDA v4 起提供；3.x 返回 `EDA_VERSION_UNSUPPORTED`、`commitStatus: not_started`，无需重试。电源/地网络标识仍可放置；不要把电源标识当成普通信号标签。
 - `project_info`：读取工程、板子、原理图、PCB 和图页身份，适合在跨页面任务开始时建立上下文。
 - `manufacture_export`：仅生成白名单制造数据，不直接写入本地文件系统。默认返回文件元数据和文本预览；只有用户明确需要下载数据时才设置 `includeData: true`，并注意 Base64 结果可能很大。
@@ -71,19 +70,19 @@
 
 ## 透传 API 工具约束
 
-**优先级规则**：`schematic_read`、`schematic_review`、`component_select`、`component_place` 四个基础工具**优先级高于**下方四个透传 API 工具。只有当基础工具无法完成所需操作时，才可使用透传 API 工具。**禁止**用 `api_invoke` 重复实现基础工具已能完成的功能。
+**工具选择**：优先使用与目标操作直接对应的专用工具，包括本文件列出的原理图、PCB、导航、库和恢复工具；其输入、回读和写入保护通常比通用透传更适合。没有合适的专用工具，或专用工具不支持所需能力时，再使用 `api_invoke`。可复用本次会话中已取得的有效身份和参数，避免重复查询。
 
 - `eda_context`：获取当前 EDA 工作区环境快照，包括当前文档类型（原理图 / PCB）、工程信息、当前图页信息、已选中图元 ID 列表。适用场景：①执行 `api_invoke` 前需要确认当前文档类型或获取选中图元 ID 时；②任务描述依赖当前环境状态时。已明确知道当前上下文的情况下禁止重复调用。
 
 - `api_index`：列出精选 EDA API 的模块索引，每条包含 `fullName`（如 `eda.sch_Symbol.addSymbol`）和摘要描述，**不含**参数签名。适用场景：不确定目标功能属于哪个模块时，先调用此工具浏览命名空间，定位目标模块名。已知模块名时可直接跳过此步。
 
-- `api_search`：按关键词检索具体 API 方法，返回完整签名（参数名、参数类型、返回类型）。必须在 `api_invoke` 之前调用，用于确认入参类型和参数含义。禁止跳过此工具、凭记忆或推断直接构造 `api_invoke` 参数。
+- `api_search`：按关键词检索具体 API 方法，返回完整签名（参数名、参数类型、返回类型）。目标方法或签名尚未按当前 EDA/API 版本验证时，先调用此工具；本次会话已核实，或仓库中已有与当前版本匹配的已验证精确签名时，无需重复搜索。不得凭猜测构造参数。
 
-- `api_invoke`：调用指定 EDA API 并将结果透传。`apiFullName` 必须来自 `api_index` 或 `api_search` 返回的真实 `fullName`；调用参数必须来自 `api_search` 返回的签名。禁止依据猜测或模糊认知调用此工具。
+- `api_invoke`：调用指定 EDA API 并将结果透传。`apiFullName` 和参数须来自与当前 EDA/API 版本相符的已验证签名，包括本次会话的 `api_search` 结果；不依据猜测或模糊记忆调用，写入时遵循目标身份核对与未知提交恢复要求。
 
-**透传工具调用顺序（强制）**：需通过 `api_invoke` 执行操作时，必须依次执行以下步骤，每步结果确认无误后再进行下一步：
+**透传工具调用顺序**：需通过 `api_invoke` 执行操作时，按实际未知信息补齐以下步骤，再检查结果：
 
 1. 调用 `eda_context`（当需要了解当前文档类型或获取选中图元 ID 时；上下文已知时可跳过）
 2. 调用 `api_index`（当不确定目标功能在哪个模块时；已知模块名时可跳过）
-3. 调用 `api_search`，获取目标方法的完整签名与参数说明（**不得跳过**）
+3. 若尚无当前版本已验证的精确签名，调用 `api_search` 获取方法签名与参数说明
 4. 凭已验证的签名调用 `api_invoke` 执行操作
