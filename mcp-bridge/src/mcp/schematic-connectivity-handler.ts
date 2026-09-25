@@ -1,3 +1,4 @@
+import { resolveContractTimeoutMs } from '../bridge/bridge-contract.ts';
 import { getEdaRuntime, getSyncState, isPlainObjectRecord } from '../utils.ts';
 import { handleSchematicReadTask } from './schematic-read-handler.ts';
 
@@ -7,6 +8,9 @@ type ConnectivityAction = 'wire_preview' | 'wire_create' | 'netport_create' | 'n
 // EDA readback may differ from grid coordinates by a few floating-point ulps.
 const COORDINATE_EPSILON = 1e-6;
 const MAX_WIRE_LINE_COORDINATES = 512;
+const WIRE_READBACK_ATTEMPTS = 12;
+const WIRE_READBACK_INTERVAL_MS = 250;
+const WIRE_RESULT_RESERVE_MS = 1000;
 
 function unknownCommitAfterReadback(action: Exclude<ConnectivityAction, 'wire_preview'>, error: unknown, context: Record<string, unknown>): Record<string, unknown> {
 	return {
@@ -101,6 +105,16 @@ function samePoint(first: Point, second: Point): boolean {
 	return sameCoordinate(first.x, second.x) && sameCoordinate(first.y, second.y);
 }
 
+function sameWirePath(first: Segment[], second: Segment[]): boolean {
+	if (first.length !== second.length)
+		return false;
+	return first.every((segment, index) => samePoint(segment.start, second[index].start) && samePoint(segment.end, second[index].end))
+		|| first.every((segment, index) => {
+			const reversed = second[second.length - index - 1];
+			return samePoint(segment.start, reversed.end) && samePoint(segment.end, reversed.start);
+		});
+}
+
 function segmentsFromFlatLine(line: unknown): Segment[] {
 	if (!Array.isArray(line) || line.length < 4 || line.length % 2 !== 0 || line.some(value => typeof value !== 'number' || !Number.isFinite(value)))
 		return [];
@@ -188,6 +202,25 @@ async function readWires(api: Record<string, unknown>): Promise<WireState[]> {
 			segments,
 		};
 	});
+}
+
+async function readWiresBeforeDeadline(api: Record<string, unknown>, deadline: number): Promise<WireState[] | null> {
+	const remainingMs = deadline - Date.now();
+	if (remainingMs <= 0)
+		return null;
+	let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			readWires(api),
+			new Promise<null>((resolve) => {
+				timeoutId = globalThis.setTimeout(() => resolve(null), remainingMs);
+			}),
+		]);
+	}
+	finally {
+		if (timeoutId !== undefined)
+			globalThis.clearTimeout(timeoutId);
+	}
 }
 
 function componentApi(eda: Record<string, unknown>): Record<string, unknown> {
@@ -336,6 +369,9 @@ function effectiveWireNets(wires: WireState[], components: ComponentState[], lab
 }
 
 async function handleWireAction(action: 'wire_preview' | 'wire_create', payload: Record<string, unknown>, eda: Record<string, unknown>): Promise<unknown> {
+	const readbackDeadline = action === 'wire_create'
+		? Date.now() + resolveContractTimeoutMs('/bridge/jlceda/schematic/connectivity', payload) - WIRE_RESULT_RESERVE_MS
+		: 0;
 	const line = payload.line;
 	if (Array.isArray(line) && line.length > MAX_WIRE_LINE_COORDINATES)
 		throw new RangeError(`line must contain at most ${MAX_WIRE_LINE_COORDINATES} coordinates.`);
@@ -391,20 +427,48 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		return unknownNativeWrite('wire_create', error, { net: net ?? null });
 	}
 	try {
-		const after = await readWires(api);
-		const afterIds = new Set(after.map(wire => wire.id));
-		const changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
-		const removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
+		const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
+		let changedWireIds: string[] = [];
+		let removedWireIds: string[] = [];
+		let matchingWireIds: string[] = [];
+		// EDA can resolve create before getAll exposes the returned wire. A different
+		// new wire is not evidence that this native create has committed. If create
+		// returns no ID, only a unique changed wire with the requested path can confirm it.
+		for (let attempt = 0; attempt < WIRE_READBACK_ATTEMPTS; attempt++) {
+			if (attempt > 0) {
+				if (readbackDeadline - Date.now() <= WIRE_READBACK_INTERVAL_MS)
+					break;
+				await new Promise<void>(resolve => globalThis.setTimeout(resolve, WIRE_READBACK_INTERVAL_MS));
+			}
+			const after = await readWiresBeforeDeadline(api, readbackDeadline);
+			if (!after)
+				break;
+			const afterIds = new Set(after.map(wire => wire.id));
+			changedWireIds = after.filter(wire => beforeById.get(wire.id) !== wireSnapshot(wire)).map(wire => wire.id);
+			removedWireIds = before.filter(wire => !afterIds.has(wire.id)).map(wire => wire.id);
+			if (!returnedPrimitiveId) {
+				matchingWireIds = after.filter(wire => changedWireIds.includes(wire.id)
+					&& sameWirePath(segments, wire.segments)
+					&& (net === undefined || wire.net === net)).map(wire => wire.id);
+			}
+			if (returnedPrimitiveId
+				? changedWireIds.includes(returnedPrimitiveId)
+				: matchingWireIds.length > 0) {
+				break;
+			}
+		}
 		const unexpectedChangedWireIds = changedWireIds.filter(id => beforeById.has(id) && !allowed.has(id));
 		const unexpectedRemovedWireIds = removedWireIds.filter(id => !allowed.has(id));
-		const returnedPrimitiveId = String(getSyncState(result, 'getState_PrimitiveId', ''));
-		const committed = changedWireIds.length > 0 || removedWireIds.length > 0;
+		const committed = returnedPrimitiveId
+			? changedWireIds.includes(returnedPrimitiveId)
+			: matchingWireIds.length === 1;
 		return {
 			ok: committed && unexpectedChangedWireIds.length === 0 && unexpectedRemovedWireIds.length === 0,
 			action,
 			committed,
 			commitUnknown: !committed || unexpectedChangedWireIds.length > 0 || unexpectedRemovedWireIds.length > 0,
 			returnedPrimitiveId,
+			confirmedPrimitiveId: committed ? (returnedPrimitiveId || matchingWireIds[0]) : null,
 			returnedExistingWire: beforeById.has(returnedPrimitiveId),
 			net: net ?? null,
 			changedWireIds,
@@ -415,6 +479,7 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 			portTouches,
 			labelTouches,
 			readbackRequired: true,
+			nativeCallSettled: true,
 		};
 	}
 	catch (error: unknown) {

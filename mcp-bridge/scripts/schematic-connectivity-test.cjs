@@ -7,6 +7,7 @@ require('ts-node/register/transpile-only');
 const { handleSchematicConnectivityTask } = require('../src/mcp/schematic-connectivity-handler.ts');
 const { handleSchematicReadTask } = require('../src/mcp/schematic-read-handler.ts');
 const { getBridgeTaskHandler } = require('../src/runtime/bridge-handler-registry.ts');
+const { requiresHostRestartForResult, startTimedTask } = require('../src/runtime/task-timeout.ts');
 
 function wire(id, net, line) {
 	return {
@@ -170,8 +171,10 @@ async function main() {
 	const created = await handleSchematicConnectivityTask({ action: 'wire_create', line: [50, -50, 50, 0], net: 'NET_A', allowedWireIds: ['wire-a'] });
 	assert.equal(created.ok, true);
 	assert.equal(created.returnedPrimitiveId, 'wire-1');
+	assert.equal(created.confirmedPrimitiveId, 'wire-1');
 	assert.deepEqual(created.changedWireIds, ['wire-1']);
 	assert.equal(created.readbackRequired, true);
+	assert.equal(created.nativeCallSettled, true);
 	const originalCreate = globalThis.eda.sch_PrimitiveWire.create;
 	globalThis.eda.sch_PrimitiveWire.create = async () => {
 		wires[0] = wire('wire-a', 'NET_A', [0, 0, 150, 0]);
@@ -182,6 +185,139 @@ async function main() {
 	assert.equal(merged.returnedExistingWire, true);
 	assert.deepEqual(merged.changedWireIds, ['wire-a']);
 	globalThis.eda.sch_PrimitiveWire.create = originalCreate;
+
+	// The native Promise may settle before getAll includes its returned ID.
+	const delayedWireApi = globalThis.eda.sch_PrimitiveWire;
+	const originalDelayedGetAll = delayedWireApi.getAll;
+	let delayedWire;
+	let postCreateReads = 0;
+	delayedWireApi.create = async () => {
+		delayedWire = wire('wire-delayed', 'NET_DELAYED', [3100, 1000, 3000, 1000]);
+		return delayedWire;
+	};
+	delayedWireApi.getAll = async () => {
+		if (delayedWire) {
+			postCreateReads += 1;
+			if (postCreateReads === 1)
+				wires.push(wire('wire-unrelated', 'NET_OTHER', [4000, 1000, 4100, 1000]));
+			if (postCreateReads === 3)
+				wires.push(delayedWire);
+		}
+		return wires;
+	};
+	const delayedCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3000, 1000, 3100, 1000], net: 'NET_DELAYED' });
+	assert.equal(postCreateReads, 3);
+	assert.equal(delayedCreate.ok, true);
+	assert.equal(delayedCreate.committed, true);
+	assert.equal(delayedCreate.commitUnknown, false);
+	assert.equal(delayedCreate.nativeCallSettled, true);
+	assert.equal(delayedCreate.returnedPrimitiveId, delayedWire.getState_PrimitiveId());
+	assert.deepEqual(delayedCreate.changedWireIds, ['wire-unrelated', delayedWire.getState_PrimitiveId()]);
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, delayedCreate), false);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+
+	// Some EDA versions resolve create without returning a primitive. An unrelated
+	// change must not end polling; a unique matching path may confirm the write.
+	let noIdReads = 0;
+	let noIdStarted = false;
+	delayedWireApi.create = async () => {
+		noIdStarted = true;
+		return undefined;
+	};
+	delayedWireApi.getAll = async () => {
+		if (noIdStarted) {
+			noIdReads += 1;
+			if (noIdReads === 1)
+				wires.push(wire('no-id-unrelated', 'NET_OTHER', [4400, 1000, 4500, 1000]));
+			if (noIdReads === 3)
+				wires.push(wire('no-id-target', 'NET_DELAYED', [3700, 1000, 3600, 1000]));
+		}
+		return wires;
+	};
+	const noIdCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3600, 1000, 3700, 1000], net: 'NET_DELAYED' });
+	assert.equal(noIdReads, 3);
+	assert.equal(noIdCreate.ok, true);
+	assert.equal(noIdCreate.committed, true);
+	assert.equal(noIdCreate.commitUnknown, false);
+	assert.equal(noIdCreate.returnedPrimitiveId, '');
+	assert.equal(noIdCreate.confirmedPrimitiveId, 'no-id-target');
+	assert.deepEqual(noIdCreate.changedWireIds, ['no-id-unrelated', 'no-id-target']);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+	wires.splice(wires.findIndex(item => item.getState_PrimitiveId() === 'no-id-unrelated'), 1);
+	wires.splice(wires.findIndex(item => item.getState_PrimitiveId() === 'no-id-target'), 1);
+
+	let missingNoIdStarted = false;
+	delayedWireApi.create = async () => {
+		missingNoIdStarted = true;
+		return undefined;
+	};
+	delayedWireApi.getAll = async () => {
+		if (missingNoIdStarted && !wires.some(item => item.getState_PrimitiveId() === 'no-id-only-unrelated'))
+			wires.push(wire('no-id-only-unrelated', 'NET_OTHER', [4600, 1000, 4700, 1000]));
+		return wires;
+	};
+	const missingNoId = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3800, 1000, 3900, 1000], net: 'NET_DELAYED' });
+	assert.equal(missingNoId.ok, false);
+	assert.equal(missingNoId.committed, false, 'an unrelated wire cannot confirm a create with no returned ID');
+	assert.equal(missingNoId.commitUnknown, true);
+	assert.equal(missingNoId.nativeCallSettled, true);
+	assert.equal(missingNoId.confirmedPrimitiveId, null);
+	assert.deepEqual(missingNoId.changedWireIds, ['no-id-only-unrelated']);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+	wires.splice(wires.findIndex(item => item.getState_PrimitiveId() === 'no-id-only-unrelated'), 1);
+
+	let unresolvedReads = 0;
+	let unresolvedNativeStarted = false;
+	let unrelatedAdded = false;
+	delayedWireApi.create = async () => {
+		unresolvedNativeStarted = true;
+		return wire('unresolved-native-id', 'NET_DELAYED', [3200, 1000, 3300, 1000]);
+	};
+	delayedWireApi.getAll = async () => {
+		unresolvedReads += 1;
+		if (unresolvedNativeStarted && !unrelatedAdded) {
+			wires.push(wire('unresolved-unrelated', 'NET_OTHER', [4200, 1000, 4300, 1000]));
+			unrelatedAdded = true;
+		}
+		return wires;
+	};
+	const unresolvedCreate = await handleSchematicConnectivityTask({ action: 'wire_create', line: [3200, 1000, 3300, 1000], net: 'NET_DELAYED' });
+	assert.ok(unresolvedReads > 2, 'readback retries must be bounded but allow delayed visibility');
+	assert.equal(unresolvedCreate.ok, false);
+	assert.equal(unresolvedCreate.committed, false, 'an unrelated new wire must not confirm the returned ID');
+	assert.equal(unresolvedCreate.commitUnknown, true);
+	assert.equal(unresolvedCreate.readbackRequired, true);
+	assert.equal(unresolvedCreate.nativeCallSettled, true);
+	assert.equal(unresolvedCreate.returnedPrimitiveId, 'unresolved-native-id');
+	assert.deepEqual(unresolvedCreate.changedWireIds, ['unresolved-unrelated']);
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, unresolvedCreate), false);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
+
+	// A short Bridge timeout with slow getAll must leave enough time to report
+	// that the native create settled, even if the new ID never becomes visible.
+	let budgetReads = 0;
+	delayedWireApi.create = async () => wire('budget-native-id', 'NET_DELAYED', [3400, 1000, 3500, 1000]);
+	delayedWireApi.getAll = async () => {
+		budgetReads += 1;
+		await new Promise(resolve => setTimeout(resolve, 300));
+		return wires;
+	};
+	const budgetStartedAt = Date.now();
+	const budgetPayload = { action: 'wire_create', line: [3400, 1000, 3500, 1000], net: 'NET_DELAYED', timeoutMs: 5000 };
+	const budgetTask = startTimedTask(handleSchematicConnectivityTask(budgetPayload), '/bridge/jlceda/schematic/connectivity', 5000);
+	const budgetResult = await budgetTask.result;
+	assert.ok(Date.now() - budgetStartedAt < 5000, 'result must arrive before the Bridge task timeout');
+	assert.ok(budgetReads > 2 && budgetReads < 13, 'readback should poll, then stop at the task budget');
+	assert.equal(budgetResult.commitUnknown, true);
+	assert.equal(budgetResult.nativeCallSettled, true);
+	assert.equal(budgetResult.returnedPrimitiveId, 'budget-native-id');
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', budgetPayload, budgetResult), false);
+	delayedWireApi.create = originalCreate;
+	delayedWireApi.getAll = originalDelayedGetAll;
 
 	const drcChecksBeforeMove = drcChecks;
 	const moved = await handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-a', x: 25, y: 0 });
@@ -548,6 +684,7 @@ async function main() {
 	assert.equal(timedOutWire.commitUnknown, true);
 	assert.equal(timedOutWire.nativeCallSettled, false);
 	assert.equal(timedOutWire.reason, 'native_call_result_unknown');
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/schematic/connectivity', { action: 'wire_create' }, timedOutWire), true);
 	wireApi.create = async () => {
 		throw new Error('invalid wire geometry');
 	};
