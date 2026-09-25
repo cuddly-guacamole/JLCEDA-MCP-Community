@@ -2,7 +2,7 @@
 
 ## 2.3.3
 
-`schematic_read includeConnectivityPrimitives:true` 可用于常规连线核查、写后验证和受控恢复；正常写入已返回足够的核验结果时可直接复用。
+`wire_create` 成功结果只确认导线图元变化，返回的 `net` 是请求值；随后须以 `schematic_read includeConnectivityPrimitives:true` 核对同页实际语义连接。该读取也可用于其他常规连线核查和受控恢复。
 
 `schematic_component_edit` 的几何修改会检查匿名导线连通组，同组内移动保持成功；引脚脱离或转移到另一组时报告 `pin_network_changed` 和前后组 ID。`schematic_read` 可用 `timeoutMs` 延长大图页读取预算至 120 秒。
 

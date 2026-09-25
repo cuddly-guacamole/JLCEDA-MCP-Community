@@ -45,7 +45,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_read` 在普通读取和完整连接回读前后核对当前图页 UUID 与编辑器文档 UUID，并比对当前页器件对象与图元 ID 列表；设置 `includeConnectivityPrimitives:true` 时还比对导线对象与 ID 列表。若读取期间身份或列表未同步，则返回 `PAGE_NOT_READY`，等待加载后重试。复制页可以合法复用源页图元 ID。不要把未同步的快照用于放置或解除写入隔离；成功结果包含 `pageUuid`。
 
-`schematic_read includeConnectivityPrimitives:true` 也可用于常规的当前页连线核查或写后验证；受控恢复仍要求按对应诊断执行完整回读。
+`wire_create` 成功后须用 `schematic_read includeConnectivityPrimitives:true` 核对同页新导线及实际语义连接；写入结果中的 `net` 只是请求值。该读取也可用于其他当前页连线核查；受控恢复仍要求按对应诊断执行完整回读。
 
 ## 工具说明
 
