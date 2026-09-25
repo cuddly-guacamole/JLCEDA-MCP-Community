@@ -165,17 +165,26 @@ function componentApi(eda: Record<string, unknown>): Record<string, unknown> {
 }
 
 async function readComponents(api: Record<string, unknown>): Promise<ComponentState[]> {
-	const result = await (api.getAll as (type?: unknown, allPages?: boolean) => Promise<unknown>).call(api, undefined, false);
-	if (!Array.isArray(result))
-		throw new TypeError('EDA sch_PrimitiveComponent.getAll did not return an array.');
-	return result.filter(isPlainObjectRecord).map(primitive => ({
-		id: String(getSyncState(primitive, 'getState_PrimitiveId', '')),
-		type: String(getSyncState(primitive, 'getState_ComponentType', '')),
-		net: String(getSyncState(primitive, 'getState_Net', '')),
-		x: Number(getSyncState(primitive, 'getState_X', Number.NaN)),
-		y: Number(getSyncState(primitive, 'getState_Y', Number.NaN)),
-		primitive,
-	}));
+	const components: ComponentState[] = [];
+	for (const type of ['netport', 'netflag'] as const) {
+		const result = await (api.getAll as (type: string, allPages: boolean) => Promise<unknown>).call(api, type, false);
+		if (!Array.isArray(result))
+			throw new TypeError(`EDA sch_PrimitiveComponent.getAll(${type}) did not return an array.`);
+		for (const primitive of result) {
+			if (!isPlainObjectRecord(primitive))
+				throw new TypeError(`EDA ${type} has no readable state.`);
+			const id = getSyncState<unknown>(primitive, 'getState_PrimitiveId', null);
+			const net = getSyncState<unknown>(primitive, 'getState_Net', null);
+			const x = getSyncState<unknown>(primitive, 'getState_X', null);
+			const y = getSyncState<unknown>(primitive, 'getState_Y', null);
+			if (typeof id !== 'string' || !id.trim() || typeof net !== 'string' || !net.trim()
+				|| typeof x !== 'number' || !Number.isFinite(x) || typeof y !== 'number' || !Number.isFinite(y)) {
+				throw new TypeError(`EDA ${type} has incomplete ID, net, or coordinates; safe connection checks are unavailable.`);
+			}
+			components.push({ id, type, net, x, y, primitive });
+		}
+	}
+	return components;
 }
 
 async function readWireNetLabels(eda: Record<string, unknown>): Promise<WireNetLabel[]> {
@@ -190,10 +199,13 @@ async function readWireNetLabels(eda: Record<string, unknown>): Promise<WireNetL
 	return result.filter(isPlainObjectRecord).filter(primitive => String(getSyncState(primitive, 'getState_Key', '')) === 'NET').map((primitive) => {
 		const x = getSyncState<unknown>(primitive, 'getState_X', null);
 		const y = getSyncState<unknown>(primitive, 'getState_Y', null);
+		const net = getSyncState<unknown>(primitive, 'getState_Value', null);
+		if (typeof net !== 'string')
+			throw new TypeError('EDA NET attribute has no readable value, so safe connection checks are unavailable.');
 		return {
 			id: String(getSyncState(primitive, 'getState_PrimitiveId', '')),
 			parentWireId: String(getSyncState(primitive, 'getState_ParentPrimitiveId', '')),
-			net: String(getSyncState(primitive, 'getState_Value', '')).trim(),
+			net: net.trim(),
 			x: typeof x === 'number' && Number.isFinite(x) ? x : null,
 			y: typeof y === 'number' && Number.isFinite(y) ? y : null,
 		};

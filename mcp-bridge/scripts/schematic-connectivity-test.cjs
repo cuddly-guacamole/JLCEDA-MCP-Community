@@ -18,7 +18,11 @@ function wire(id, net, line) {
 function port(state) {
 	return {
 		getState_PrimitiveId: () => state.id,
-		getState_ComponentType: () => state.type ?? 'netport',
+		getState_ComponentType: () => {
+			if (state.typeReadError)
+				throw new Error('component type getter failed');
+			return state.type ?? 'netport';
+		},
 		getState_Net: () => state.net,
 		getState_X: () => state.x + (state.readbackDeltaX ?? 0),
 		getState_Y: () => state.y + (state.readbackDeltaY ?? 0),
@@ -77,7 +81,8 @@ async function main() {
 		sch_PrimitiveComponent: {
 			async getAll(_type, allPages) {
 				assert.equal(typeof allPages, 'boolean');
-				return ports.map(port);
+				assert.ok(_type === undefined || _type === 'netport' || _type === 'netflag');
+				return ports.filter(state => _type === undefined || (state.type ?? 'netport') === _type).map(port);
 			},
 			async getAllPinsByPrimitiveId() { return []; },
 			async createNetPort(_direction, net, x, y) {
@@ -98,6 +103,25 @@ async function main() {
 		await assert.rejects(handleSchematicConnectivityTask({ action, line: oversizedLine }), /at most 512 coordinates/);
 	assert.equal(wireReads, 0, 'oversized input must fail before EDA readback');
 	assert.equal(wireCreates, 0);
+
+	// Incomplete connection primitives must not disappear from the pre-write
+	// intersection checks when an SDK state getter is missing or throws.
+	ports.push({ id: 'missing-net', net: undefined, x: 5, y: 0 });
+	await assert.rejects(handleSchematicConnectivityTask({ action: 'wire_create', line: [5, -10, 5, 0], net: 'NET_B' }), /netport has incomplete ID, net, or coordinates/);
+	assert.equal(wireCreates, 0);
+	ports.pop();
+	ports.push({ id: 'missing-x', type: 'netflag', net: 'NET_B', x: undefined, y: 0 });
+	await assert.rejects(handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 5, y: 0 }), /netflag has incomplete ID, net, or coordinates/);
+	assert.equal(portCreates, 0);
+	ports.pop();
+	ports.push({ id: '', type: 'netflag', net: 'NET_B', x: 5, y: 0 });
+	await assert.rejects(handleSchematicConnectivityTask({ action: 'netport_move', id: 'port-a', x: 10, y: 0 }), /netflag has incomplete ID, net, or coordinates/);
+	assert.equal(ports[0].x, 0);
+	ports.pop();
+	ports.push({ id: 'typed-flag', type: 'netflag', typeReadError: true, net: 'NET_B', x: 5, y: 0 });
+	const typedFlagConflict = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [5, -10, 5, 0], net: 'NET_A' });
+	assert.deepEqual(typedFlagConflict.conflictingNetPortIds, ['typed-flag']);
+	ports.pop();
 
 	// The input limit must not reject longer wires already present on the EDA page.
 	wires.push(wire('long-existing', '', Array.from({ length: 257 }, (_, index) => [10000 + index, 0]).flat()));
@@ -233,6 +257,17 @@ async function main() {
 	attributes[0] = attribute('label-a', 'labeled-wire', 'NET', '', 500, 500);
 	const clearedLabelNet = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_B', allowedWireIds: ['labeled-wire'] });
 	assert.equal(clearedLabelNet.canCreate, true, 'an empty NET attribute must override a stale wire net getter');
+	const writesBeforeUnreadableLabel = wireCreates;
+	const throwingValueGetter = () => {
+		throw new Error('NET value getter failed');
+	};
+	for (const unreadableGetter of [undefined, throwingValueGetter]) {
+		const unreadableLabel = attribute('label-a', 'labeled-wire', 'NET', '', 500, 500);
+		unreadableLabel.getState_Value = unreadableGetter;
+		attributes[0] = unreadableLabel;
+		await assert.rejects(handleSchematicConnectivityTask({ action: 'wire_create', line: labeledWireLine, net: 'NET_B', allowedWireIds: ['labeled-wire'] }), /NET attribute has no readable value/);
+	}
+	assert.equal(wireCreates, writesBeforeUnreadableLabel);
 	attributes[0] = attribute('label-a', 'labeled-wire', 'NET', 'NET_A', 500, 500);
 	wires.splice(0, wires.length, wire('labeled-wire', '', [0, 0, 50, 0]), wire('cached-wire', 'NET_STALE', [50, 0, 100, 0]));
 	const connectedLabelNet = await handleSchematicConnectivityTask({ action: 'wire_preview', line: labeledWireLine, net: 'NET_A', allowedWireIds: ['cached-wire'] });
@@ -415,7 +450,7 @@ async function main() {
 	const originalComponentGetAll = componentApi.getAll;
 	let moveReadAttempts = 0;
 	componentApi.getAll = async (...args) => {
-		if (++moveReadAttempts === 2)
+		if (++moveReadAttempts === 3)
 			throw new Error('port move readback failed');
 		return originalComponentGetAll(...args);
 	};
@@ -436,7 +471,7 @@ async function main() {
 	ports.splice(0, ports.length);
 	let createReadAttempts = 0;
 	componentApi.getAll = async (...args) => {
-		if (++createReadAttempts === 2)
+		if (++createReadAttempts === 3)
 			throw new Error('port create readback failed');
 		return originalComponentGetAll(...args);
 	};
