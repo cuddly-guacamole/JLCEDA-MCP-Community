@@ -49,6 +49,15 @@ function state(raw: unknown, name: string): unknown {
 	return getter.call(raw);
 }
 
+function styleFlag(value: unknown, name: string): boolean {
+	// EDA 3.2 returns null for an unset text style; the editor renders it as false.
+	if (value === null)
+		return false;
+	if (typeof value !== 'boolean')
+		throw new TypeError(`EDA schematic text ${name} state is invalid.`);
+	return value;
+}
+
 function readText(raw: unknown): TextState {
 	const text: TextState = {
 		primitiveId: requiredId(state(raw, 'PrimitiveId')),
@@ -59,18 +68,22 @@ function readText(raw: unknown): TextState {
 		textColor: state(raw, 'TextColor') as string | null,
 		fontName: state(raw, 'FontName') as string | null,
 		fontSize: state(raw, 'FontSize') as number | null,
-		bold: state(raw, 'Bold') as boolean,
-		italic: state(raw, 'Italic') as boolean,
-		underLine: state(raw, 'UnderLine') as boolean,
+		bold: styleFlag(state(raw, 'Bold'), 'bold'),
+		italic: styleFlag(state(raw, 'Italic'), 'italic'),
+		underLine: styleFlag(state(raw, 'UnderLine'), 'underLine'),
 		alignMode: finiteNumber(state(raw, 'AlignMode'), 'EDA alignMode'),
 	};
-	if (typeof text.content !== 'string'
-		|| (text.textColor !== null && typeof text.textColor !== 'string')
-		|| (text.fontName !== null && typeof text.fontName !== 'string')
-		|| (text.fontSize !== null && (typeof text.fontSize !== 'number' || !Number.isFinite(text.fontSize)))
-		|| typeof text.bold !== 'boolean' || typeof text.italic !== 'boolean' || typeof text.underLine !== 'boolean') {
-		throw new TypeError('EDA schematic text state is incomplete.');
+	const invalidFields: string[] = [];
+	function check(field: string, item: unknown, valid: boolean): void {
+		if (!valid)
+			invalidFields.push(`${field}=${item === null ? 'null' : `${typeof item}(${String(item)})`}`);
 	}
+	check('content', text.content, typeof text.content === 'string');
+	check('textColor', text.textColor, text.textColor === null || typeof text.textColor === 'string');
+	check('fontName', text.fontName, text.fontName === null || typeof text.fontName === 'string');
+	check('fontSize', text.fontSize, text.fontSize === null || (typeof text.fontSize === 'number' && Number.isFinite(text.fontSize)));
+	if (invalidFields.length > 0)
+		throw new TypeError(`EDA schematic text state is incomplete: ${invalidFields.join(', ')}.`);
 	return text;
 }
 

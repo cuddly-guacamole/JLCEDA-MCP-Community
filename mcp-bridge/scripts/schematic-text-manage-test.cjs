@@ -15,7 +15,7 @@ let serial = 1;
 let writes = 0;
 
 function state(id, patch = {}) {
-	return { primitiveId: id, x: 100, y: 200, content: 'Note', rotation: 0, textColor: null, fontName: null, fontSize: null, bold: false, italic: false, underLine: false, alignMode: 1, ...patch };
+	return { primitiveId: id, x: 100, y: 200, content: 'Note', rotation: 0, textColor: null, fontName: null, fontSize: null, bold: null, italic: null, underLine: null, alignMode: 1, ...patch };
 }
 
 function primitive(value) {
@@ -32,7 +32,7 @@ async function main() {
 		async getAll() { return [...texts.values()].map(primitive); },
 		async getAllPrimitiveId() { return [...texts.keys()]; },
 		async get(id) { return texts.has(id) ? primitive(texts.get(id)) : undefined; },
-		async create(x, y, content, rotation = 0, textColor = null, fontName = null, fontSize = null, bold = false, italic = false, underLine = false, alignMode = 1) {
+		async create(x, y, content, rotation = 0, textColor = null, fontName = null, fontSize = null, bold = null, italic = null, underLine = null, alignMode = 1) {
 			writes += 1;
 			const id = `created-${serial++}`;
 			texts.set(id, state(id, { x, y, content, rotation, textColor, fontName, fontSize, bold, italic, underLine, alignMode }));
@@ -56,6 +56,9 @@ async function main() {
 	const all = await handleSchematicTextManageTask({ action: 'read' });
 	assert.equal(all.complete, true);
 	assert.equal(all.textCount, 130);
+	assert.equal(all.texts[0].bold, false);
+	assert.equal(all.texts[0].italic, false);
+	assert.equal(all.texts[0].underLine, false);
 	assert.equal((await toSerializableAsync(all)).texts.length, 130);
 	assert.equal((await handleSchematicTextManageTask({ action: 'read', primitiveId: 'text-0' })).found, true);
 	assert.equal((await handleSchematicTextManageTask({ action: 'read', primitiveId: 'absent' })).found, false);
@@ -68,6 +71,8 @@ async function main() {
 	assert.equal(created.verified, true);
 	assert.equal(created.text.content, 'Revision A');
 	assert.equal(created.text.bold, true);
+	assert.equal(created.text.italic, false);
+	assert.equal(created.text.underLine, false);
 	const changed = await handleSchematicTextManageTask({ action: 'modify', primitiveId: created.primitiveId, property: { content: 'Revision B', x: 700, textColor: '#ff0000', fontSize: 20 } });
 	assert.equal(changed.verified, true);
 	assert.equal(changed.text.content, 'Revision B');
