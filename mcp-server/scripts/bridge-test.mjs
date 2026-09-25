@@ -1873,6 +1873,84 @@ try {
     placementStartServer.close();
   }
 
+  for (const editAction of ['modify', 'delete']) {
+    const editPort = await reservePort();
+    const editServer = new EdaBridgeServer(editPort);
+    let oldClient;
+    let freshClient;
+    try {
+      await editServer.start();
+      const editUrl = `ws://127.0.0.1:${editPort}/bridge/ws${tokenQuery}`;
+      const pageContext = { documentUuid: 'component-document', projectUuid: 'component-project',
+        pageKind: 'schematic', pageUuid: 'component-page' };
+      oldClient = await registerEda(editUrl, `component-edit-${editAction}-old`, pageContext);
+      oldClient.socket.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        oldClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: `component-edit-${editAction}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+        oldClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: `component-edit-${editAction}-old`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm,
+          result: { ok: false, action: editAction, commitUnknown: true, nativeCallSettled: false } }));
+      });
+      const writePayload = editAction === 'modify'
+        ? { action: editAction, primitiveId: 'r1', property: { designator: 'R2' } }
+        : { action: editAction, primitiveId: 'r1' };
+      assert.equal((await editServer.request('/bridge/jlceda/schematic/component-edit', writePayload, 2000)).commitUnknown, true);
+      const diagnostic = (await editServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+      assert.equal(diagnostic.requiredReadback, 'schematic_component_state');
+      assert.equal(diagnostic.hostRestartRequired, true);
+      assert.equal(diagnostic.pageBound, true);
+      await assert.rejects(editServer.request('/bridge/jlceda/schematic/component-edit', writePayload, 2000),
+        /writes are blocked pending recovery readback/);
+      const recovery = await editServer.request('/bridge/admin/recover-client', {
+        action: 'recover', confirm: true, requestId: diagnostic.requestId,
+      }, 2000);
+      oldClient.socket.close();
+      await waitUntil(async () => (await editServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `component-edit-${editAction}-old`)?.ready === false);
+      freshClient = await registerEda(editUrl, `component-edit-${editAction}-fresh`, pageContext);
+      const component = { primitiveId: 'r1', type: 'part', x: 10, y: 20, rotation: 0, mirror: false,
+        designator: 'R1', name: 'Resistor', uniqueId: null, addIntoBom: true, addIntoPcb: true,
+        manufacturer: null, manufacturerId: null, supplier: null, supplierId: null, otherProperty: { Value: '10k' } };
+      const snapshot = { ok: true, action: 'read', scope: 'current_schematic_page', complete: true,
+        pageUuid: 'component-page', componentCount: 1, components: [component] };
+      let readback = snapshot;
+      attachTaskResponder(freshClient.socket, `component-edit-${editAction}-fresh`, message => {
+        if (message.path === '/bridge/jlceda/context')
+          return { currentDocumentInfo: { uuid: 'component-document', parentProjectUuid: 'component-project' },
+            currentProjectInfo: { uuid: 'component-project' }, currentSchematicPageInfo: { uuid: 'component-page' } };
+        assert.equal(message.path, '/bridge/jlceda/schematic/component-edit');
+        assert.deepEqual(message.payload, { action: 'read' });
+        return readback;
+      });
+      const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+        clientId: `component-edit-${editAction}-fresh`, hostRestartConfirmed: true,
+        readbackPath: '/bridge/jlceda/schematic/component-edit', readbackPayload: { action: 'read' } };
+      await assert.rejects(editServer.request('/bridge/admin/recover-client', {
+        ...recoveryReadback, readbackPath: '/bridge/jlceda/context', readbackPayload: {},
+      }, 2000), /requires schematic_component_edit action=read/);
+      await assert.rejects(editServer.request('/bridge/admin/recover-client', {
+        ...recoveryReadback, hostRestartConfirmed: false,
+      }, 2000), /original EDA host was restarted/);
+      readback = { ...snapshot, componentCount: 2 };
+      await assert.rejects(editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /component state readback was incomplete/);
+      readback = { ...snapshot, pageUuid: 'other-page' };
+      await assert.rejects(editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /from another page/);
+      readback = { ...snapshot, components: [{ ...component, x: null }] };
+      await assert.rejects(editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /component state readback was incomplete/);
+      readback = snapshot;
+      const verified = await editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+      assert.equal(verified.readbackVerified, true);
+      assert.deepEqual(verified.readback.components, [component]);
+      assert.equal(verified.writesRemainBlocked, false);
+    } finally {
+      oldClient?.socket.close();
+      freshClient?.socket.close();
+      editServer.close();
+    }
+  }
+
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
   assert.equal(pageMutationServer.validateCompleteSchematicPages({

@@ -24,6 +24,7 @@ function createToolInputSchema(
         '/bridge/jlceda/context',
         '/bridge/jlceda/api/invoke',
         '/bridge/jlceda/schematic/read',
+        '/bridge/jlceda/schematic/component-edit',
         '/bridge/jlceda/schematic/review',
         '/bridge/jlceda/schematic/layout-check',
         '/bridge/jlceda/pcb/drc-check',

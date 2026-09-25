@@ -70,7 +70,7 @@ interface RecoveryDiagnostic {
   targetSchematicPageUuid?: string;
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
-  requiredReadback?: 'pcb_component_positions' | 'pcb_routing_state' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids';
+  requiredReadback?: 'pcb_component_positions' | 'pcb_routing_state' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state';
   hostRestartRequired?: boolean;
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
@@ -346,6 +346,10 @@ function isSchematicComponentIdReadbackRequest(path: string, payload: Record<str
     && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.sch_primitivecomponent.getallprimitiveid'
     && Array.isArray(payload.args) && payload.args.length === 2
     && payload.args[0] === null && payload.args[1] === false;
+}
+
+function isSchematicComponentStateReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  return path === '/bridge/jlceda/schematic/component-edit' && payload.action === 'read';
 }
 
 function isSchematicPageInventoryReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
@@ -864,6 +868,7 @@ export class EdaBridgeServer {
           && (message.result.nativeCallSettled === true
             || (message.result.ok === true && message.result.verified === true)))
           || ((diagnostic.requiredReadback === 'schematic_component_ids'
+            || diagnostic.requiredReadback === 'schematic_component_state'
             || diagnostic.requiredReadback === 'schematic_connectivity_primitives')
             && message.result.nativeCallSettled === true)))
         diagnostic.hostRestartRequired = false;
@@ -1274,6 +1279,9 @@ export class EdaBridgeServer {
       ...(mutating && isSchematicPlacementWrite(pending.path ?? '')
         ? { requiredReadback: 'schematic_component_ids' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
+      ...(mutating && pending.path === '/bridge/jlceda/schematic/component-edit'
+        ? { requiredReadback: 'schematic_component_state' as const, hostRestartRequired: !nativeCallSettled }
+        : {}),
       ...(mutating && isSchematicConnectivityMutation(pending.path ?? '', pending.payload)
         ? { requiredReadback: 'schematic_connectivity_primitives' as const, hostRestartRequired: !nativeCallSettled } : {}),
       ...(mutating && isTargetedSchematicPageMutation(pending.path ?? '', pending.payload)
@@ -1406,6 +1414,10 @@ export class EdaBridgeServer {
       && !isSchematicComponentIdReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Schematic placement requires current-page eda.sch_PrimitiveComponent.getAllPrimitiveId with args [null, false] for recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'schematic_component_state'
+      && !isSchematicComponentStateReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Schematic component edit requires schematic_component_edit action=read for complete current-page recovery readback.');
+    }
     if (session.diagnostic.requiredReadback === 'schematic_page_inventory'
       && !isSchematicPageInventoryReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Schematic page mutation requires eda.dmt_Schematic.getAllSchematicPagesInfo with no arguments for recovery readback.');
@@ -1414,9 +1426,10 @@ export class EdaBridgeServer {
       && !isSchematicConnectivityReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Schematic connectivity mutation requires schematic_read with includeConnectivityPrimitives=true for recovery readback.');
     }
-    if (session.diagnostic.requiredReadback === 'schematic_component_ids'
+    if ((session.diagnostic.requiredReadback === 'schematic_component_ids'
+      || session.diagnostic.requiredReadback === 'schematic_component_state')
       && (session.diagnostic.context?.pageKind !== 'schematic' || !session.diagnostic.context.pageUuid)) {
-      throw new Error('Schematic placement has no verified execution-time schematic page identity; writes remain blocked.');
+      throw new Error('Schematic component write has no verified execution-time schematic page identity; writes remain blocked.');
     }
     if (session.diagnostic.requiredReadback === 'pcb_component_positions'
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
@@ -1429,6 +1442,8 @@ export class EdaBridgeServer {
     if (session.diagnostic.hostRestartRequired && payload.hostRestartConfirmed !== true) {
       const writeLabel = session.diagnostic.requiredReadback === 'schematic_component_ids'
         ? 'Unverified schematic placement'
+        : session.diagnostic.requiredReadback === 'schematic_component_state'
+          ? 'Unverified schematic component edit'
         : session.diagnostic.requiredReadback === 'schematic_connectivity_primitives'
           ? 'Unverified schematic connectivity write'
           : session.diagnostic.requiredReadback === 'pcb_routing_state'
@@ -1497,7 +1512,8 @@ export class EdaBridgeServer {
       const beforeRoutingReadback = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
       this.assertPcbIdentity(beforeRoutingReadback, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
     }
-    if (session.diagnostic.requiredReadback === 'schematic_component_ids') {
+    if (session.diagnostic.requiredReadback === 'schematic_component_ids'
+      || session.diagnostic.requiredReadback === 'schematic_component_state') {
       const beforeComponentReadback = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
       this.assertSchematicIdentity(beforeComponentReadback, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid!);
     }
@@ -1529,6 +1545,8 @@ export class EdaBridgeServer {
       this.validateCompleteSchematicConnectivity(readback, session.diagnostic);
     if (session.diagnostic.requiredReadback === 'schematic_component_ids')
       this.validateCompleteSchematicComponentIds(readback);
+    if (session.diagnostic.requiredReadback === 'schematic_component_state')
+      this.validateCompleteSchematicComponentState(readback, session.diagnostic);
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
       : await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
@@ -1638,6 +1656,38 @@ export class EdaBridgeServer {
       throw new Error('Schematic component state readback was incomplete; writes remain blocked.');
     }
     return value.schematicComponentIds as string[];
+  }
+
+  private validateCompleteSchematicComponentState(value: unknown, diagnostic: RecoveryDiagnostic): number {
+    if (!isRecord(value) || value.ok !== true || value.action !== 'read'
+      || value.scope !== 'current_schematic_page' || value.complete !== true
+      || diagnostic.context?.pageKind !== 'schematic' || value.pageUuid !== diagnostic.context.pageUuid
+      || !Array.isArray(value.components) || !Number.isSafeInteger(value.componentCount)
+      || value.componentCount !== value.components.length) {
+      throw new Error('Schematic component state readback was incomplete or from another page; writes remain blocked.');
+    }
+    const ids = new Set<string>();
+    const nullableString = (item: unknown): boolean => item === null || typeof item === 'string';
+    const nullableBoolean = (item: unknown): boolean => item === null || typeof item === 'boolean';
+    for (const component of value.components) {
+      if (!isRecord(component) || !optionalString(component.primitiveId)
+        || ids.has(component.primitiveId as string) || component.type !== 'part'
+        || !Number.isFinite(component.x) || !Number.isFinite(component.y)
+        || !Number.isFinite(component.rotation) || typeof component.mirror !== 'boolean'
+        || !nullableString(component.designator) || !nullableString(component.name)
+        || !nullableString(component.uniqueId)
+        || !nullableBoolean(component.addIntoBom) || !nullableBoolean(component.addIntoPcb)
+        || !nullableString(component.manufacturer) || !nullableString(component.manufacturerId)
+        || !nullableString(component.supplier) || !nullableString(component.supplierId)
+        || !isRecord(component.otherProperty)
+        || Object.values(component.otherProperty).some(item =>
+          typeof item !== 'string' && typeof item !== 'boolean'
+            && !(typeof item === 'number' && Number.isFinite(item)))) {
+        throw new Error('Schematic component state readback was incomplete; writes remain blocked.');
+      }
+      ids.add(component.primitiveId as string);
+    }
+    return value.components.length;
   }
 
   private validatePcbRoutingPrimitives(value: unknown, apiFullName: string): Record<string, unknown>[] {
