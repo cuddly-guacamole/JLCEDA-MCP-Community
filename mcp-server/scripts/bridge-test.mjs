@@ -2465,6 +2465,70 @@ try {
     textServer.close();
   }
 
+  const schematicTextPort = await reservePort();
+  const schematicTextServer = new EdaBridgeServer(schematicTextPort);
+  let oldSchematicTextClient;
+  let freshSchematicTextClient;
+  try {
+    await schematicTextServer.start();
+    const url = `ws://127.0.0.1:${schematicTextPort}/bridge/ws${tokenQuery}`;
+    const pageContext = { documentUuid: 'schematic-text-page', projectUuid: 'schematic-text-project',
+      pageKind: 'schematic', pageUuid: 'schematic-text-page' };
+    oldSchematicTextClient = await registerEda(url, 'schematic-text-old', pageContext);
+    oldSchematicTextClient.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      oldSchematicTextClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'schematic-text-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+      oldSchematicTextClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'schematic-text-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { ok: false, action: 'create', commitUnknown: true, nativeCallSettled: false } }));
+    });
+    assert.equal((await schematicTextServer.request('/bridge/jlceda/schematic/text-manage',
+      { action: 'create', x: 1, y: 2, content: 'Note' }, 2000)).commitUnknown, true);
+    const diagnostic = (await schematicTextServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(diagnostic.requiredReadback, 'schematic_text_state');
+    assert.equal(diagnostic.hostRestartRequired, true);
+    const recovery = await schematicTextServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: diagnostic.requestId,
+    }, 2000);
+    oldSchematicTextClient.socket.close();
+    await waitUntil(async () => (await schematicTextServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'schematic-text-old')?.ready === false);
+    freshSchematicTextClient = await registerEda(url, 'schematic-text-fresh', pageContext);
+    const item = { primitiveId: 'note-1', x: 1, y: 2, content: 'Note', rotation: 0,
+      textColor: null, fontName: null, fontSize: null, bold: false, italic: false, underLine: false, alignMode: 1 };
+    const snapshot = { ok: true, action: 'read', scope: 'current_schematic_page', complete: true,
+      pageUuid: 'schematic-text-page', textCount: 1, texts: [item] };
+    let readback = snapshot;
+    attachTaskResponder(freshSchematicTextClient.socket, 'schematic-text-fresh', message => {
+      if (message.path === '/bridge/jlceda/context')
+        return { currentDocumentInfo: { uuid: 'schematic-text-page', parentProjectUuid: 'schematic-text-project' },
+          currentProjectInfo: { uuid: 'schematic-text-project' },
+          currentSchematicPageInfo: { uuid: 'schematic-text-page' } };
+      assert.equal(message.path, '/bridge/jlceda/schematic/text-manage');
+      assert.deepEqual(message.payload, { action: 'read' });
+      return readback;
+    });
+    const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+      clientId: 'schematic-text-fresh', hostRestartConfirmed: true,
+      readbackPath: '/bridge/jlceda/schematic/text-manage', readbackPayload: { action: 'read' } };
+    await assert.rejects(schematicTextServer.request('/bridge/admin/recover-client', {
+      ...recoveryReadback, readbackPayload: { action: 'read', primitiveId: 'note-1' },
+    }, 2000), /without primitiveId/);
+    readback = { ...snapshot, textCount: 2 };
+    await assert.rejects(schematicTextServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /text state readback was incomplete/);
+    readback = snapshot;
+    const verified = await schematicTextServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+    assert.equal(verified.readbackVerified, true);
+    assert.deepEqual(verified.readback.texts, [item]);
+    assert.equal(verified.writesRemainBlocked, false);
+  } finally {
+    oldSchematicTextClient?.socket.close();
+    freshSchematicTextClient?.socket.close();
+    schematicTextServer.close();
+  }
+
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
   assert.equal(pageMutationServer.validateCompleteSchematicPages({
