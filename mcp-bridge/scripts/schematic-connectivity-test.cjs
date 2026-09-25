@@ -605,6 +605,18 @@ async function main() {
 	assert.equal(copiedPagePort.x, 20);
 	assert.equal(oldPagePort.x, 0);
 	pageUuid = 'page-1';
+
+	// A stale component list must not be used after both page APIs report the new page.
+	const cachedPort = { id: 'cached-old-page-port', net: 'NET_A', x: 0, y: 0 };
+	ports.splice(0, ports.length, cachedPort);
+	assert.equal((await handleSchematicReadTask({})).ok, true);
+	pageUuid = 'page-2';
+	const originalGetAllPrimitiveId = componentApi.getAllPrimitiveId;
+	componentApi.getAllPrimitiveId = async () => ['new-page-port'];
+	await assert.rejects(route({ action: 'netport_move', id: cachedPort.id, x: 20, y: 0 }), /器件列表与图元 ID 列表不一致/);
+	assert.equal(cachedPort.x, 0);
+	componentApi.getAllPrimitiveId = originalGetAllPrimitiveId;
+	pageUuid = 'page-1';
 }
 
 main().catch((error) => {
