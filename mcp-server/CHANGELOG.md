@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-09-26
+
+- 配合 Bridge 修复 `project_info` 在 PCB 页面遗漏原理图图页的问题，并说明导航会在 `timeoutMs` 预算内等待目标文档就绪。
 - `pcb_layer_manage action=set` 明确要求 `confirm:true`，阻止未确认的 PCB 叠层修改。
 - `pcb_layer_manage` 的完整读取和降层预检支持按 PCB 大小将桥接超时预算调整到 120 秒。
 - PCB 文档创建或复制已获得新 UUID 但目录回读失败时，恢复要求目录包含该 UUID，避免旧目录误解锁后重复创建。

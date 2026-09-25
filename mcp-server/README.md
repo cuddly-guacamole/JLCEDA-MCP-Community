@@ -1,10 +1,10 @@
 # JLCEDA MCP Server
 
-## 2.3.2
+## 2.3.3
 
 `bridge_recover_client` 的完整回读不再被固定 15 秒截断；可设置 `timeoutMs`，大原理图最多 120 秒。`schematic_read` 同样支持最长 120 秒的读取预算。
 
-本版本使用共享 Bridge 路由清单，增加内部请求超时、重复 `requestId` 检查、消息大小限制和有限挂起请求队列。`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
+2.3.3 新增工程内图页导航、原理图文字/导线/器件以及 PCB 文字/区域/板框/覆铜/布线/器件的读写工具，并完善导入预检和操作回读。Server 与 Bridge 应安装匹配版本；`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
 
 工具分发异常和 Bridge 上报的结构化诊断日志会输出到 Server 的 stderr。分发异常记录工具、Bridge 路由、可用的错误码与异常堆栈，并附带版本及构建日期水印；构建日期在打包时固定。
 
@@ -14,9 +14,9 @@
 
 `component_place_auto` 按坐标逐件创建；若 EDA 改变已有器件或本批次此前放置器件的位号，会保留 BOM 属性并尝试一次恢复。恢复失败时停止后续放置，返回位号变化及已放置器件的当前位号。
 
-`bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页；进程内打开或激活文档使用 `editor_navigate`。
+`bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页；进程内打开或激活文档使用 `editor_navigate`，成功后会核对文档、图页和标签身份。
 
-`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。原理图器件批量删除绑定执行时的当前图页，恢复时以 `schematic_read includeConnectivityPrimitives:true` 回读原页；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。完整安全恢复要求 Bridge 与 Server 均升级到 2.3.2；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
+`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。原理图器件批量删除绑定执行时的当前图页，恢复时以 `schematic_read includeConnectivityPrimitives:true` 回读原页；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。使用本版新增操作及其恢复回读时，应同时安装 2.3.3 Bridge 与 Server；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 
 PCB `import_changes` 返回 `pending_confirmation` 后，Server 将其列为全局写入阻断诊断。用户在原 EDA 对话框应用或取消并确认关闭后，使用诊断中的 `requestId` 调用 `bridge_recover_client`，传入 `action:"resolve_import"`、`confirm:true`、`resolution:"applied"` 或 `"cancelled"`。Server 核对原连接及 PCB 文档/图页，完整读回器件和网络；Bridge 收到同页解除确认后才恢复写入。只读查询在此期间仍可用，但 EDA API 不提供确认框完成事件，读回本身不能证明对话框已关闭。无法确认时以 `action:"recover"` 建立恢复会话，重启原 EDA 宿主，再用全新连接、`hostRestartConfirmed:true`、无参数 `eda.pcb_PrimitiveComponent.getAll` 做 `action:"readback"`；Server 还会分页读取完整网络名称。
 
@@ -119,10 +119,10 @@ Server 提供 PCB DRC、网络查询、库搜索、制造查询和受保护的�
 
 ## 安装
 
-从 GitHub 发布页下载 `jlceda-mcp-server-2.3.2.tgz`：
+从 GitHub 发布页下载 `jlceda-mcp-server-2.3.3.tgz`：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.2.tgz
+npm install --global .\jlceda-mcp-server-2.3.3.tgz
 Get-Command jlceda-mcp
 ```
 
@@ -166,7 +166,7 @@ ws://127.0.0.1:8765/bridge/ws?token=YOUR_RANDOM_TOKEN
 - Server 仅绑定 `127.0.0.1`，不会主动监听局域网接口。
 - Token 属于本地 Bridge 凭据，不应提交到仓库或出现在截图、日志和 Issue 中。
 - 工具可修改当前 EDA 工程；使用写工具前请保存工程并检查目标页面。
-- `netlabel_place` 的普通信号标签需要 EDA v4；在 3.x 中该操作会立即返回未开始，电源和地网络标识仍可使用。
+- `netlabel_place` 的普通信号标签依赖 EDA v4 才提供的 `createNetLabel`；配套的本版扩展仅支持 EDA 3.x，因此普通标签会立即返回未开始。EDA v4 需等待未来兼容版本；电源和地网络标识仍可使用。
 - API 透传工具是可选功能，仅应在受信任的 MCP 客户端中启用。
 
 完整安装、多客户端选择和故障排查说明见[原生 MCP 安装说明](https://github.com/hs150521/JLCEDA-MCP-Community/blob/main/docs/native-mcp-setup.md)。

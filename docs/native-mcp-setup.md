@@ -4,10 +4,10 @@
 
 ## 1. 安装 Server
 
-需要 Node.js 20 或更高版本。从对应的 GitHub Release 下载 jlceda-mcp-server-2.3.2.tgz，然后执行：
+需要 Node.js 20 或更高版本。从对应的 GitHub Release 下载 jlceda-mcp-server-2.3.3.tgz，然后执行：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.2.tgz
+npm install --global .\jlceda-mcp-server-2.3.3.tgz
 Get-Command jlceda-mcp
 ```
 
@@ -70,7 +70,7 @@ Server 只绑定 127.0.0.1。第一个 MCP 进程拥有 WebSocket 监听器，�
 
 ## 4. 配置 EDA 扩展
 
-打开扩展设置页面并保存：
+在扩展管理器的已安装详情中确认“允许外部交互”已启用，然后打开扩展设置页面并保存：
 
 ```text
 ws://127.0.0.1:8765/bridge/ws?token=replace-with-your-random-token

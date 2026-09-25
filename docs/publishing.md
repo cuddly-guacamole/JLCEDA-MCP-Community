@@ -5,8 +5,8 @@
 ## 发布检查表
 
 1. 保持 mcp-bridge/extension.json.uuid 不变。JLCEDA 会按 UUID 将后续上传归入同一扩展命名空间。
-2. 按需递增 mcp-bridge/extension.json、mcp-bridge/package.json 和 mcp-server/package.json 中的版本。
-3. 更新 mcp-bridge/CHANGELOG.md，并确认 README 说明安装、配置、安全假设、上游署名和支持渠道。
+2. 同步递增 mcp-bridge/extension.json、两个包的 package.json 与 package-lock.json 中的版本。
+3. 更新两个包的 CHANGELOG.md，并确认 README 说明安装、配置、安全假设、上游署名和支持渠道。发布说明应覆盖自上一个 GitHub Release 起的全部变更；本次 [v2.3.3 发布说明](releases/v2.3.3.md)包含尚未单独发布的 v2.3.2。
 4. 执行：
 
    ```powershell
@@ -19,7 +19,7 @@
    npm run build
    ```
 
-5. 在干净的 JLCEDA Professional 配置中安装 `build/mcp-bridge-community-<version>.eext`，测试连接、重连、多客户端选择、只读工具、器件放置、普通网络标签的版本提示、电源标识、错误处理、升级和上一版本兼容性。更新后确认“外部交互”权限仍已启用；EDA 3.x 应立即报告普通标签不受支持，EDA v4 才验证实际创建。
+5. 在干净的 JLCEDA Professional 配置中安装 `build/mcp-bridge-community-<version>.eext`，测试连接、重连、多客户端选择、只读工具、器件放置、普通网络标签的版本提示、电源标识、错误处理、升级和上一版本兼容性。更新后确认“外部交互”权限仍已启用。本次清单仅声明支持 EDA 3.x，应立即报告普通标签不受支持；EDA v4 的创建测试留待未来明确兼容 v4 的版本。
 6. 从干净提交打包 Server `.tgz`，为同一提交创建 GitHub Release，并附加 `.eext`、`.tgz`、SHA-256 校验和及发布说明。不要从有未提交改动的工作区发布。
 7. 访问 JLCEDA 扩展广场 https://jlc-ext.com/，打开“扩展管理”，选择“上传扩展”，上传测试通过的 .eext 文件。首次上传会创建命名空间，后续版本继续使用同一 UUID。
 8. 提交前检查生成的扩展广场页面。包中必须包含有效的 name、uuid、displayName、description、version、license、分类、入口文件、README，以及不超过 5 MiB 的非默认 1:1 图标。不同扩展 UUID 不得复用同一 name。
