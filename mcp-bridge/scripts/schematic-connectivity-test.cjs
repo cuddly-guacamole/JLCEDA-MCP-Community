@@ -575,13 +575,23 @@ async function main() {
 	assert.equal(switchingPort.x, beforeEditorSwitchX);
 	editorPageOverride = null;
 
-	// A cached old-page port must not be moved after both page APIs report the new page.
-	const cachedPort = { id: 'cached-old-page-port', net: 'NET_A', x: 0, y: 0 };
-	ports.splice(0, ports.length, cachedPort);
+	// A port from the old page is absent from the new page's current inventory.
+	const oldPagePort = { id: 'copied-page-port', net: 'NET_A', x: 0, y: 0 };
+	ports.splice(0, ports.length, oldPagePort);
 	assert.equal((await handleSchematicReadTask({})).ok, true);
 	pageUuid = 'page-2';
-	await assert.rejects(route({ action: 'netport_move', id: cachedPort.id, x: 20, y: 0 }), /其他图页|current page/);
-	assert.equal(cachedPort.x, 0);
+	ports.splice(0, ports.length);
+	await assert.rejects(route({ action: 'netport_move', id: oldPagePort.id, x: 20, y: 0 }), /Current schematic page/);
+	assert.equal(oldPagePort.x, 0);
+
+	// A copied page may reuse that ID. Moving its current-page port is valid.
+	const copiedPagePort = { id: oldPagePort.id, net: 'NET_A', x: 0, y: 0 };
+	ports.push(copiedPagePort);
+	const copiedPageMove = await route({ action: 'netport_move', id: copiedPagePort.id, x: 20, y: 0 });
+	assert.equal(copiedPageMove.ok, true);
+	assert.equal(copiedPageMove.pageUuid, 'page-2');
+	assert.equal(copiedPagePort.x, 20);
+	assert.equal(oldPagePort.x, 0);
 	pageUuid = 'page-1';
 }
 
