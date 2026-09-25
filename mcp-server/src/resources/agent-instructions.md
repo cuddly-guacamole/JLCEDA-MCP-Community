@@ -48,6 +48,7 @@
 - `netlist_compare`：对比两个已知的原理图或 PCB 文档 UUID；必须先通过 `project_info` 或 `eda_context` 确认 UUID，不得猜测。
 - `design_compare`：按 `domain` 调用官方原理图、PCB 或网表对比 API。PCB 对比在 `0.4.15` 中标注为 EDA v4.2，旧客户端应返回版本能力错误；不得反复猜测参数。
 - `pcb_layer_query`：读取当前 PCB 图层、当前工作层和铜层数量。
+- `pcb_documents_manage`：先从 `bridge_clients` 或 `project_info` 取得当前工程的精确 `projectUuid`；`operation:list` 完整列出该工程的 PCB。创建游离 PCB 时省略 `boardName`；复制需源 `pcbUuid`；重命名需先在 EDA 打开目标 PCB。写入须 `confirm:true`，工具不会切换图页。未知提交时用同一工程的 `operation:list` 完整回读目录，必要时先重启原宿主，核对是否已出现副本或新名称再决定后续操作。
 - `pcb_realtime_drc`：默认只查询实时 DRC 状态；只有用户明确要求时才执行 `start` 或 `stop`。
 - `component_select`：可使用 `properties.supplierId` 等 0.4.15 精确字段查询器件。`keyword` 与 `properties` 二选一，结果仍必须等待用户确认后才能放置。
 - `netlabel_place`：先通过 `eda_context` 确认编辑器版本。普通网络标签的官方 API 从 EDA v4 起提供；3.x 返回 `EDA_VERSION_UNSUPPORTED`、`commitStatus: not_started`，无需重试。电源/地网络标识仍可放置；不要把电源标识当成普通信号标签。

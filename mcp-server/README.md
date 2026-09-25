@@ -83,6 +83,8 @@ Server 提供 `schematic_document_action`，用于受限地检查原理图坐标
 
 `schematic_pages_manage` 只有在 `confirm: true` 时才会创建、复制、重命名或完整重排页面。重排必须提供每个页面 UUID，Bridge 会重新读取页面对象并验证最终顺序；不提供删除功能。页面操作可指向非当前图页；提交状态未知时，用无参数 `eda.dmt_Schematic.getAllSchematicPagesInfo` 读回完整目录，并核对目标页面或原理图归属，当前图页的 `/context` 回读不会解除隔离。
 
+`pcb_documents_manage` 以 `project_info` 或 `bridge_clients` 返回的当前工程 `projectUuid` 为目标：`operation:list` 完整返回该工程 PCB 的 UUID、名称和所属板子；`create` 可省略 `boardName` 新建游离 PCB，`copy` 按已有 `pcbUuid` 复制，`rename` 改名。三种写入均需 `confirm:true`，并在 EDA 工作区同步后按 PCB UUID 和工程目录回读；改名仅对 EDA 中已打开的目标 PCB 生效，工具不会自行切换图页。未知提交使用 `bridge_recover_client`，指定 `readbackPath:"/bridge/jlceda/pcb/documents-manage"`、`readbackPayload:{"operation":"list","projectUuid":"原工程 UUID"}`；旧宿主尚有未完成原生调用时先重启。暂不提供 PCB 删除。
+
 `eda_context` 在客户端支持时返回客户端版本、连接模式、编辑器版本、编译日期和当前画布数据单位。`eda_canvas_snapshot` 可在不改变文档或视图的情况下返回受限的画布图像。
 
 `workspace_query` 查询当前工作区、团队以及受限的工程和文件夹列表。`design_source_export` 和 `design_archive_export` 分别读取受限的源文件预览和原生设计归档元数据；完整文本或 Base64 数据都需要明确授权并受大小限制。

@@ -281,6 +281,8 @@ async function readBridgeClientContext(expectedPageKind?: BridgeClientContext['p
 }
 
 function writeTaskPageKind(path: string, payload: unknown): BridgeClientContext['pageKind'] {
+	if (path === '/bridge/jlceda/pcb/documents-manage')
+		return undefined;
 	if (path === '/bridge/jlceda/api/invoke' && isPlainObjectRecord(payload) && typeof payload.apiFullName === 'string') {
 		const apiFullName = payload.apiFullName.trim().toLowerCase();
 		if (apiFullName.startsWith('eda.pcb_'))

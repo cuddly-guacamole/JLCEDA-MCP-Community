@@ -489,6 +489,16 @@
 			"timeoutPolicy": "default"
 		},
 		{
+			"toolName": "pcb_documents_manage",
+			"path": "/bridge/jlceda/pcb/documents-manage",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "operation",
+				"equals": "list"
+			}
+		},
+		{
 			"toolName": "project_info",
 			"path": "/bridge/jlceda/project/info",
 			"owner": "bridge",

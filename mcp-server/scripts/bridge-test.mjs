@@ -2531,6 +2531,23 @@ try {
 
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
+  const pcbInventory = { ok: true, operation: 'list', complete: true, projectUuid: 'target-project', pcbCount: 2,
+    pcbs: [
+      { uuid: 'source-pcb', name: 'Source', parentProjectUuid: 'target-project', parentBoardName: null },
+      { uuid: 'copy-pcb', name: 'Copy', parentProjectUuid: 'target-project', parentBoardName: null },
+    ] };
+  assert.equal(pageMutationServer.validateCompletePcbDocuments(pcbInventory, {
+    targetProjectUuid: 'target-project', targetPcbUuid: 'source-pcb',
+  }), 2);
+  assert.throws(() => pageMutationServer.validateCompletePcbDocuments({ ...pcbInventory, pcbCount: 3 }, {
+    targetProjectUuid: 'target-project',
+  }), /inventory readback was incomplete/);
+  assert.throws(() => pageMutationServer.validateCompletePcbDocuments(pcbInventory, {
+    targetProjectUuid: 'another-project',
+  }), /another project/);
+  assert.throws(() => pageMutationServer.validateCompletePcbDocuments(pcbInventory, {
+    targetProjectUuid: 'target-project', targetPcbUuid: 'missing-pcb',
+  }), /Target PCB is absent/);
   assert.equal(pageMutationServer.validateCompleteSchematicPages({
     apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo', schematicPages: [], pageCount: 0,
   }, { targetSchematicUuid: 'empty-schematic', targetSchematicMayBeEmpty: true }), 0);

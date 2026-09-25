@@ -24,6 +24,7 @@ PCB `autoRouting` 指定网络时使用 `RoutingNets:["网络名"]`；返回值�
 - `schematic_read`：读取当前原理图页的电路语义和页 UUID；核对图页与文档身份、器件列表和当前图元 ID 列表，未同步时返回 `PAGE_NOT_READY`。复制页可以合法共享图元 ID。
 - `schematic_component_edit`：完整读取当前原理图页的普通器件状态，或按图元 ID 修改位置、旋转、镜像、位号与 BOM 属性及删除器件。修改会保留未指定的 BOM 扩展属性；改变几何状态时还会比较写入前后各引脚的网络，误接会报告 `pin_network_changed`。提交状态不明时，需在原图页完整读回普通器件及语义网络后再决定如何修正。
 - `schematic_pages_manage`：在 `confirm: true` 时创建、复制、重命名或完整重排原理图页面。重排必须提供每个当前页面 UUID，Bridge 会重新读取并验证结果；不提供删除功能。
+- `pcb_documents_manage`：按当前工程 UUID 完整列出 PCB，或在 `confirm:true` 时创建游离/指定板子的 PCB、复制或重命名已有 PCB。写后核对工程和 PCB UUID；重命名要求目标 PCB 已打开，工具不会切换图页。未知提交须完整回读工程 PCB 目录。
 - `pcb_drc_check`：读取 PCB 设计规则检查结果。
 - `pcb_net_query`：按条件和数量限制查询当前 PCB 网络；精确网络图元过滤接受官方 `EPCB_PrimitiveType` 名称，由 Bridge 对 EDA 返回的图元筛选。
 - `pcb_read`：一次读取当前 PCB 页选定的语义部分；默认包含器件与网络，可选焊盘、布线、覆铜、板框、区域和文本，`sections:["all"]` 读取全部。所选部分返回不截断的图元数组，并在读取前后核对 PCB UUID。

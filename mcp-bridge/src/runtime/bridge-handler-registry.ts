@@ -33,6 +33,7 @@ import { handlePcbConnectivityTask } from '../mcp/pcb-connectivity-handler.ts';
 import { handlePcbConstraintsQueryTask } from '../mcp/pcb-constraints-handler.ts';
 import { handlePcbConstraintsManageTask } from '../mcp/pcb-constraints-manage-handler.ts';
 import { handlePcbDocumentTask } from '../mcp/pcb-document-handler.ts';
+import { handlePcbDocumentsManageTask } from '../mcp/pcb-documents-manage-handler.ts';
 import { handlePcbDrcCheckTask } from '../mcp/pcb-drc-handler.ts';
 import { handlePcbLayerQueryTask } from '../mcp/pcb-layer-handler.ts';
 import { handlePcbPourManageTask } from '../mcp/pcb-pour-manage-handler.ts';
@@ -75,6 +76,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/netlabel/place': handleNetLabelPlaceTask,
 	'/bridge/jlceda/pcb/drc-check': handlePcbDrcCheckTask,
 	'/bridge/jlceda/pcb/document': handlePcbDocumentTask,
+	'/bridge/jlceda/pcb/documents-manage': handlePcbDocumentsManageTask,
 	'/bridge/jlceda/pcb/import-resolve': handlePcbImportResolveTask,
 	'/bridge/jlceda/schematic/drc-check': handleSchematicDrcCheckTask,
 	'/bridge/jlceda/schematic/document': handleSchematicDocumentTask,
