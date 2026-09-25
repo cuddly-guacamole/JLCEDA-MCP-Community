@@ -241,6 +241,16 @@
 			}
 		},
 		{
+			"toolName": "schematic_wire_manage",
+			"path": "/bridge/jlceda/schematic/wire-manage",
+			"owner": "bridge",
+			"timeoutPolicy": "default",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "schematic_layout_check",
 			"path": "/bridge/jlceda/schematic/layout-check",
 			"owner": "bridge",

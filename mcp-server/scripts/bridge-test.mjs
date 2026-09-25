@@ -1559,7 +1559,7 @@ try {
   unverifiedWriteServer.close();
   unverifiedWriteServer = undefined;
 
-  for (const [action, nativeCallSettled] of [['wire_create', true], ['netport_create', true], ['netport_move', true], ['wire_create', false], ['netlabel_place', false]]) {
+  for (const [action, nativeCallSettled] of [['wire_create', true], ['netport_create', true], ['netport_move', true], ['wire_create', false], ['netlabel_place', false], ['modify', true], ['delete', false]]) {
     const connectivityRecoveryPort = await reservePort();
     const connectivityRecoveryServer = new EdaBridgeServer(connectivityRecoveryPort);
     let oldClient;
@@ -1584,9 +1584,13 @@ try {
           result: { ok: false, action, commitUnknown: true, nativeCallSettled },
         }));
       });
-      const writePath = action === 'netlabel_place' ? '/bridge/jlceda/netlabel/place' : '/bridge/jlceda/schematic/connectivity';
+      const writePath = action === 'netlabel_place' ? '/bridge/jlceda/netlabel/place'
+        : action === 'modify' || action === 'delete' ? '/bridge/jlceda/schematic/wire-manage'
+        : '/bridge/jlceda/schematic/connectivity';
       const writePayload = action === 'netlabel_place'
         ? { placements: [{ componentId: 'component-1', pinIdentifier: '1', netName: 'SIG' }] }
+        : action === 'modify' ? { action, primitiveId: 'wire-1', property: { color: '#00AA00' } }
+        : action === 'delete' ? { action, primitiveId: 'wire-1' }
         : action === 'wire_create'
         ? { action, line: [0, 0, 10, 0] }
         : action === 'netport_create'

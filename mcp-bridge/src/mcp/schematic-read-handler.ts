@@ -57,6 +57,12 @@ async function assertCurrentComponentIds(components: unknown[]): Promise<string[
 	return ids;
 }
 
+async function readCurrentComponentIdsOnly(): Promise<{ ok: true; componentIds: string[]; data?: string } | { ok: false; error: string }> {
+	const components = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAll(undefined, false)));
+	if (!Array.isArray(components))
+		return { ok: false, error: '器件列表获取失败，sch_PrimitiveComponent.getAll 未返回数组。' };
+	return { ok: true, componentIds: await assertCurrentComponentIds(components) };
+}
 function requiredState<T>(primitive: unknown, getter: string): T {
 	const method = primitive && typeof primitive === 'object' ? (primitive as Record<string, unknown>)[getter] : undefined;
 	if (typeof method !== 'function')
@@ -484,9 +490,12 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string; compone
 export async function handleSchematicReadTask(payload: unknown): Promise<unknown> {
 	const includeConnectivityPrimitives = payload && typeof payload === 'object' && 'includeConnectivityPrimitives' in payload
 		&& (payload as { includeConnectivityPrimitives?: unknown }).includeConnectivityPrimitives === true;
+	// Internal wire management needs page and primitive identity without running a full netlist and DRC scan.
+	const connectivityOnly = includeConnectivityPrimitives && payload && typeof payload === 'object' && 'internalConnectivityOnly' in payload
+		&& (payload as { internalConnectivityOnly?: unknown }).internalConnectivityOnly === true;
 	try {
 		const context = await readPageContext();
-		const result = await readSchematicCircuit();
+		const result = connectivityOnly ? await readCurrentComponentIdsOnly() : await readSchematicCircuit();
 		if (!result.ok)
 			return { ok: false, error: result.error };
 		const connectivityPrimitives = includeConnectivityPrimitives
@@ -503,7 +512,7 @@ export async function handleSchematicReadTask(payload: unknown): Promise<unknown
 		return {
 			ok: true,
 			pageUuid: context.pageUuid,
-			schematicCircuitSnapshot: result.data,
+			...(result.data === undefined ? {} : { schematicCircuitSnapshot: result.data }),
 			// A JSON string preserves every item through Bridge serialization, which otherwise caps arrays at 120.
 			...(connectivityPrimitives ? { connectivityPrimitivesSnapshot: JSON.stringify(connectivityPrimitives) } : {}),
 		};

@@ -233,6 +233,36 @@
     }
   },
   {
+    "name": "schematic_wire_manage",
+    "description": "读取当前原理图页全部导线及样式，或按图元 ID 修改、删除单条导线。修改几何前预览现有网络接触，需明确允许接触的其他导线 ID；修改网络仅限未接触其他导线或显式网络标识的单条导线。写后核对当前页，结果不明时用 schematic_read includeConnectivityPrimitives=true 完整回读。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["read", "modify", "delete"] },
+        "primitiveId": { "type": "string", "minLength": 1, "description": "read 时可选，modify/delete 时必填；须为当前图页导线 ID。" },
+        "property": {
+          "type": "object", "minProperties": 1,
+          "properties": {
+            "line": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 512, "description": "平铺的正交导线坐标 [x1,y1,x2,y2,...]。" },
+            "net": { "type": "string", "description": "新网络名；空字符串清除网络名。仅允许修改未接触其他导线、NetPort、NetFlag 或 NET 属性的导线。" },
+            "color": { "type": ["string", "null"] },
+            "lineWidth": { "type": ["number", "null"], "minimum": 1, "maximum": 10 },
+            "lineType": { "type": ["integer", "null"], "minimum": 0, "maximum": 3, "description": "0=实线，1=虚线，2=点线，3=点划线；null 使用默认。" }
+          },
+          "additionalProperties": false
+        },
+        "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "修改导线几何时明确允许触碰的其他导线 ID；目标 ID 自动允许。" }
+      },
+      "required": ["action"],
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "read" }, "primitiveId": { "type": "string", "minLength": 1 } }, "required": ["action"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "primitiveId": { "type": "string", "minLength": 1 }, "property": { "type": "object", "minProperties": 1 }, "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true } }, "required": ["action", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "delete" }, "primitiveId": { "type": "string", "minLength": 1 } }, "required": ["action", "primitiveId"], "additionalProperties": false }
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "schematic_layout_check",
     "description": "检查当前原理图的符号、引脚、属性文本、网络标签和导线的保守几何重叠，报告碰撞、越界和密集区域。文本属性几何不可用时会显式返回能力状态；mode=fix 必须同时提供 confirm=true，且只移动属性文本。",
     "inputSchema": {
