@@ -30,6 +30,8 @@ PCB `autoRouting` 指定网络时使用 `RoutingNets:["网络名"]`；Bridge 在
 
 `pcb_connectivity_action` 提供 `line_create` 与 `via_create`。调用前用 `pcb_net_query` 核对网络名，并用 `pcb_layer_query` 选择启用且未锁定的铜层（SIGNAL 或 PLANE）；独立 PCB 需要创建新网络时显式传 `allowNewNet:true`。坐标和尺寸使用当前 PCB 数据单位，导线宽度、过孔孔径与外径都必须给正值。原生创建返回后会回读图元；若结果未确认，Server 隔离后续写入，并要求新 Bridge 客户端对同一 PCB 完整回读直线、圆弧、折线、过孔和网络。诊断的 `hostRestartRequired:true` 表示原生调用可能尚未结束，恢复前还必须重启原 EDA 宿主并传 `hostRestartConfirmed:true`；若原生调用已结束、只是回读失败，则不要求宿主重启。回读参数与上方自动布线相同。
 
+`pcb_net_query` 的 `mode:"exact"` 可通过 `analysis.primitiveTypes` 按官方图元类型名称筛选。Bridge 在 EDA 内无筛选读取网络图元后执行类型匹配，规避 EDA 3.2.181 的原生筛选返回空数组。
+
 Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Server 会将该结果纳入同一受控恢复诊断流程，不要求必须等 Server 自身的备用计时器触发。
 
 `schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生调用超时以及写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。诊断包含 `hostRestartRequired:true` 时先重启原宿主并传 `hostRestartConfirmed:true`；读回失败继续隔离，只查 `/context` 不会解除。

@@ -1,4 +1,4 @@
-import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSerializableAsync } from '../utils.ts';
+import { getEdaRuntime, getSyncState, isPlainObjectRecord, preserveBoundedArray, toSerializableAsync } from '../utils.ts';
 
 type NetQueryMode = 'all' | 'names' | 'exact';
 interface PcbNetAnalysis {
@@ -28,6 +28,7 @@ const PCB_PRIMITIVE_TYPE_VALUES: Record<string, string> = {
 };
 
 const PCB_PRIMITIVE_TYPES = new Set(Object.keys(PCB_PRIMITIVE_TYPE_VALUES));
+const PCB_PRIMITIVE_TYPE_BY_VALUE = new Map(Object.entries(PCB_PRIMITIVE_TYPE_VALUES).map(([type, value]) => [value, type]));
 
 async function serializeBoundedNetArray(values: unknown[]): Promise<unknown[]> {
 	return preserveBoundedArray(await Promise.all(values.map(value => toSerializableAsync(value))));
@@ -58,8 +59,26 @@ function normalizePcbNetAnalysis(input: Record<string, unknown>, mode: NetQueryM
 	return output;
 }
 
-function toEdaPrimitiveTypes(primitiveTypes: string[] | undefined): string[] | undefined {
-	return primitiveTypes?.map(type => PCB_PRIMITIVE_TYPE_VALUES[type]);
+function getPcbPrimitiveType(value: unknown): string | undefined {
+	const stateType = getSyncState(value, 'getState_PrimitiveType', undefined);
+	if (typeof stateType === 'string' && PCB_PRIMITIVE_TYPE_BY_VALUE.has(stateType))
+		return PCB_PRIMITIVE_TYPE_BY_VALUE.get(stateType);
+	if (!isPlainObjectRecord(value))
+		return undefined;
+	const itemType = value.pcbItemPrimitiveType;
+	if (itemType === 'Pad') {
+		const parentId = value.parentId ?? value.parentComponentPrimitiveId;
+		return typeof parentId === 'string' && parentId.length > 0 ? 'COMPONENT_PAD' : 'PAD';
+	}
+	if (itemType === 'Track') {
+		if ('arcAngle' in value || 'radius' in value)
+			return 'ARC';
+		if ('polygon' in value || 'polygonSource' in value)
+			return 'POLYLINE';
+		return 'LINE';
+	}
+	const type = typeof itemType === 'string' ? itemType : value.primitiveType;
+	return typeof type === 'string' ? PCB_PRIMITIVE_TYPE_BY_VALUE.get(type) : undefined;
 }
 
 export async function handlePcbNetQueryTask(payload: unknown): Promise<unknown> {
@@ -121,8 +140,13 @@ export async function handlePcbNetQueryTask(payload: unknown): Promise<unknown> 
 			if (analysis.primitives) {
 				if (typeof rawApi.getAllPrimitivesByNet !== 'function')
 					throw new TypeError('EDA pcb_Net.getAllPrimitivesByNet API is unavailable in this client version.');
-				const rawPrimitives = await (rawApi.getAllPrimitivesByNet as (name: string, types?: string[]) => Promise<unknown>).call(api, queryText, toEdaPrimitiveTypes(analysis.primitiveTypes));
-				const primitives = Array.isArray(rawPrimitives) ? rawPrimitives : [];
+				// EDA 3.2.181 returns no items when its optional primitiveTypes argument is supplied.
+				const rawPrimitives = await (rawApi.getAllPrimitivesByNet as (name: string) => Promise<unknown>).call(api, queryText);
+				let primitives = Array.isArray(rawPrimitives) ? rawPrimitives : [];
+				if (analysis.primitiveTypes) {
+					const requestedTypes = new Set(analysis.primitiveTypes);
+					primitives = primitives.filter(value => requestedTypes.has(getPcbPrimitiveType(value) ?? ''));
+				}
 				result.primitiveCount = primitives.length;
 				result.primitives = await toSerializableAsync(primitives.slice(0, 120));
 				result.primitivesTruncated = primitives.length > 120;
