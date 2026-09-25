@@ -1986,8 +1986,11 @@ export class EdaBridgeServer {
       || Number(value.copperLayerCount) > 32 || Number(value.copperLayerCount) % 2 !== 0
       || !Array.isArray(value.layers) || !Number.isSafeInteger(value.layerCount)
       || value.layerCount !== value.layers.length || value.layers.length === 0
-      || value.layers.some(layer => !isRecord(layer) || !Number.isInteger(layer.id) || typeof layer.type !== 'string')
-      || new Set(value.layers.map(layer => layer.id)).size !== value.layers.length) {
+      || value.layers.some(layer => !isRecord(layer) || !Number.isInteger(layer.id) || typeof layer.type !== 'string'
+        || ![0, 1, 2].includes(layer.layerStatus as number))
+      || new Set(value.layers.map(layer => layer.id)).size !== value.layers.length
+      || value.layers.filter(layer => (layer.type === 'SIGNAL' || layer.type === 'PLANE')
+        && (layer.layerStatus === 1 || layer.layerStatus === 2)).length !== value.copperLayerCount) {
       throw new Error('PCB copper-layer state readback was incomplete or from another page; writes remain blocked.');
     }
     return Number(value.copperLayerCount);

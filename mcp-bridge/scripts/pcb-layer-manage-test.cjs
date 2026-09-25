@@ -14,6 +14,8 @@ let setCalls = 0;
 let setMode = 'success';
 let readbackFails = false;
 let extraLayerCount = 0;
+let reportedCopperLayerCount;
+let omitLayerStatus = false;
 
 globalThis.eda = {
 	dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: page }; } },
@@ -24,8 +26,13 @@ globalThis.eda = {
 			return copperLayerCount;
 		},
 		async getAllLayers() {
-			const count = copperLayerCount;
-			return Array.from({ length: count + extraLayerCount }, (_item, index) => ({ id: index < 2 ? index + 1 : index + 13, type: 'SIGNAL', name: `Layer ${index + 1}` }));
+			const count = reportedCopperLayerCount ?? copperLayerCount;
+			return Array.from({ length: count + extraLayerCount }, (_item, index) => ({
+				id: index < 2 ? index + 1 : index + 13,
+				type: index < count ? (index === 2 ? 'PLANE' : 'SIGNAL') : index === count ? 'SIGNAL' : 'CUSTOM',
+				...(!omitLayerStatus && { layerStatus: index === count && extraLayerCount > 0 ? 0 : index === 2 ? 2 : 1 }),
+				name: `Layer ${index + 1}`,
+			}));
 		},
 		async setTheNumberOfCopperLayers(count) {
 			setCalls += 1;
@@ -33,7 +40,10 @@ globalThis.eda = {
 				throw new Error('RPC Call setTheNumberOfCopperLayers Timed Out');
 			if (setMode === 'reject')
 				return false;
+			const previousCount = copperLayerCount;
 			copperLayerCount = count;
+			if (setMode === 'stale-layers')
+				reportedCopperLayerCount = previousCount;
 			if (setMode === 'readback-fails')
 				readbackFails = true;
 			if (setMode === 'switch-page')
@@ -63,6 +73,8 @@ async function main() {
 	assert.equal(set.previousCopperLayerCount, 2);
 	assert.equal(set.copperLayerCount, 4);
 	assert.equal(set.layerCount, 4);
+	assert.equal(set.layers[2].type, 'PLANE');
+	assert.equal(set.layers[2].layerStatus, 2);
 	assert.equal(setCalls, 1);
 	setMode = 'reject';
 	const rejected = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 2 });
@@ -86,6 +98,16 @@ async function main() {
 	assert.equal(changedPage.commitUnknown, true);
 	assert.equal(changedPage.nativeCallSettled, true);
 	page = 'pcb-layer-page';
+	setMode = 'stale-layers';
+	const staleLayerList = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 10 });
+	assert.equal(staleLayerList.commitUnknown, true);
+	assert.equal(staleLayerList.nativeCallSettled, true);
+	assert.match(staleLayerList.error, /disagrees with the enabled/);
+	await assert.rejects(() => handlePcbLayerManageTask({ action: 'read' }), /disagrees with the enabled/);
+	reportedCopperLayerCount = undefined;
+	omitLayerStatus = true;
+	await assert.rejects(() => handlePcbLayerManageTask({ action: 'read' }), /readback is incomplete/);
+	omitLayerStatus = false;
 	const calls = setCalls;
 	for (const invalid of [1, 3, 34, 4.5])
 		await assert.rejects(() => handlePcbLayerManageTask({ action: 'set', copperLayerCount: invalid }), /even integer/);

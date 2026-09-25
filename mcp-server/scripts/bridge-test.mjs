@@ -2560,10 +2560,11 @@ try {
     await waitUntil(async () => (await layerServer.request('/bridge/admin/clients', {}, 2000)).clients
       .find(client => client.clientId === 'layer-old')?.ready === false);
     freshLayerClient = await registerEda(layerUrl, 'layer-fresh', pageContext);
-    const layers = [{ id: 1, type: 'SIGNAL' }, { id: 2, type: 'SIGNAL' },
-      { id: 15, type: 'SIGNAL' }, { id: 16, type: 'SIGNAL' }];
+    const layers = [{ id: 1, type: 'SIGNAL', layerStatus: 1 }, { id: 2, type: 'SIGNAL', layerStatus: 1 },
+      { id: 15, type: 'PLANE', layerStatus: 2 }, { id: 16, type: 'SIGNAL', layerStatus: 1 },
+      { id: 17, type: 'SIGNAL', layerStatus: 0 }];
     const snapshot = { ok: true, action: 'read', scope: 'current_pcb_page', complete: true,
-      pageUuid: 'layer-page', copperLayerCount: 4, layerCount: 4, layers };
+      pageUuid: 'layer-page', copperLayerCount: 4, layerCount: 5, layers };
     let readback = snapshot;
     attachTaskResponder(freshLayerClient.socket, 'layer-fresh', message => {
       if (message.path === '/bridge/jlceda/context')
@@ -2580,6 +2581,10 @@ try {
       ...recoveryReadback, readbackPayload: { action: 'set', copperLayerCount: 4 },
     }, 2000), /read-only operation/);
     readback = { ...snapshot, layerCount: 2 };
+    await assert.rejects(layerServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /copper-layer state readback was incomplete/);
+    readback = { ...snapshot, layers: [{ ...layers[0], layerStatus: 0 }, ...layers.slice(1)] };
+    await assert.rejects(layerServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /copper-layer state readback was incomplete/);
+    readback = { ...snapshot, layers: [{ id: 1, type: 'SIGNAL' }, ...layers.slice(1)] };
     await assert.rejects(layerServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /copper-layer state readback was incomplete/);
     readback = snapshot;
     const verified = await layerServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);

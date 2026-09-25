@@ -52,9 +52,15 @@ async function readLayerState(api: PcbLayerApi, pageUuid: string): Promise<Recor
 	const copperLayerCount = await api.getTheNumberOfCopperLayers();
 	const rawLayers = await api.getAllLayers();
 	if (!Number.isInteger(copperLayerCount) || !Array.isArray(rawLayers)
-		|| rawLayers.some(layer => !isPlainObjectRecord(layer) || !Number.isInteger(layer.id) || typeof layer.type !== 'string')) {
+		|| rawLayers.some(layer => !isPlainObjectRecord(layer) || !Number.isInteger(layer.id) || typeof layer.type !== 'string'
+			|| ![0, 1, 2].includes(layer.layerStatus as number))
+		|| new Set(rawLayers.map(layer => layer.id)).size !== rawLayers.length) {
 		throw new TypeError('EDA PCB copper-layer readback is incomplete.');
 	}
+	const enabledCopperLayerCount = rawLayers.filter(layer => (layer.type === 'SIGNAL' || layer.type === 'PLANE')
+		&& (layer.layerStatus === 1 || layer.layerStatus === 2)).length;
+	if (enabledCopperLayerCount !== copperLayerCount)
+		throw new Error('EDA copper-layer count disagrees with the enabled SIGNAL/PLANE layer list.');
 	const serializedLayers = await toSerializableAsync(preserveBoundedArray(rawLayers));
 	if (!Array.isArray(serializedLayers))
 		throw new TypeError('EDA PCB layer serialization is incomplete.');
