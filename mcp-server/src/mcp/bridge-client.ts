@@ -212,6 +212,8 @@ function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
 
 function isSchematicConnectivityMutation(path: string, payload: unknown): boolean {
   return path === '/bridge/jlceda/netlabel/place'
+	|| (path === '/bridge/jlceda/schematic/wire-manage'
+		&& isRecord(payload) && (payload.action === 'modify' || payload.action === 'delete'))
     || (path === '/bridge/jlceda/schematic/connectivity'
       && isRecord(payload)
       && (payload.action === 'wire_create' || payload.action === 'netport_create' || payload.action === 'netport_move'));

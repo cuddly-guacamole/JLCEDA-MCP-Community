@@ -40,6 +40,10 @@ for (const action of ['select_primitives', 'clear_selection', 'save', 'import_ch
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'check' }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'fix' }), false);
 const connectivityPath = '/bridge/jlceda/schematic/connectivity';
+const wireManagePath = '/bridge/jlceda/schematic/wire-manage';
+assert.equal(isReadOnlyBridgeRequest(wireManagePath, { action: 'read' }), true);
+for (const action of ['modify', 'delete'])
+	assert.equal(isReadOnlyBridgeRequest(wireManagePath, { action }), false);
 assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action: 'wire_preview' }), true);
 for (const action of ['wire_create', 'netport_create', 'netport_move'])
 	assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);
@@ -59,7 +63,7 @@ assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName:
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: ' EDA.SCH_PRIMITIVECOMPONENT.GETALL ', args: [null, false] }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.GETALL', args: [null, true] }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.CREATE', args: [] }), false);
-for (const path of ['/bridge/jlceda/schematic/connectivity', '/bridge/jlceda/netlabel/place', '/bridge/jlceda/component/place/start', '/bridge/jlceda/api/invoke'])
+for (const path of ['/bridge/jlceda/schematic/connectivity', '/bridge/jlceda/schematic/wire-manage', '/bridge/jlceda/netlabel/place', '/bridge/jlceda/component/place/start', '/bridge/jlceda/api/invoke'])
 	assert.equal(requiresHostRestartForResult(path, { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: false }), true);
 assert.equal(requiresHostRestartForResult('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: true }), false);
 

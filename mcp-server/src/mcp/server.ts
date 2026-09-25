@@ -51,7 +51,7 @@ function createToolInputSchema(
     return z.union([recover, readback, resolveImport]);
   }
   const schema = z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
-  if (name === 'pcb_component_edit' || name === 'schematic_component_edit' || name === 'pcb_pour_manage' || name === 'pcb_routing_edit' || name === 'pcb_board_outline_manage' || name === 'pcb_region_manage') {
+  if (name === 'pcb_component_edit' || name === 'schematic_component_edit' || name === 'schematic_wire_manage' || name === 'pcb_pour_manage' || name === 'pcb_routing_edit' || name === 'pcb_board_outline_manage' || name === 'pcb_region_manage') {
     // z.fromJSONSchema currently omits minProperties. Preserve the advertised
     // contract when the call reaches the MCP parser.
     return schema.superRefine((value, context) => {

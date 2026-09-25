@@ -137,6 +137,18 @@ async function main() {
 	const previewBesideLongWire = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [0, 100, 10, 100] });
 	assert.equal(previewBesideLongWire.canCreate, true);
 	wires.pop();
+	wires.push(wire('point-existing', 'NET_OTHER', [8000, 8000, 8000, 8000]));
+	const previewAtPoint = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [8000, 7990, 8000, 8010], net: 'NET_A' });
+	assert.equal(previewAtPoint.canCreate, true, 'point wires contribute no contact segment');
+	assert.deepEqual(previewAtPoint.touches, []);
+	const portAtPoint = await handleSchematicConnectivityTask({ action: 'netport_create', net: 'NET_A', x: 8000, y: 8000 });
+	assert.equal(portAtPoint.ok, true, 'point wires do not block unrelated NetPort creation');
+	ports.pop();
+	portCreates -= 1;
+	wires.pop();
+	wires.push(wire('malformed-existing', '', [8000, 8000, Number.NaN, 8000]));
+	await assert.rejects(handleSchematicConnectivityTask({ action: 'wire_preview', line: [8000, 7990, 8000, 8010] }), /no readable line geometry/);
+	wires.pop();
 
 	const preview = await handleSchematicConnectivityTask({ action: 'wire_preview', line: [50, -50, 50, 0], net: 'NET_A' });
 	assert.equal(preview.canCreate, false);
@@ -592,6 +604,18 @@ async function main() {
 	assert.equal(copiedPageMove.pageUuid, 'page-2');
 	assert.equal(copiedPagePort.x, 20);
 	assert.equal(oldPagePort.x, 0);
+	pageUuid = 'page-1';
+
+	// A stale component list must not be used after both page APIs report the new page.
+	const cachedPort = { id: 'cached-old-page-port', net: 'NET_A', x: 0, y: 0 };
+	ports.splice(0, ports.length, cachedPort);
+	assert.equal((await handleSchematicReadTask({})).ok, true);
+	pageUuid = 'page-2';
+	const originalGetAllPrimitiveId = componentApi.getAllPrimitiveId;
+	componentApi.getAllPrimitiveId = async () => ['new-page-port'];
+	await assert.rejects(route({ action: 'netport_move', id: cachedPort.id, x: 20, y: 0 }), /器件列表与图元 ID 列表不一致/);
+	assert.equal(cachedPort.x, 0);
+	componentApi.getAllPrimitiveId = originalGetAllPrimitiveId;
 	pageUuid = 'page-1';
 }
 

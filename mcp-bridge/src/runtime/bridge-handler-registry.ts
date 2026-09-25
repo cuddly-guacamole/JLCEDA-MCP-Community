@@ -48,6 +48,7 @@ import { handleSchematicLayoutCheckTask } from '../mcp/schematic-layout-check-ha
 import { handleSchematicPagesManageTask } from '../mcp/schematic-pages-manage-handler.ts';
 import { handleSchematicReadTask } from '../mcp/schematic-read-handler.ts';
 import { handleSchematicReviewTask } from '../mcp/schematic-review-handler.ts';
+import { handleSchematicWireManageTask } from '../mcp/schematic-wire-manage-handler.ts';
 import { handleWorkspaceQueryTask } from '../mcp/workspace-query-handler.ts';
 import { handlePcbImportResolveTask } from './pcb-import-confirm-barrier.ts';
 
@@ -101,6 +102,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/schematic/layout-check': handleSchematicLayoutCheckTask,
 	'/bridge/jlceda/schematic/connectivity': handleSchematicConnectivityTask,
 	'/bridge/jlceda/schematic/component-edit': handleSchematicComponentEditTask,
+	'/bridge/jlceda/schematic/wire-manage': handleSchematicWireManageTask,
 	'/bridge/jlceda/schematic/review': handleSchematicReviewTask,
 	'/bridge/jlceda/workspace/query': handleWorkspaceQueryTask,
 };

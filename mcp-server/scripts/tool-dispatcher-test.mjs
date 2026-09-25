@@ -114,6 +114,13 @@ assert.equal(bridgePathForTool('schematic_component_edit'), '/bridge/jlceda/sche
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'read' }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'modify' }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'delete' }), false);
+await dispatcher.dispatch({ name: 'schematic_wire_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/schematic/wire-manage');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(bridgePathForTool('schematic_wire_manage'), '/bridge/jlceda/schematic/wire-manage');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/wire-manage', { action: 'read' }), true);
+for (const action of ['modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/wire-manage', { action }), false);
 await dispatcher.dispatch({ name: 'pcb_component_edit', arguments: { action: 'read' } });
 assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/component-edit');
 assert.deepEqual(calls.at(-1).payload, { action: 'read' });
