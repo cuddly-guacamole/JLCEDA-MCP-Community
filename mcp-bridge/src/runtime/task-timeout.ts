@@ -53,6 +53,7 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 	const response = result as Record<string, unknown>;
 	if (path === '/bridge/jlceda/pcb/connectivity'
 		|| path === '/bridge/jlceda/schematic/connectivity'
+		|| path === '/bridge/jlceda/schematic/component-edit'
 		|| path === '/bridge/jlceda/netlabel/place'
 		|| path === '/bridge/jlceda/component/place/start'
 		|| path === '/bridge/jlceda/component/place/check'

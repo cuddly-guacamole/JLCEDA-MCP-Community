@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import { formatInternalClientEndpoint } from '../dist/mcp/bridge-client.js';
 import { ToolDispatcher } from '../dist/mcp/tool-dispatcher.js';
+import { bridgePathForTool, bridgeTimeoutForTool, isReadOnlyBridgeRequest } from '../dist/mcp/bridge-contract.js';
 
 const calls = [];
 const fakeBridge = {
@@ -102,6 +103,15 @@ await dispatcher.dispatch({ name: 'component_place_auto', arguments: { component
 assert.equal(calls.at(-1).timeoutMs, 302000, 'coordinate batches need a longer Bridge execution budget');
 await dispatcher.dispatch({ name: 'netlabel_place', arguments: { placements: [{ componentId: 'one' }], timeoutMs: 420000 } });
 assert.equal(calls.at(-1).timeoutMs, 422000, 'label batches must pass the override with transport grace');
+await dispatcher.dispatch({ name: 'schematic_component_edit', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/schematic/component-edit');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('schematic_component_edit', { action: 'read' }) + 2000);
+assert.equal(calls.at(-1).timeoutMs, 27000);
+assert.equal(bridgePathForTool('schematic_component_edit'), '/bridge/jlceda/schematic/component-edit');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'read' }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'modify' }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'delete' }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -413,6 +423,28 @@ assert.equal(pcbConnectivitySchema.safeParse({ action: 'via_create', net: 'VCC',
 
 const componentSelectDefinition = definitions.find((definition) => definition.name === 'component_select');
 assert.ok(componentSelectDefinition);
+
+const schematicComponentEditDefinition = definitions.find((definition) => definition.name === 'schematic_component_edit');
+assert.ok(schematicComponentEditDefinition);
+const schematicComponentEditSchema = z.fromJSONSchema(schematicComponentEditDefinition.inputSchema);
+assert.equal(schematicComponentEditDefinition.inputSchema.$defs.componentProperty.minProperties, 1);
+for (const input of [
+  { action: 'read' },
+  { action: 'modify', primitiveId: 'r1', property: { x: 100, designator: 'R2', otherProperty: { Value: '10k', Price: 2.5, Fitted: true } } },
+  { action: 'modify', primitiveId: 'r1', property: { manufacturer: null, addIntoBom: false } },
+  { action: 'delete', primitiveId: 'r1' },
+]) {
+  assert.equal(schematicComponentEditSchema.safeParse(input).success, true, `schematic_component_edit should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'read', primitiveId: 'r1' },
+  { action: 'modify', primitiveId: 'r1', property: { net: 'VCC' } },
+  { action: 'delete', primitiveId: 'r1', property: { x: 100 } },
+  { action: 'delete', primitiveId: '' },
+  { action: 'delete' },
+]) {
+  assert.equal(schematicComponentEditSchema.safeParse(input).success, false, `schematic_component_edit should reject ${JSON.stringify(input)}`);
+}
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);
 assert.equal(componentSelectSchema.safeParse({ properties: { supplierId: 'C25804' } }).success, true);

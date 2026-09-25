@@ -99,12 +99,31 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(readbackPayloadSchemas.some((schema) => JSON.stringify(schema.default) === '{}'), 'bridge_recover_client must publish the empty readbackPayload default');
     const readbackPathSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPath');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/api/invoke')), 'bridge_recover_client must allow current-page API readback');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/schematic/component-edit')), 'bridge_recover_client must publish schematic component state readback');
     const expectedPageSchemas = findPropertySchemas(recoverTool.inputSchema, 'expectedPageUuid');
     assert.ok(expectedPageSchemas.some((schema) => schema.type === 'string'), 'bridge_recover_client must publish the optional page UUID');
     const actionSchemas = findPropertySchemas(recoverTool.inputSchema, 'action');
     assert.ok(actionSchemas.some((schema) => schema.const === 'resolve_import'), 'bridge_recover_client must advertise explicit PCB import resolution');
     const resolutionSchemas = findPropertySchemas(recoverTool.inputSchema, 'resolution');
     assert.ok(resolutionSchemas.some((schema) => schema.enum?.includes('applied') && schema.enum?.includes('cancelled')), 'bridge_recover_client must advertise both native dialog outcomes');
+
+    // Exercise the registered MCP parser, not just the repository JSON Schema.
+    // With no active recovery session, the accepted input must reach the Bridge
+    // recovery handler and return its normal missing-session error.
+    const callLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 3, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'bridge_recover_client',
+        arguments: { action: 'readback', confirm: true, recoveryId: 'smoke-recovery', clientId: 'smoke-client',
+          readbackPath: '/bridge/jlceda/schematic/component-edit', readbackPayload: { action: 'read' } },
+      },
+    }) + '\n');
+    const [callLine] = await Promise.race([callLinePromise, lineTimeout]);
+    const callResponse = JSON.parse(callLine);
+    assert.equal(callResponse.id, 3);
+    assert.match(JSON.stringify(callResponse), /No Bridge recovery is awaiting readback/);
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {

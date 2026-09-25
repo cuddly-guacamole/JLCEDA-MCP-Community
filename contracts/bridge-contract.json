@@ -231,6 +231,16 @@
 			"readOnly": true
 		},
 		{
+			"toolName": "schematic_component_edit",
+			"path": "/bridge/jlceda/schematic/component-edit",
+			"owner": "bridge",
+			"timeoutPolicy": "default",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "schematic_layout_check",
 			"path": "/bridge/jlceda/schematic/layout-check",
 			"owner": "bridge",
