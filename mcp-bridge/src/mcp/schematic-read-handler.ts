@@ -12,6 +12,51 @@
 
 import { getSyncState, safeCall } from '../utils';
 
+class PageNotReadyError extends Error {}
+
+interface PageContext {
+	pageUuid: string;
+	documentUuid: string;
+}
+
+async function readPageContext(): Promise<PageContext> {
+	try {
+		const [page, document] = await Promise.all([
+			eda.dmt_Schematic.getCurrentSchematicPageInfo(),
+			eda.dmt_SelectControl.getCurrentDocumentInfo(),
+		]);
+		const pageUuid = typeof page?.uuid === 'string' ? page.uuid.trim() : '';
+		const documentUuid = typeof document?.uuid === 'string' ? document.uuid.trim() : '';
+		if (!pageUuid || !documentUuid || pageUuid !== documentUuid)
+			throw new PageNotReadyError('当前原理图图页与编辑器文档尚未同步，请稍后重试。');
+		return { pageUuid, documentUuid };
+	}
+	catch (error: unknown) {
+		if (error instanceof PageNotReadyError)
+			throw error;
+		throw new PageNotReadyError('无法确认当前原理图图页与编辑器文档，请稍后重试。');
+	}
+}
+
+async function assertSamePageContext(expected: PageContext): Promise<void> {
+	const current = await readPageContext();
+	if (current.pageUuid !== expected.pageUuid || current.documentUuid !== expected.documentUuid)
+		throw new PageNotReadyError('读取期间原理图图页已切换，请重试。');
+}
+
+async function assertCurrentComponentIds(components: unknown[]): Promise<string[]> {
+	const ids = components.map(component => getSyncState<string>(component, 'getState_PrimitiveId', ''));
+	const currentIds = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAllPrimitiveId(undefined, false)));
+	if (!Array.isArray(currentIds) || currentIds.some(id => typeof id !== 'string' || !id))
+		throw new PageNotReadyError('无法确认当前原理图图元 ID 列表，图页可能尚未加载完成，请重试。');
+	const currentIdSet = new Set(currentIds);
+	if (ids.some(id => !id) || new Set(ids).size !== ids.length || currentIdSet.size !== currentIds.length
+		|| ids.length !== currentIds.length || ids.some(id => !currentIdSet.has(id))) {
+		throw new PageNotReadyError('当前原理图器件列表与图元 ID 列表不一致，图页可能尚未加载完成，请重试。');
+	}
+	return ids;
+}
+
 function requiredState<T>(primitive: unknown, getter: string): T {
 	const method = primitive && typeof primitive === 'object' ? (primitive as Record<string, unknown>)[getter] : undefined;
 	if (typeof method !== 'function')
@@ -48,13 +93,6 @@ interface ConnectivityPrimitiveSnapshot {
 	netFlags: Array<{ primitiveId: string; net: string; x: number; y: number }>;
 	netLabelCount: number;
 	netLabels: Array<{ primitiveId: string; parentWireId: string; net: string; x: number | null; y: number | null }>;
-}
-
-async function readCurrentPageUuid(): Promise<string> {
-	const page = await eda.dmt_Schematic.getCurrentSchematicPageInfo();
-	if (!page || typeof page.uuid !== 'string' || !page.uuid.trim())
-		throw new Error('原理图连接图元回读无法确认当前图页。');
-	return page.uuid.trim();
 }
 
 async function readConnectivityPrimitives(pageUuid: string): Promise<ConnectivityPrimitiveSnapshot> {
@@ -230,12 +268,13 @@ function propagateNetworkNamesViaBFS(
 }
 
 // 扫描原理图并输出电路语义 JSON 字符串。
-async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok: false; error: string }> {
+async function readSchematicCircuit(): Promise<{ ok: true; data: string; componentIds: string[] } | { ok: false; error: string }> {
 	// ── 第一步：仅获取当前图页的器件实例 ──────────────────────────────────
 	const componentListRaw = await safeCall<unknown>(() => Promise.resolve(eda.sch_PrimitiveComponent.getAll(undefined, false)));
 	if (!Array.isArray(componentListRaw)) {
 		return { ok: false, error: '器件列表获取失败，sch_PrimitiveComponent.getAll 未返回数组。' };
 	}
+	const componentIds = await assertCurrentComponentIds(componentListRaw);
 	const pinsByComponentId = new Map<string, unknown[]>();
 	const connectionPoints: Array<{ x: number; y: number }> = [];
 	for (const rawComponent of componentListRaw) {
@@ -263,7 +302,6 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 			});
 		}
 	}
-
 	// ── 第二步：构建坐标→网络名映射（BFS 沿导线传播） ──────────────────────
 	// 种子来源 1：网络标志器件坐标（VCC/GND 等），net name = getState_Net()。
 	// 种子来源 2：导线自身携带网络名（非电源网络，如 NET1/NET2 等自动命名网络）。
@@ -426,6 +464,7 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 
 	return {
 		ok: true,
+		componentIds,
 		data: JSON.stringify({
 			drcCheckPassed,
 			componentCount: components.length,
@@ -444,38 +483,35 @@ async function readSchematicCircuit(): Promise<{ ok: true; data: string } | { ok
 export async function handleSchematicReadTask(payload: unknown): Promise<unknown> {
 	const includeConnectivityPrimitives = payload && typeof payload === 'object' && 'includeConnectivityPrimitives' in payload
 		&& (payload as { includeConnectivityPrimitives?: unknown }).includeConnectivityPrimitives === true;
-	let pageUuid: string | undefined;
-	if (includeConnectivityPrimitives) {
-		try {
-			pageUuid = await readCurrentPageUuid();
+	try {
+		const context = await readPageContext();
+		const result = await readSchematicCircuit();
+		if (!result.ok)
+			return { ok: false, error: result.error };
+		const connectivityPrimitives = includeConnectivityPrimitives
+			? await readConnectivityPrimitives(context.pageUuid)
+			: undefined;
+		if (connectivityPrimitives) {
+			const componentIds = new Set(result.componentIds);
+			if ([...connectivityPrimitives.netPorts, ...connectivityPrimitives.netFlags]
+				.some(primitive => !componentIds.has(primitive.primitiveId))) {
+				throw new PageNotReadyError('当前图页连接图元与器件列表不一致，请等待图页加载完成后重试。');
+			}
 		}
-		catch (error: unknown) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
-		}
+		await assertSamePageContext(context);
+		return {
+			ok: true,
+			pageUuid: context.pageUuid,
+			schematicCircuitSnapshot: result.data,
+			// A JSON string preserves every item through Bridge serialization, which otherwise caps arrays at 120.
+			...(connectivityPrimitives ? { connectivityPrimitivesSnapshot: JSON.stringify(connectivityPrimitives) } : {}),
+		};
 	}
-	const result = await readSchematicCircuit();
-	if (!result.ok) {
-		return { ok: false, error: result.error };
+	catch (error: unknown) {
+		return {
+			ok: false,
+			...(error instanceof PageNotReadyError ? { errorCode: 'PAGE_NOT_READY', reason: 'page_not_ready' } : {}),
+			error: error instanceof Error ? error.message : String(error),
+		};
 	}
-	if (includeConnectivityPrimitives && pageUuid) {
-		try {
-			const connectivityPrimitives = await readConnectivityPrimitives(pageUuid);
-			if (await readCurrentPageUuid() !== pageUuid)
-				throw new Error('原理图连接图元回读时图页已切换。');
-			return {
-				ok: true,
-				schematicCircuitSnapshot: result.data,
-				// A JSON string preserves every item through Bridge serialization, which otherwise caps arrays at 120.
-				connectivityPrimitivesSnapshot: JSON.stringify(connectivityPrimitives),
-			};
-		}
-		catch (error: unknown) {
-			return { ok: false, error: error instanceof Error ? error.message : String(error) };
-		}
-	}
-
-	return {
-		ok: true,
-		schematicCircuitSnapshot: result.data,
-	};
 }

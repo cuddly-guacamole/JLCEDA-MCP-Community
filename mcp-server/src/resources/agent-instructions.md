@@ -23,7 +23,7 @@
 - `pcb_connectivity_action` 创建直线或过孔的提交状态不明时，使用无参数 `eda.pcb_PrimitiveLine.getAll` 作为恢复回读入口；Server 会继续读回全部直线、圆弧、折线、过孔的网络与几何及网络长度。若诊断包含 `hostRestartRequired:true`，先重启原 EDA 宿主并在读回时传 `hostRestartConfirmed:true`；原生创建已经结束而图元回读失败时，只需原客户端断开、恢复会话后的新客户端和完整同板回读。
 - 交互放置的 `component/place/start` 或 `component/place/check` 若返回 `commitUnknown:true`，恢复回读须用 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 和 `args:[null,false]`；Server 会自动请求不截断的 `schematicComponentIds`、位号及 BOM 属性，并核对执行时图页及回读前后的图页身份。查看候选 `primitiveIds` 在完整列表中是否仍存在后再决定是否清理或重试；诊断要求重启时先退出放置模式并重启原宿主。
 - 可写 `api_invoke` 遇到原生 RPC 超时或断线时会保留未确认写入诊断。诊断要求重启时，先重启原宿主，再用全新 Bridge 核对目标文档和受影响图元；只读调用的失败不进入写入恢复。
-- `schematic_read`：在器件选型（`component_select`）或器件放置（`component_place`）需要当前页辅助上下文时调用；上述三种连接写入的受控恢复是另一项明确用途。仅覆盖当前激活页面。普通原理图检查、审查、功能分析、连线核查等场景应使用 `schematic_review`。
+- `schematic_read`：在器件选型（`component_select`）或器件放置（`component_place`）需要当前页辅助上下文时调用；上述三种连接写入的受控恢复是另一项明确用途。仅覆盖当前激活页面；返回 `PAGE_NOT_READY` 时等待图页加载并重试，不要使用旧页数据推断当前页。普通原理图检查、审查、功能分析、连线核查等场景应使用 `schematic_review`。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`components` 为器件列表，每个器件含 `componentDesignator`（位号）、`componentSymbolName`（符号名）、`pins`（引脚列表，每个引脚含 `pinNumber`、`pinSignalName`、`pinElectricalType`、`connectedNetworkName`（引脚所连网络名，空字符串表示工具未能识别到连接——可能是引脚真正悬空，也可能是该引脚位于复用块（Reuse Block）内部、复用块内部导线对 API 不可见所致；若 `drcCheckPassed` 为 `true`，则空值大概率属于工具限制而非真实错误，应提示用户自行在原理图中核实）、`hasNoConnectMark`）；`networks` 为网络列表，每个网络含 `networkName` 和 `connectedPinRefs`（连接该网络的所有引脚引用，格式为位号.引脚号）。
 - `schematic_review`：当用户需要检查或审查原理图、分析电路功能、审查器件选型合理性、核对连线逻辑、判断电路能否正常工作、输出功能性分析报告，或分析多页原理图、查看完整 BOM、追踪跨页信号时，必须调用此工具。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`netlistText` 为全工程网表文件原始文本，包含所有原理图页面的器件与网络连接关系。
