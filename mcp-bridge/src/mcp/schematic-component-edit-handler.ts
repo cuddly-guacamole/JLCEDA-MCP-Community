@@ -292,7 +292,8 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 	if (action === 'modify') {
 		const fullOtherProperty = { ...before.otherProperty, ...(property!.otherProperty as Property | undefined) };
 		const update = { ...property!, otherProperty: fullOtherProperty };
-		const changesGeometry = ['x', 'y', 'rotation', 'mirror'].some(field => Object.hasOwn(property!, field));
+		const changesGeometry = ['x', 'y', 'rotation', 'mirror'].some(field => Object.hasOwn(property!, field)
+			&& property![field] !== before[field as keyof ComponentState]);
 		const beforePinNetworks = changesGeometry ? await readPinNetworks(primitiveId!, pageUuid) : undefined;
 		await assertSamePage(runtime, pageUuid);
 		try {

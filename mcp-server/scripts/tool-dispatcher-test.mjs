@@ -107,7 +107,9 @@ await dispatcher.dispatch({ name: 'schematic_component_edit', arguments: { actio
 assert.equal(calls.at(-1).path, '/bridge/jlceda/schematic/component-edit');
 assert.deepEqual(calls.at(-1).payload, { action: 'read' });
 assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('schematic_component_edit', { action: 'read' }) + 2000);
-assert.equal(calls.at(-1).timeoutMs, 27000);
+assert.equal(calls.at(-1).timeoutMs, 32000);
+await dispatcher.dispatch({ name: 'schematic_component_edit', arguments: { action: 'modify', primitiveId: 'r1', property: { x: 10 }, timeoutMs: 90000 } });
+assert.equal(calls.at(-1).timeoutMs, 92000, 'large schematic moves may extend the semantic readback budget');
 assert.equal(bridgePathForTool('schematic_component_edit'), '/bridge/jlceda/schematic/component-edit');
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'read' }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'modify' }), false);
