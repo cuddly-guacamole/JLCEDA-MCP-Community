@@ -9,7 +9,9 @@
  * ------------------------------------------------------------------------
  */
 
+import type { DesignatorChange } from './component-designator-restore';
 import { getEdaRuntime, getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
+import { readSchematicDesignators, restoreChangedSchematicDesignators } from './component-designator-restore';
 
 interface ComponentPlaceItem {
 	uuid: string;
@@ -33,6 +35,7 @@ interface PlaceComponentApi {
 	getAllPrimitiveId: (componentType?: unknown, allSchematicPages?: boolean) => Promise<string[]>;
 	getAll: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown[]>;
 	delete?: (primitiveId: string) => Promise<boolean>;
+	modify?: (primitiveId: string, property: { designator: string; otherProperty: Record<string, string | number | boolean> }) => Promise<unknown>;
 }
 
 interface PlacedComponentState {
@@ -209,6 +212,7 @@ function resolvePlaceComponentApi(): PlaceComponentApi {
 		getAllPrimitiveId: componentModule.getAllPrimitiveId as PlaceComponentApi['getAllPrimitiveId'],
 		getAll: componentModule.getAll as PlaceComponentApi['getAll'],
 		delete: typeof componentModule.delete === 'function' ? componentModule.delete as PlaceComponentApi['delete'] : undefined,
+		modify: typeof componentModule.modify === 'function' ? componentModule.modify as PlaceComponentApi['modify'] : undefined,
 	};
 }
 
@@ -241,7 +245,7 @@ function samePlacedComponent(a: PlacedComponentState, b: PlacedComponentState): 
 async function cleanupExactPlacementDuplicates(
 	session: ActivePlaceSession,
 	primitiveIds: string[],
-): Promise<{ primitiveIds: string[]; removedDuplicateIds?: string[]; warning?: string; commitUnknown?: boolean }> {
+): Promise<{ primitiveIds: string[]; removedDuplicateIds?: string[]; warning?: string; commitUnknown?: boolean; nativeCallSettled?: boolean }> {
 	const api = session.placeApi;
 	if (!api.delete)
 		return { primitiveIds, warning: '检测到多个新增器件，但当前 EDA 未提供删除 API；请检查重叠器件。' };
@@ -286,37 +290,28 @@ async function cleanupExactPlacementDuplicates(
 		const currentIds = await Promise.resolve(api.getAllPrimitiveId.call(api.context, undefined, false));
 		await assertPlaceSessionPage(session.pageUuid);
 		const remainingIds = currentIds.filter(id => id && !session.referenceIds.has(id));
+		if (deletionError && /timed out/i.test(toSafeErrorMessage(deletionError))) {
+			return {
+				primitiveIds: remainingIds,
+				warning: `重复器件删除超时，原生删除可能仍在执行：${toSafeErrorMessage(deletionError)}`,
+				commitUnknown: true,
+				nativeCallSettled: false,
+			};
+		}
 		if (remainingIds.length === 1 && remainingIds[0] === retainedId)
 			return { primitiveIds: remainingIds, removedDuplicateIds: extraIds };
 		return {
 			primitiveIds: remainingIds,
 			warning: `重复器件清理后仍有 ${String(remainingIds.length)} 个新增图元，请核对当前原理图。${deletionError ? `删除失败：${toSafeErrorMessage(deletionError)}` : ''}`,
-			...(deletionError && /timed out/i.test(toSafeErrorMessage(deletionError)) ? { commitUnknown: true } : {}),
 		};
 	}
 	catch (error: unknown) {
 		return {
 			primitiveIds,
 			warning: `重复器件清理后的回读失败，删除结果未知：${toSafeErrorMessage(error)}`,
-			...(deletionAttempted ? { commitUnknown: true } : {}),
+			...(deletionAttempted ? { commitUnknown: true, nativeCallSettled: deletionError === undefined } : {}),
 		};
 	}
-}
-
-async function readDesignators(api: PlaceComponentApi): Promise<Map<string, string>> {
-	const components = await Promise.resolve(api.getAll.call(api.context, undefined, false));
-	if (!Array.isArray(components)) {
-		throw new TypeError('sch_PrimitiveComponent.getAll 未返回器件列表。');
-	}
-	const designators = new Map<string, string>();
-	for (const component of components) {
-		const id = getSyncState(component, 'getState_PrimitiveId', '');
-		const designator = getSyncState(component, 'getState_Designator', '');
-		if (id && designator) {
-			designators.set(id, designator);
-		}
-	}
-	return designators;
 }
 
 function resolveFollowMouseTipApi(): FollowMouseTipApi | null {
@@ -445,7 +440,7 @@ export async function handleComponentPlaceStartTask(payload: unknown): Promise<u
 	const pageUuid = await readCurrentSchematicPageUuid();
 	// 必须先取基线，再把器件绑定到鼠标。用户可能在 API 返回后立即点击。
 	const referenceIds = new Set(await Promise.resolve(placeApi.getAllPrimitiveId.call(placeApi.context, undefined, false)));
-	const baselineDesignators = await readDesignators(placeApi);
+	const baselineDesignators = await readSchematicDesignators(placeApi);
 	await assertPlaceSessionPage(pageUuid);
 	if (placeSessionGeneration !== startGeneration || placementModeNeedsExit) {
 		return { ok: false, error: '连接在准备器件放置时中断；请核对当前图页后再重试。' };
@@ -567,20 +562,36 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 					ok: false,
 					commitUnknown: true,
 					readbackRequired: true,
+					nativeCallSettled: cleanupResult.nativeCallSettled,
 					primitiveIds: observedPrimitiveIds,
 					error: cleanupResult.warning,
 				};
 			}
 			const primitiveIds = cleanupResult.primitiveIds;
-			let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
+			let designatorChanges: DesignatorChange[] = [];
+			let restoredDesignators: DesignatorChange[] = [];
 			let annotationWarning: string | undefined;
 			try {
-				const currentDesignators = await readDesignators(session.placeApi);
-				designatorChanges = [...session.baselineDesignators]
-					.filter(([id, before]) => currentDesignators.has(id) && currentDesignators.get(id) !== before)
-					.map(([primitiveId, before]) => ({ primitiveId, before, after: currentDesignators.get(primitiveId) }));
-				if (designatorChanges.length > 0) {
-					annotationWarning = 'EDA 在放置时改变了已有器件位号；请核对 designatorChanges 后再继续。';
+				const restored = await restoreChangedSchematicDesignators(
+					session.placeApi,
+					session.baselineDesignators,
+					() => assertPlaceSessionPage(session.pageUuid),
+				);
+				designatorChanges = restored.designatorChanges;
+				restoredDesignators = restored.restoredDesignators;
+				annotationWarning = restored.annotationWarning;
+				if (restored.commitUnknown) {
+					await cleanupPlaceSession(sessionId);
+					return {
+						ok: false,
+						commitUnknown: true,
+						readbackRequired: true,
+						nativeCallSettled: restored.nativeCallSettled,
+						primitiveIds,
+						designatorChanges,
+						restoredDesignators,
+						error: annotationWarning,
+					};
 				}
 			}
 			catch (error: unknown) {
@@ -597,6 +608,7 @@ export async function handleComponentPlaceCheckTask(payload: unknown): Promise<u
 				primitiveIds,
 				...('removedDuplicateIds' in cleanupResult ? { removedDuplicateIds: cleanupResult.removedDuplicateIds } : {}),
 				designatorChanges,
+				restoredDesignators,
 				annotationWarning,
 				userCancelled: false,
 			};

@@ -9,7 +9,9 @@
  * ------------------------------------------------------------------------
  */
 
+import type { DesignatorChange } from './component-designator-restore';
 import { getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
+import { readSchematicDesignators, restoreChangedSchematicDesignators } from './component-designator-restore';
 
 interface ComponentPlaceAutoItem {
 	uuid: string;
@@ -44,6 +46,7 @@ interface FixedPositionConfig {
 interface ComponentCreateApi {
 	context: unknown;
 	getAll?: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown[]>;
+	modify?: (primitiveId: string, property: { designator: string; otherProperty: Record<string, string | number | boolean> }) => Promise<unknown>;
 	create: (
 		component: { libraryUuid: string; uuid: string },
 		x: number,
@@ -313,27 +316,9 @@ function resolveComponentCreateApi(): ComponentCreateApi {
 	return {
 		context: componentModule,
 		getAll: typeof componentModule.getAll === 'function' ? componentModule.getAll as ComponentCreateApi['getAll'] : undefined,
+		modify: typeof componentModule.modify === 'function' ? componentModule.modify as ComponentCreateApi['modify'] : undefined,
 		create: componentModule.create as ComponentCreateApi['create'],
 	};
-}
-
-async function readDesignators(api: ComponentCreateApi): Promise<Map<string, string>> {
-	if (!api.getAll) {
-		throw new TypeError('sch_PrimitiveComponent.getAll API 不可用。');
-	}
-	const components = await Promise.resolve(api.getAll.call(api.context, undefined, false));
-	if (!Array.isArray(components)) {
-		throw new TypeError('sch_PrimitiveComponent.getAll 未返回器件列表。');
-	}
-	const designators = new Map<string, string>();
-	for (const component of components) {
-		const id = getSyncState(component, 'getState_PrimitiveId', '');
-		const designator = getSyncState(component, 'getState_Designator', '');
-		if (id && designator) {
-			designators.set(id, designator);
-		}
-	}
-	return designators;
 }
 
 /**
@@ -374,7 +359,7 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 	let trackedDesignators: Map<string, string>;
 	let annotationWarning: string | undefined;
 	try {
-		trackedDesignators = await readDesignators(api);
+		trackedDesignators = await readSchematicDesignators(api);
 	}
 	catch (error: unknown) {
 		return {
@@ -387,13 +372,17 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			placedComponents: [],
 			failedComponents: [],
 			designatorChanges: [],
+			restoredDesignators: [],
 			annotationWarning: `无法记录已有器件位号，本次未放置：${toSafeErrorMessage(error)}`,
 			message: '未能读取已有器件位号，本次未开始放置。',
 		};
 	}
 	const placedComponents: Array<{ uuid: string; libraryUuid: string; x: number; y: number; primitiveId: string; designator: string }> = [];
 	const failedComponents: Array<{ uuid: string; libraryUuid: string; error: string }> = [];
-	let designatorChanges: Array<{ primitiveId: string; before: string; after: string | undefined }> = [];
+	let designatorChanges: DesignatorChange[] = [];
+	const restoredDesignators: DesignatorChange[] = [];
+	let commitUnknown = false;
+	let nativeCallSettled = true;
 
 	for (let index = 0; index < components.length; index += 1) {
 		const component = components[index];
@@ -443,19 +432,21 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 		}
 
 		try {
-			const currentDesignators = await readDesignators(api);
 			// Track the starting page and every earlier placement in this batch.
 			// A later create may renumber an earlier new component too.
-			designatorChanges = [...trackedDesignators]
-				.filter(([id, before]) => currentDesignators.has(id) && currentDesignators.get(id) !== before)
-				.map(([primitiveId, before]) => ({ primitiveId, before, after: currentDesignators.get(primitiveId) }));
+			const restored = await restoreChangedSchematicDesignators(api, trackedDesignators);
+			designatorChanges = restored.designatorChanges;
+			restoredDesignators.push(...restored.restoredDesignators);
+			const currentDesignators = restored.currentDesignators;
 			for (const placed of placedComponents) {
 				const currentDesignator = currentDesignators.get(placed.primitiveId);
 				if (currentDesignator !== undefined)
 					placed.designator = currentDesignator;
 			}
-			if (designatorChanges.length > 0) {
-				annotationWarning = 'EDA 在放置时改变了已有或本批次已放置器件的位号；请核对 designatorChanges 后再继续。';
+			if (restored.annotationWarning) {
+				annotationWarning = restored.annotationWarning;
+				commitUnknown = restored.commitUnknown === true;
+				nativeCallSettled = restored.nativeCallSettled !== false;
 				break;
 			}
 			const latest = placedComponents[placedComponents.length - 1];
@@ -480,7 +471,9 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			placedComponents,
 			failedComponents,
 			designatorChanges,
+			restoredDesignators,
 			annotationWarning,
+			...(commitUnknown ? { commitUnknown: true, readbackRequired: true, nativeCallSettled } : {}),
 			message: annotationWarning
 				? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；器件位号需核对。`
 				: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
@@ -495,6 +488,7 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 		notAttemptedCount: 0,
 		placedComponents,
 		designatorChanges,
+		restoredDesignators,
 		annotationWarning,
 		message: `成功放置了全部 ${String(components.length)} 个器件。`,
 	};

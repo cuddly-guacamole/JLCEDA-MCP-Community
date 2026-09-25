@@ -19,6 +19,7 @@ const { getPlacementModeWriteRejection } = require('../src/runtime/placement-mod
 function primitive(id, designator, otherProperty = {}) {
 	return {
 		getState_PrimitiveId: () => id,
+		getState_ComponentType: () => 'part',
 		getState_Designator: () => designator,
 		getState_OtherProperty: () => otherProperty,
 	};
@@ -258,6 +259,48 @@ async function main() {
 	assert.equal(check.placed, true);
 	assert.deepEqual(check.primitiveIds, ['placed-1']);
 	assert.equal(getPlacementModeWriteRejection('/bridge/jlceda/api/invoke', concurrentWrite), undefined);
+	const originalPlacementApi = globalThis.eda.sch_PrimitiveComponent;
+	const interactiveIds = ['existing-u'];
+	const interactiveBom = { Value: 'FM25V20A', Datasheet: 'https://example.test/f' };
+	let interactiveDesignator = 'U5';
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...interactiveIds]; },
+		async getAll() {
+			return interactiveIds.map(id => id === 'existing-u'
+				? primitive(id, interactiveDesignator, interactiveBom) : placedPrimitive(id));
+		},
+		async placeComponentWithMouse() {
+			interactiveDesignator = 'U16';
+			interactiveIds.push('new-interactive');
+			return true;
+		},
+		async modify(id, patch) {
+			assert.equal(id, 'existing-u');
+			assert.deepEqual(patch.otherProperty, interactiveBom);
+			interactiveDesignator = patch.designator;
+			return primitive(id, interactiveDesignator, patch.otherProperty);
+		},
+	};
+	const restoredStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const restoredCheck = await handleComponentPlaceCheckTask({ sessionId: restoredStart.sessionId });
+	assert.equal(restoredCheck.placed, true);
+	assert.deepEqual(restoredCheck.designatorChanges, []);
+	assert.deepEqual(restoredCheck.restoredDesignators, [{ primitiveId: 'existing-u', before: 'U16', after: 'U5' }]);
+	assert.equal(restoredCheck.annotationWarning, undefined);
+	assert.deepEqual(interactiveBom, { Value: 'FM25V20A', Datasheet: 'https://example.test/f' });
+	interactiveIds.length = 1;
+	interactiveDesignator = 'U5';
+	globalThis.eda.sch_PrimitiveComponent.modify = async () => { throw new Error('RPC Call modify Timed Out'); };
+	const uncertainDesignatorStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const uncertainDesignatorCheck = await handleComponentPlaceCheckTask({ sessionId: uncertainDesignatorStart.sessionId });
+	assert.equal(uncertainDesignatorCheck.ok, false);
+	assert.equal(uncertainDesignatorCheck.commitUnknown, true);
+	assert.equal(uncertainDesignatorCheck.nativeCallSettled, false);
+	assert.deepEqual(uncertainDesignatorCheck.primitiveIds, ['new-interactive']);
+	assert.match(uncertainDesignatorCheck.error, /Timed Out/);
+	globalThis.eda.sch_PrimitiveComponent = originalPlacementApi;
 
 	globalThis.eda.sch_PrimitiveComponent.placeComponentWithMouse = async () => {
 		ids.push('placed-2', 'placed-3');
@@ -375,6 +418,7 @@ async function main() {
 	assert.equal(uncertainCheck.ok, false);
 	assert.equal(uncertainCheck.commitUnknown, true);
 	assert.equal(uncertainCheck.readbackRequired, true);
+	assert.equal(uncertainCheck.nativeCallSettled, true);
 	assert.match(uncertainCheck.error, /duplicate readback failed/);
 	assert.equal((await handleComponentPlaceCheckTask({ sessionId: uncertainStart.sessionId })).ok, false);
 
@@ -383,7 +427,10 @@ async function main() {
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAllPrimitiveId() { return [...timeoutIds]; },
 		async getAll() { return timeoutIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
-		async delete() { throw new Error('RPC Call delete Timed Out'); },
+		async delete(id) {
+			timeoutIds.splice(timeoutIds.indexOf(id), 1);
+			throw new Error('RPC Call delete Timed Out');
+		},
 		async placeComponentWithMouse() {
 			timeoutIds.push('timeout-1', 'timeout-2');
 			return true;
@@ -394,6 +441,7 @@ async function main() {
 	const timeoutCheck = await handleComponentPlaceCheckTask({ sessionId: timeoutStart.sessionId });
 	assert.equal(timeoutCheck.ok, false);
 	assert.equal(timeoutCheck.commitUnknown, true);
+	assert.equal(timeoutCheck.nativeCallSettled, false);
 	assert.match(timeoutCheck.error, /Timed Out/);
 	globalThis.eda.sch_PrimitiveComponent = initialPlacementApi;
 
@@ -521,33 +569,60 @@ async function main() {
 	assert.equal((await pendingStart).ok, false);
 	assert.equal(mousePlaceCalls, 3);
 
-	// A host annotation pass may rename existing symbols during coordinate placement.
+	// Restore existing designators after a host annotation pass without losing BOM fields.
 	let existingDesignator = 'U4';
 	let createCalls = 0;
-	const components = [primitive('existing-u', existingDesignator)];
+	const existingBom = { Value: 'STM32', Manufacturer: 'ST' };
+	const components = [primitive('existing-u', existingDesignator, existingBom)];
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAll() { return components; },
 		async create() {
 			createCalls += 1;
-			existingDesignator = 'U15';
-			components[0] = primitive('existing-u', existingDesignator);
-			const created = primitive('new-r', 'R1');
+			if (createCalls === 1) {
+				existingDesignator = 'U15';
+				components[0] = primitive('existing-u', existingDesignator, existingBom);
+			}
+			const created = primitive(`new-r-${createCalls}`, `R${createCalls}`);
 			components.push(created);
 			return created;
+		},
+		async modify(id, patch) {
+			assert.equal(id, 'existing-u');
+			assert.equal(patch.designator, 'U4');
+			assert.deepEqual(patch.otherProperty, existingBom);
+			existingDesignator = patch.designator;
+			components[0] = primitive(id, existingDesignator, patch.otherProperty);
+			return components[0];
 		},
 	};
 	const placed = await handleComponentPlaceAutoTask({ components: [
 		{ uuid: 'device', libraryUuid: 'library', x: 100, y: 200 },
 		{ uuid: 'next-device', libraryUuid: 'library', x: 200, y: 200 },
 	] });
-	assert.equal(placed.ok, false);
-	assert.equal(placed.needsReview, true);
-	assert.equal(placed.placedCount, 1);
-	assert.equal(placed.notAttemptedCount, 1);
-	assert.equal(createCalls, 1);
-	assert.equal(placed.placedComponents[0].primitiveId, 'new-r');
-	assert.deepEqual(placed.designatorChanges, [{ primitiveId: 'existing-u', before: 'U4', after: 'U15' }]);
-	assert.match(placed.annotationWarning, /位号/);
+	assert.equal(placed.ok, true);
+	assert.equal(placed.placedCount, 2);
+	assert.equal(createCalls, 2);
+	assert.equal(placed.placedComponents[0].primitiveId, 'new-r-1');
+	assert.deepEqual(placed.designatorChanges, []);
+	assert.deepEqual(placed.restoredDesignators, [{ primitiveId: 'existing-u', before: 'U15', after: 'U4' }]);
+	assert.deepEqual(components[0].getState_OtherProperty(), existingBom);
+	const blankedComponents = [primitive('existing-u', 'U4', existingBom)];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return blankedComponents; },
+		async create() {
+			blankedComponents[0] = primitive('existing-u', '', existingBom);
+			const created = primitive('new-r', 'R1');
+			blankedComponents.push(created);
+			return created;
+		},
+		async modify(id, patch) {
+			blankedComponents[0] = primitive(id, patch.designator, patch.otherProperty);
+			return blankedComponents[0];
+		},
+	};
+	const restoredBlank = await handleComponentPlaceAutoTask({ components: [{ uuid: 'new-r', libraryUuid: 'library' }] });
+	assert.equal(restoredBlank.ok, true);
+	assert.deepEqual(restoredBlank.restoredDesignators, [{ primitiveId: 'existing-u', before: '', after: 'U4' }]);
 
 	// A later create can renumber an earlier component from the same request.
 	// Stop before the third placement and return the first component's current designator.
@@ -581,7 +656,107 @@ async function main() {
 	assert.equal(batchPlaced.placedComponents[0].designator, 'R9');
 	assert.equal(batchPlaced.placedComponents[1].designator, 'R2');
 	assert.deepEqual(batchPlaced.designatorChanges, [{ primitiveId: 'batch-first', before: 'R1', after: 'R9' }]);
-	assert.match(batchPlaced.annotationWarning, /本批次/);
+	assert.match(batchPlaced.annotationWarning, /位号/);
+	let recoveredBatchCalls = 0;
+	const recoveredBatchComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return recoveredBatchComponents; },
+		async create() {
+			recoveredBatchCalls += 1;
+			if (recoveredBatchCalls === 2)
+				recoveredBatchComponents[1] = primitive('first-batch', 'R9', { Value: '10k' });
+			const created = primitive(
+				recoveredBatchCalls === 1 ? 'first-batch' : `${recoveredBatchCalls}-batch`,
+				`R${recoveredBatchCalls}`,
+				recoveredBatchCalls === 1 ? { Value: '10k' } : {},
+			);
+			recoveredBatchComponents.push(created);
+			return created;
+		},
+		async modify(id, patch) {
+			assert.equal(id, 'first-batch');
+			assert.deepEqual(patch.otherProperty, { Value: '10k' });
+			recoveredBatchComponents[1] = primitive(id, patch.designator, patch.otherProperty);
+			return recoveredBatchComponents[1];
+		},
+	};
+	const recoveredBatch = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
+		{ uuid: 'third', libraryUuid: 'library' },
+	] });
+	assert.equal(recoveredBatch.ok, true);
+	assert.equal(recoveredBatchCalls, 3);
+	assert.deepEqual(recoveredBatch.designatorChanges, []);
+	assert.deepEqual(recoveredBatch.restoredDesignators, [{ primitiveId: 'first-batch', before: 'R9', after: 'R1' }]);
+	assert.equal(recoveredBatch.placedComponents[0].designator, 'R1');
+
+	let collisionModifyCalls = 0;
+	const collisionComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return collisionComponents; },
+		async create() {
+			collisionComponents[0] = primitive('existing-u', 'U15');
+			const created = primitive('new-u', 'U4');
+			collisionComponents.push(created);
+			return created;
+		},
+		async modify() { collisionModifyCalls += 1; },
+	};
+	const collision = await handleComponentPlaceAutoTask({ components: [{ uuid: 'new-u', libraryUuid: 'library' }] });
+	assert.equal(collision.ok, false);
+	assert.equal(collisionModifyCalls, 0);
+	assert.equal(collision.commitUnknown, undefined);
+	assert.deepEqual(collision.designatorChanges, [{ primitiveId: 'existing-u', before: 'U4', after: 'U15' }]);
+	assert.match(collision.annotationWarning, /占用/);
+
+	const failedModifyComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return failedModifyComponents; },
+		async create() {
+			failedModifyComponents[0] = primitive('existing-u', 'U15');
+			const created = primitive('new-r', 'R1');
+			failedModifyComponents.push(created);
+			return created;
+		},
+		async modify() { throw new Error('RPC Call modify Timed Out'); },
+	};
+	const uncertainRestore = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' }, { uuid: 'second', libraryUuid: 'library' },
+	] });
+	assert.equal(uncertainRestore.ok, false);
+	assert.equal(uncertainRestore.placedCount, 1);
+	assert.equal(uncertainRestore.notAttemptedCount, 1);
+	assert.equal(uncertainRestore.commitUnknown, true);
+	assert.equal(uncertainRestore.readbackRequired, true);
+	assert.equal(uncertainRestore.nativeCallSettled, false);
+	assert.match(uncertainRestore.annotationWarning, /Timed Out/);
+
+	let restoreReads = 0;
+	const settledComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() {
+			restoreReads += 1;
+			if (restoreReads === 3)
+				throw new Error('restore readback failed');
+			return settledComponents;
+		},
+		async create() {
+			settledComponents[0] = primitive('existing-u', 'U15');
+			const created = primitive('new-r', 'R1');
+			settledComponents.push(created);
+			return created;
+		},
+		async modify(_id, patch) {
+			settledComponents[0] = primitive('existing-u', patch.designator, patch.otherProperty);
+			return settledComponents[0];
+		},
+	};
+	const uncertainReadback = await handleComponentPlaceAutoTask({ components: [{ uuid: 'first', libraryUuid: 'library' }] });
+	assert.equal(uncertainReadback.ok, false);
+	assert.equal(uncertainReadback.commitUnknown, true);
+	assert.equal(uncertainReadback.nativeCallSettled, true);
+	assert.match(uncertainReadback.annotationWarning, /readback failed/);
 
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => {
 		throw new Error('readback failed');
@@ -589,7 +764,7 @@ async function main() {
 	const preflightFailure = await handleComponentPlaceAutoTask({ components: [{ uuid: 'not-placed', libraryUuid: 'library' }] });
 	assert.equal(preflightFailure.ok, false);
 	assert.equal(preflightFailure.notAttemptedCount, 1);
-	assert.equal(createCalls, 1);
+	assert.equal(createCalls, 2);
 
 	let readCount = 0;
 	globalThis.eda.sch_PrimitiveComponent = {
