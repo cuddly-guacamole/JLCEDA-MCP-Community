@@ -432,6 +432,10 @@ try {
   assert.equal(isReadOnlyBridgeRequest(connectivityPath, {}), false);
   const invokePath = '/bridge/jlceda/api/invoke';
   assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'eda.pcb_primitivecomponent.getall', args: [] }), true);
+  for (const apiFullName of ['eda.pcb_PrimitiveLine.getAll', 'eda.pcb_PrimitiveArc.getAll', 'eda.pcb_PrimitivePolyline.getAll', 'eda.pcb_PrimitiveVia.getAll']) {
+    assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName, args: [] }), true);
+    assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName, args: ['VCC'] }), false);
+  }
   assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: ' EDA.SCH_PRIMITIVECOMPONENT.GETALL ', args: [null, false] }), true);
   assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.GETALL', args: [null, true] }), false);
   assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.CREATE', args: [] }), false);
@@ -948,6 +952,142 @@ try {
   nativeLayoutNew = undefined;
   nativeLayoutServer.close();
   nativeLayoutServer = undefined;
+
+  const nativeRoutingPort = await reservePort();
+  const nativeRoutingServer = new EdaBridgeServer(nativeRoutingPort);
+  let nativeRoutingOld;
+  let nativeRoutingFresh;
+  try {
+    await nativeRoutingServer.start();
+    const routingUrl = `ws://127.0.0.1:${nativeRoutingPort}/bridge/ws${tokenQuery}`;
+    nativeRoutingOld = await registerEda(routingUrl, 'native-routing-old', {
+      documentUuid: 'stale-routing-document', projectUuid: 'stale-routing-project', pageKind: 'pcb', pageUuid: 'stale-routing-pcb',
+    });
+    nativeRoutingOld.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      nativeRoutingOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'native-routing-old', requestId: message.requestId,
+        leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'routing-document', projectUuid: 'routing-project', pageKind: 'pcb', pageUuid: 'routing-pcb' },
+      }));
+      nativeRoutingOld.socket.send(JSON.stringify({
+        type: 'bridge/result', clientId: 'native-routing-old', requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { apiFullName: 'eda.pcb_Document.autoRouting', ok: false, commitState: 'unknown', commitUnknown: true, retryBlocked: true, error: 'RPC Call autoRouting Timed Out' },
+      }));
+    });
+    const uncertain = await nativeRoutingServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_Document.autoRouting', args: [{ nets: ['VCC'] }] }, 2000);
+    assert.equal(uncertain.commitUnknown, true);
+    const snapshot = await nativeRoutingServer.request('/bridge/admin/clients', {}, 2000);
+    const diagnostic = snapshot.clients[0].quarantine.diagnostics[0];
+    assert.equal(diagnostic.requiredReadback, 'pcb_routing_state');
+    assert.equal(diagnostic.uncertaintyReason, 'native autoRouting timeout');
+    assert.equal(diagnostic.context.pageUuid, 'routing-pcb');
+    await assert.rejects(nativeRoutingServer.request('/bridge/test/write-after-routing-timeout', {}, 2000), /writes are blocked pending recovery readback/);
+    const recovery = await nativeRoutingServer.request('/bridge/admin/recover-client', { action: 'recover', confirm: true, requestId: diagnostic.requestId }, 2000);
+    await assert.rejects(nativeRoutingServer.request('/bridge/test/write-before-routing-host-restart', {}, 2000), /writes are blocked pending recovery readback/);
+    nativeRoutingFresh = await registerEda(routingUrl, 'native-routing-fresh', {
+      documentUuid: 'routing-document', projectUuid: 'routing-project', pageKind: 'pcb', pageUuid: 'routing-pcb',
+    });
+    let readbackPageUuid = 'wrong-pcb';
+    let incompleteViaReadback = false;
+    let missingViaGeometry = false;
+    let switchPageAfterNets = false;
+    let routingPrimitiveCalls = 0;
+    attachTaskResponder(nativeRoutingFresh.socket, 'native-routing-fresh', message => {
+      if (message.path === '/bridge/jlceda/context')
+        return { currentDocumentInfo: { uuid: 'routing-document', parentProjectUuid: 'routing-project' }, currentProjectInfo: { uuid: 'routing-project' }, currentPcbInfo: { uuid: readbackPageUuid } };
+      if (message.path === '/bridge/jlceda/net/query-pcb') {
+        assert.equal(message.payload.mode, 'all');
+        if (switchPageAfterNets) readbackPageUuid = 'wrong-pcb';
+        return { ok: true, mode: 'all', total: 2, offset: 0, returned: 2, nets: [{ net: 'VCC', length: 10.5 }, { net: 'GND', length: 0 }], truncated: false };
+      }
+      routingPrimitiveCalls += 1;
+      assert.equal(message.path, '/bridge/jlceda/api/invoke');
+      assert.equal(message.payload.includeCompleteRouting, true);
+      const primitiveId = `${message.payload.apiFullName}-1`;
+      const primitive = message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll'
+        ? { primitiveId, net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1 }
+        : message.payload.apiFullName === 'eda.pcb_PrimitivePolyline.getAll'
+          ? { primitiveId, net: 'VCC', layer: 1, polygonSource: '["L",0,0,1,1]', lineWidth: 0.2 }
+          : { primitiveId, net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 1, endY: 1, lineWidth: 0.2,
+            ...(message.payload.apiFullName === 'eda.pcb_PrimitiveArc.getAll' ? { arcAngle: 90 } : {}) };
+      const routingPrimitives = [primitive];
+      if (missingViaGeometry && message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll') delete primitive.x;
+      return { apiFullName: message.payload.apiFullName, routingPrimitives, routingPrimitiveCount: incompleteViaReadback && message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll' ? 2 : 1 };
+    });
+    const routeReadback = {
+      action: 'readback', confirm: true, recoveryId: recovery.recoveryId, clientId: 'native-routing-fresh', hostRestartConfirmed: true,
+      readbackPath: '/bridge/jlceda/api/invoke', readbackPayload: { apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [] },
+    };
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', { ...routeReadback, hostRestartConfirmed: undefined }, 2000), /original EDA host was restarted/);
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', { ...routeReadback, readbackPath: '/bridge/jlceda/context' }, 2000), /autoRouting requires eda.pcb_PrimitiveLine.getAll/);
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /original Bridge client must disconnect/);
+    nativeRoutingOld.socket.close();
+    await waitUntil(async () => (await nativeRoutingServer.request('/bridge/admin/clients', {}, 2000)).clients.find(client => client.clientId === 'native-routing-old')?.ready === false);
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB document or page identity changed/);
+    assert.equal(routingPrimitiveCalls, 0, 'wrong PCB must fail before the first routing readback');
+    readbackPageUuid = 'routing-pcb';
+    incompleteViaReadback = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
+    await assert.rejects(nativeRoutingServer.request('/bridge/test/write-after-incomplete-routing-readback', {}, 2000), /writes are blocked pending recovery readback/);
+    incompleteViaReadback = false;
+    missingViaGeometry = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
+    missingViaGeometry = false;
+    switchPageAfterNets = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /Readback pageUuid does not match/);
+    switchPageAfterNets = false;
+    readbackPageUuid = 'routing-pcb';
+    const verified = await nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000);
+    assert.equal(verified.readbackVerified, true);
+    assert.equal(verified.routingSnapshot.primitives.line.length, 1);
+    assert.equal(verified.routingSnapshot.primitives.arc.length, 1);
+    assert.equal(verified.routingSnapshot.primitives.polyline.length, 1);
+    assert.equal(verified.routingSnapshot.primitives.via.length, 1);
+    assert.equal(verified.routingSnapshot.nets[0].length, 10.5);
+    assert.equal(verified.writesRemainBlocked, false);
+  } finally {
+    nativeRoutingOld?.socket.close();
+    nativeRoutingFresh?.socket.close();
+    nativeRoutingServer.close();
+  }
+
+  const lateRoutingPort = await reservePort();
+  const lateRoutingServer = new EdaBridgeServer(lateRoutingPort);
+  let lateRoutingPeer;
+  try {
+    await lateRoutingServer.start();
+    lateRoutingPeer = await registerEda(`ws://127.0.0.1:${lateRoutingPort}/bridge/ws${tokenQuery}`, 'late-routing-peer');
+    let heldTask;
+    lateRoutingPeer.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      heldTask = message;
+      lateRoutingPeer.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'late-routing-peer', requestId: message.requestId, leaseTerm: message.leaseTerm,
+        startedAt: Date.now(), context: { documentUuid: 'late-routing-document', projectUuid: 'late-routing-project', pageKind: 'pcb', pageUuid: 'late-routing-pcb' },
+      }));
+    });
+    await assert.rejects(lateRoutingServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_Document.autoRouting', args: [] }, 100), /Request execution timeout/);
+    assert.ok(heldTask);
+    const lateBefore = await lateRoutingServer.request('/bridge/admin/clients', {}, 2000);
+    assert.equal(lateBefore.clients[0].quarantine.diagnostics[0].requiredReadback, 'pcb_routing_state');
+    const processed = waitForMessage(lateRoutingPeer.socket, message => message.type === 'bridge/heartbeat-ack');
+    lateRoutingPeer.socket.send(JSON.stringify({
+      type: 'bridge/result', clientId: 'late-routing-peer', requestId: heldTask.requestId, leaseTerm: heldTask.leaseTerm,
+      result: { apiFullName: 'eda.pcb_Document.autoRouting', result: { success: true, totalNetsCount: 2, successNetsCount: 2 } },
+    }));
+    lateRoutingPeer.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'late-routing-peer', sentAt: Date.now() }));
+    await processed;
+    const lateAfter = await lateRoutingServer.request('/bridge/admin/clients', {}, 2000);
+    assert.equal(lateAfter.clients[0].quarantine.diagnostics[0].requestId, lateBefore.clients[0].quarantine.diagnostics[0].requestId,
+      'a late autoRouting start result must not erase a caller-visible timeout before full PCB readback');
+    await assert.rejects(lateRoutingServer.request('/bridge/test/write-after-late-routing', {}, 2000), /writes are blocked pending recovery readback/);
+  } finally {
+    lateRoutingPeer?.socket.close();
+    lateRoutingServer.close();
+  }
 
   const lateUnknownPort = await reservePort();
   lateUnknownServer = new EdaBridgeServer(lateUnknownPort);

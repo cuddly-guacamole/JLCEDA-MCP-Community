@@ -14,6 +14,12 @@ import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSa
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
 const PCB_COMPONENT_GET_ALL = 'eda.pcb_primitivecomponent.getall';
+const PCB_ROUTING_READBACKS = new Map([
+	['eda.pcb_primitiveline.getall', 'line'],
+	['eda.pcb_primitivearc.getall', 'arc'],
+	['eda.pcb_primitivepolyline.getall', 'polyline'],
+	['eda.pcb_primitivevia.getall', 'via'],
+]);
 const SCHEMATIC_PAGES_GET_ALL = 'eda.dmt_schematic.getallschematicpagesinfo';
 let pendingAutoLayoutPcbUuid: string | undefined;
 
@@ -27,6 +33,60 @@ function pcbComponentPosition(component: unknown): { primitiveId: string; design
 	if (!primitiveId || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(rotation))
 		return undefined;
 	return { primitiveId, designator, x, y, rotation };
+}
+
+function pcbRoutingPrimitive(primitive: unknown, kind: string): Record<string, unknown> | undefined {
+	const raw = isPlainObjectRecord(primitive) ? primitive : {};
+	const state = (name: string): unknown => getSyncState(primitive, `getState_${name}`, raw[name.charAt(0).toLowerCase() + name.slice(1)]);
+	const primitiveId = state('PrimitiveId');
+	if (typeof primitiveId !== 'string' || primitiveId.length === 0)
+		return undefined;
+	const net = state('Net');
+	if (typeof net !== 'string')
+		return undefined;
+	const entry: Record<string, unknown> = { primitiveId, net };
+	if (kind === 'via') {
+		for (const field of ['X', 'Y', 'HoleDiameter', 'Diameter']) {
+			const value = state(field);
+			if (typeof value !== 'number' || !Number.isFinite(value))
+				return undefined;
+			entry[field.charAt(0).toLowerCase() + field.slice(1)] = value;
+		}
+		const viaType = state('ViaType');
+		if (typeof viaType !== 'string' && (typeof viaType !== 'number' || !Number.isFinite(viaType)))
+			return undefined;
+		entry.viaType = viaType;
+		return entry;
+	}
+	entry.layer = state('Layer');
+	entry.lineWidth = state('LineWidth');
+	if ((typeof entry.layer !== 'string' && (typeof entry.layer !== 'number' || !Number.isFinite(entry.layer)))
+		|| typeof entry.lineWidth !== 'number' || !Number.isFinite(entry.lineWidth)) {
+		return undefined;
+	}
+	if (kind === 'polyline') {
+		const polygon = state('Polygon');
+		const source = isPlainObjectRecord(polygon) && typeof polygon.getSource === 'function'
+			? (polygon.getSource as () => unknown).call(polygon)
+			: Array.isArray(polygon) ? polygon : isPlainObjectRecord(polygon) ? polygon.polygon : undefined;
+		if (!Array.isArray(source) || source.length === 0 || source.some(part => typeof part !== 'string' && (typeof part !== 'number' || !Number.isFinite(part))))
+			return undefined;
+		entry.polygonSource = JSON.stringify(source);
+		return entry;
+	}
+	for (const field of ['StartX', 'StartY', 'EndX', 'EndY']) {
+		const value = state(field);
+		if (typeof value !== 'number' || !Number.isFinite(value))
+			return undefined;
+		entry[field.charAt(0).toLowerCase() + field.slice(1)] = value;
+	}
+	if (kind === 'arc') {
+		const angle = state('ArcAngle');
+		if (typeof angle !== 'number' || !Number.isFinite(angle))
+			return undefined;
+		entry.arcAngle = angle;
+	}
+	return entry;
 }
 
 async function currentPcbUuid(): Promise<string | undefined> {
@@ -129,6 +189,10 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	if (payload.includeCompletePositions !== undefined
 		&& (payload.includeCompletePositions !== true || normalizedPath !== PCB_COMPONENT_GET_ALL || invokeArgs.length !== 0)) {
 		throw new TypeError('includeCompletePositions is only supported for eda.pcb_PrimitiveComponent.getAll with no arguments.');
+	}
+	if (payload.includeCompleteRouting !== undefined
+		&& (payload.includeCompleteRouting !== true || !PCB_ROUTING_READBACKS.has(normalizedPath) || invokeArgs.length !== 0)) {
+		throw new TypeError('includeCompleteRouting is only supported for PCB routing primitive getAll methods with no arguments.');
 	}
 
 	// EDA 3.x 的 modify 会在省略 otherProperty 时清空已有的 BOM 属性。
@@ -256,7 +320,31 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 				verification: 'Auto layout may still commit. Activate this PCB and read all component positions with eda.pcb_PrimitiveComponent.getAll() before retrying.',
 			};
 		}
+		if (normalizedPath === PCB_AUTO_ROUTING && /RPC Call autoRouting Timed Out/i.test(toSafeErrorMessage(error))) {
+			return {
+				apiFullName: resolvedPath,
+				ok: false,
+				commitState: 'unknown',
+				commitUnknown: true,
+				retryBlocked: true,
+				error: toSafeErrorMessage(error),
+				verification: 'Auto routing may still commit. Restart the original EDA host, then read back every PCB track, via, and net before retrying.',
+			};
+		}
 		throw error;
+	}
+	if (payload.includeCompleteRouting === true) {
+		if (!Array.isArray(invokeResult))
+			throw new TypeError('PCB routing primitive readback returned an invalid list.');
+		const routingPrimitives = invokeResult.map(primitive => pcbRoutingPrimitive(primitive, PCB_ROUTING_READBACKS.get(normalizedPath)!));
+		if (routingPrimitives.some(primitive => !primitive))
+			throw new TypeError('PCB routing primitive readback omitted an ID or geometry.');
+		return {
+			apiFullName: resolvedPath,
+			result: await toSerializableAsync(invokeResult),
+			routingPrimitives: preserveBoundedArray(routingPrimitives),
+			routingPrimitiveCount: routingPrimitives.length,
+		};
 	}
 	if (normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && Array.isArray(invokeResult)) {
 		const autoLayoutReadbackPerformed = Boolean(pendingAutoLayoutPcbUuid && pendingAutoLayoutPcbUuid === readbackPcbUuid);
@@ -298,12 +386,19 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			pageCount: schematicPages.length,
 		};
 	}
-	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult) && invokeResult.success === false) {
+	if (normalizedPath === PCB_AUTO_ROUTING && isPlainObjectRecord(invokeResult)) {
+		const failedNets = Array.isArray(invokeResult.failedNets) && invokeResult.failedNets.length > 0;
+		const partialCount = typeof invokeResult.totalNetsCount === 'number'
+			&& typeof invokeResult.successNetsCount === 'number'
+			&& invokeResult.successNetsCount < invokeResult.totalNetsCount;
+		const incomplete = invokeResult.success === false || failedNets || partialCount;
+		if (!incomplete)
+			return { apiFullName: resolvedPath, result: await toSerializableAsync(invokeResult) };
 		return {
 			apiFullName: resolvedPath,
 			result: await toSerializableAsync(invokeResult),
 			ok: false,
-			routingState: invokeResult.successNetsCount === 0 && invokeResult.duration === 0 ? 'not_started' : 'incomplete',
+			routingState: invokeResult.success === false && invokeResult.successNetsCount === 0 && invokeResult.duration === 0 ? 'not_started' : 'incomplete',
 			verification: 'Check PCB tracks, vias, and DRC before treating this routing attempt as complete.',
 		};
 	}

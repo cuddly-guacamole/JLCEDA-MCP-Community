@@ -61,7 +61,7 @@ interface RecoveryDiagnostic {
   targetSchematicPageUuid?: string;
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
-  requiredReadback?: 'pcb_component_positions' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives';
+  requiredReadback?: 'pcb_component_positions' | 'pcb_routing_state' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives';
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
   uncertaintyReason?: string;
@@ -294,6 +294,26 @@ function isPcbComponentReadbackRequest(path: string, payload: Record<string, unk
   const args = payload.args;
   return path === '/bridge/jlceda/api/invoke'
     && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_primitivecomponent.getall'
+    && (args === undefined || (Array.isArray(args) && args.length === 0));
+}
+
+function isPcbAutoRoutingRequest(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && isRecord(payload)
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_document.autorouting';
+}
+
+const PCB_ROUTING_READBACK_APIS = [
+  'eda.pcb_PrimitiveLine.getAll',
+  'eda.pcb_PrimitiveArc.getAll',
+  'eda.pcb_PrimitivePolyline.getAll',
+  'eda.pcb_PrimitiveVia.getAll',
+] as const;
+
+function isPcbRoutingReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  const args = payload.args;
+  return path === '/bridge/jlceda/api/invoke'
+    && optionalString(payload.apiFullName)?.toLowerCase() === PCB_ROUTING_READBACK_APIS[0].toLowerCase()
     && (args === undefined || (Array.isArray(args) && args.length === 0));
 }
 
@@ -798,7 +818,9 @@ export class EdaBridgeServer {
         updatePendingPcbImportContext(diagnostic, message.result);
         this.pendingImportSockets.set(requestId, peer.socket);
       }
-      else if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown) {
+      else if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown
+        && diagnostic.requiredReadback !== 'pcb_component_positions'
+        && diagnostic.requiredReadback !== 'pcb_routing_state') {
         this.recoveryDiagnostics.delete(requestId);
       }
       return;
@@ -815,6 +837,12 @@ export class EdaBridgeServer {
       && message.result.commitState === 'unknown'
       && message.result.retryBlocked === true) {
       this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native autoLayout timeout');
+    }
+    else if (isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
+      && isRecord(message.result)
+      && message.result.commitState === 'unknown'
+      && message.result.retryBlocked === true) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native autoRouting timeout');
     }
     else if (!isReadOnlyRequest(pending.path ?? '', pending.payload)
       && isRecord(message.result)
@@ -1132,6 +1160,7 @@ export class EdaBridgeServer {
       pageBound: mutating && isPageBoundWrite(pending.path ?? '', pending.payload),
       ...(targetProjectUuid ? { targetProjectUuid } : {}),
       ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
+      ...(isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_routing_state' as const } : {}),
       ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
       ...(mutating && isSchematicConnectivityMutation(pending.path ?? '', pending.payload)
         ? { requiredReadback: 'schematic_connectivity_primitives' as const } : {}),
@@ -1251,6 +1280,10 @@ export class EdaBridgeServer {
       && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state'
+      && !isPcbRoutingReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Timed-out PCB autoRouting requires eda.pcb_PrimitiveLine.getAll with no arguments for recovery readback.');
+    }
     if (session.diagnostic.requiredReadback === 'schematic_project_review'
       && readbackPath !== '/bridge/jlceda/schematic/review') {
       throw new Error('Cross-page schematic component deletion requires schematic_review of the whole project for recovery readback.');
@@ -1267,6 +1300,12 @@ export class EdaBridgeServer {
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
       throw new Error('Timed-out PCB autoLayout has no verified execution-time PCB page identity; writes remain blocked.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state'
+      && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
+      throw new Error('Timed-out PCB autoRouting has no verified execution-time PCB page identity; writes remain blocked.');
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state' && payload.hostRestartConfirmed !== true)
+      throw new Error('Timed-out PCB autoRouting requires confirmation that the original EDA host was restarted; writes remain blocked.');
     if (session.diagnostic.pendingNativeConfirmation
       && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload))) {
       throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
@@ -1317,11 +1356,19 @@ export class EdaBridgeServer {
     this.selectClient(targetClientId, true, true);
     session.targetClientId = targetClientId;
     session.targetSocket = target.socket;
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state') {
+      if (!expectedPageUuid)
+        throw new Error('Timed-out PCB autoRouting has no verified execution-time PCB page identity; writes remain blocked.');
+      const beforeRoutingReadback = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+      this.assertPcbIdentity(beforeRoutingReadback, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+    }
     const requiresPcbPositions = session.diagnostic.requiredReadback === 'pcb_component_positions'
       || session.diagnostic.pendingNativeConfirmation;
     const effectiveReadbackPayload = requiresPcbPositions
       ? { ...readbackPayload, includeCompletePositions: true }
-      : readbackPayload;
+      : session.diagnostic.requiredReadback === 'pcb_routing_state'
+        ? { ...readbackPayload, includeCompleteRouting: true }
+        : readbackPayload;
     const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
     if (isRecord(readback) && readback.ok === false) {
       const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
@@ -1332,6 +1379,9 @@ export class EdaBridgeServer {
     }
     if (session.diagnostic.requiredReadback === 'pcb_component_positions' || session.diagnostic.pendingNativeConfirmation)
       this.validateCompletePcbComponents(readback);
+    const routingSnapshot = session.diagnostic.requiredReadback === 'pcb_routing_state'
+      ? await this.readCompletePcbRoutingState(readback, targetClientId, timeoutMs)
+      : undefined;
     if (session.diagnostic.requiredReadback === 'schematic_page_inventory')
       this.validateCompleteSchematicPages(readback, session.diagnostic);
     if (session.diagnostic.requiredReadback === 'schematic_connectivity_primitives')
@@ -1380,6 +1430,7 @@ export class EdaBridgeServer {
       writesRemainBlocked: hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values()),
       unresolvedMutatingRequestIds: [...this.recoveryDiagnostics.values()].filter(item => item.mutating).map(item => item.requestId),
       readback,
+      ...(routingSnapshot ? { routingSnapshot } : {}),
       identityReadback,
       warningAcknowledged: true,
     };
@@ -1390,7 +1441,7 @@ export class EdaBridgeServer {
     if ((documentUuid && identity.documentUuid !== documentUuid)
       || (projectUuid && identity.projectUuid !== projectUuid)
       || identity.pageUuid !== pageUuid) {
-      throw new Error('PCB document or page identity changed during import readback; writes remain blocked.');
+      throw new Error('PCB document or page identity changed during readback; writes remain blocked.');
     }
   }
 
@@ -1406,6 +1457,70 @@ export class EdaBridgeServer {
       throw new Error('PCB component position readback did not return a complete component list; writes remain blocked.');
     }
     return value.componentPositions.length;
+  }
+
+  private validatePcbRoutingPrimitives(value: unknown, apiFullName: string): Record<string, unknown>[] {
+    const number = (item: unknown): boolean => typeof item === 'number' && Number.isFinite(item);
+    const kind = apiFullName.toLowerCase();
+    const validPrimitive = (primitive: unknown): boolean => {
+      if (!isRecord(primitive) || !optionalString(primitive.primitiveId) || typeof primitive.net !== 'string')
+        return false;
+      if (kind.includes('primitivevia'))
+        return number(primitive.x) && number(primitive.y) && number(primitive.holeDiameter) && number(primitive.diameter)
+          && (typeof primitive.viaType === 'string' || number(primitive.viaType));
+      if (!(typeof primitive.layer === 'string' || number(primitive.layer)) || !number(primitive.lineWidth))
+        return false;
+      if (kind.includes('primitivepolyline')) {
+        if (typeof primitive.polygonSource !== 'string') return false;
+        try {
+          const source: unknown = JSON.parse(primitive.polygonSource);
+          return Array.isArray(source) && source.length > 0 && source.every(part => typeof part === 'string' || number(part));
+        } catch {
+          return false;
+        }
+      }
+      return number(primitive.startX) && number(primitive.startY) && number(primitive.endX) && number(primitive.endY)
+        && (!kind.includes('primitivearc') || number(primitive.arcAngle));
+    };
+    if (!isRecord(value)
+      || optionalString(value.apiFullName)?.toLowerCase() !== apiFullName.toLowerCase()
+      || !Array.isArray(value.routingPrimitives)
+      || value.routingPrimitiveCount !== value.routingPrimitives.length
+      || value.routingPrimitives.some(primitive => !validPrimitive(primitive))) {
+      throw new Error(`PCB routing readback for ${apiFullName} was incomplete; writes remain blocked.`);
+    }
+    return value.routingPrimitives as Record<string, unknown>[];
+  }
+
+  private async readCompletePcbRoutingState(firstReadback: unknown, clientId: string, timeoutMs: number): Promise<Record<string, unknown>> {
+    const primitives: Record<string, Record<string, unknown>[]> = {
+      line: this.validatePcbRoutingPrimitives(firstReadback, PCB_ROUTING_READBACK_APIS[0]),
+    };
+    for (const [index, kind] of ['arc', 'polyline', 'via'].entries()) {
+      const apiFullName = PCB_ROUTING_READBACK_APIS[index + 1];
+      const value = await this.dispatchToEda('/bridge/jlceda/api/invoke', { apiFullName, args: [], includeCompleteRouting: true }, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, clientId);
+      primitives[kind] = this.validatePcbRoutingPrimitives(value, apiFullName);
+    }
+
+    let total: number | undefined;
+    let offset = 0;
+    const nets: Array<{ net: string; length: number }> = [];
+    do {
+      const value = await this.dispatchToEda('/bridge/jlceda/net/query-pcb', { mode: 'all', limit: 1000, offset }, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, clientId);
+      if (!isRecord(value) || value.ok !== true || value.mode !== 'all'
+        || !Number.isSafeInteger(value.total) || Number(value.total) < 0
+        || value.offset !== offset || !Array.isArray(value.nets)
+        || value.returned !== value.nets.length || (total !== undefined && value.total !== total)
+        || value.nets.some(net => !isRecord(net) || typeof net.net !== 'string' || !Number.isFinite(net.length))) {
+        throw new Error('PCB routing net readback was incomplete; writes remain blocked.');
+      }
+      total = Number(value.total);
+      nets.push(...value.nets.map(net => ({ net: (net as Record<string, unknown>).net as string, length: (net as Record<string, unknown>).length as number })));
+      offset += value.nets.length;
+      if (offset > total || value.truncated !== (offset < total) || (offset < total && value.nets.length === 0))
+        throw new Error('PCB routing net readback was incomplete; writes remain blocked.');
+    } while (offset < total);
+    return { primitives, nets, netCount: total };
   }
 
   private validateCompleteSchematicPages(value: unknown, diagnostic: RecoveryDiagnostic): number {

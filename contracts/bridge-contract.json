@@ -179,6 +179,10 @@
 				"eda.sch_PrimitiveComponent.getAllPrimitiveId",
 				"eda.sch_PrimitiveComponent.getAll",
 				"eda.pcb_PrimitiveComponent.getAll",
+				"eda.pcb_PrimitiveLine.getAll",
+				"eda.pcb_PrimitiveArc.getAll",
+				"eda.pcb_PrimitivePolyline.getAll",
+				"eda.pcb_PrimitiveVia.getAll",
 				"eda.dmt_Schematic.getAllSchematicPagesInfo"
 			],
 			"readOnlyIfCurrentPageArgsApiFullNames": [
