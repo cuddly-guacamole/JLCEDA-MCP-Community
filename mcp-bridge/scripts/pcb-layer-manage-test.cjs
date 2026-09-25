@@ -8,6 +8,8 @@ const { handlePcbLayerManageTask } = require('../src/mcp/pcb-layer-handler.ts');
 const { requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
 const { toSerializableAsync } = require('../src/utils.ts');
 
+// EDA 3.2.181 exposes the unused inner copper-layer slots with layerStatus 0.
+const copperLayerSlots = 34;
 let page = 'pcb-layer-page';
 let copperLayerCount = 2;
 let setCalls = 0;
@@ -27,10 +29,10 @@ globalThis.eda = {
 		},
 		async getAllLayers() {
 			const count = reportedCopperLayerCount ?? copperLayerCount;
-			return Array.from({ length: count + extraLayerCount }, (_item, index) => ({
+			return Array.from({ length: copperLayerSlots + extraLayerCount }, (_item, index) => ({
 				id: index < 2 ? index + 1 : index + 13,
-				type: index < count ? (index === 2 ? 'PLANE' : 'SIGNAL') : index === count ? 'SIGNAL' : 'CUSTOM',
-				...(!omitLayerStatus && { layerStatus: index === count && extraLayerCount > 0 ? 0 : index === 2 ? 2 : 1 }),
+				type: index < copperLayerSlots ? (index === 2 ? 'PLANE' : 'SIGNAL') : 'CUSTOM',
+				...(!omitLayerStatus && { layerStatus: index < copperLayerSlots && index >= count ? 0 : index === 2 ? 2 : 1 }),
 				name: `Layer ${index + 1}`,
 			}));
 		},
@@ -58,10 +60,11 @@ async function main() {
 	assert.equal(read.complete, true);
 	assert.equal(read.pageUuid, 'pcb-layer-page');
 	assert.equal(read.copperLayerCount, 2);
-	assert.equal(read.layerCount, 2);
+	assert.equal(read.layerCount, copperLayerSlots);
+	assert.equal(read.layers.filter(layer => (layer.type === 'SIGNAL' || layer.type === 'PLANE') && layer.layerStatus === 0).length, 32);
 	extraLayerCount = 130;
 	const completeRead = await toSerializableAsync(await handlePcbLayerManageTask({ action: 'read' }));
-	assert.equal(completeRead.layers.length, 132, 'the complete layer list must survive final Bridge serialization');
+	assert.equal(completeRead.layers.length, copperLayerSlots + 130, 'the complete layer list must survive final Bridge serialization');
 	extraLayerCount = 0;
 	const noChange = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 2 });
 	assert.equal(noChange.verified, true);
@@ -72,7 +75,7 @@ async function main() {
 	assert.equal(set.verified, true);
 	assert.equal(set.previousCopperLayerCount, 2);
 	assert.equal(set.copperLayerCount, 4);
-	assert.equal(set.layerCount, 4);
+	assert.equal(set.layerCount, copperLayerSlots);
 	assert.equal(set.layers[2].type, 'PLANE');
 	assert.equal(set.layers[2].layerStatus, 2);
 	assert.equal(setCalls, 1);
