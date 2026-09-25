@@ -409,6 +409,81 @@ async function main() {
 	assert.deepEqual(exactIds, ['existing', 'same-1']);
 	assert.equal(exactCheck.annotationWarning, undefined, 'ordinary single-part symbols can have no sub-part name');
 
+	// Some EDA builds accept an ID but only delete the live primitive object.
+	const objectOnlyIds = ['existing'];
+	const objectOnlyDeleteTargets = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...objectOnlyIds]; },
+		async getAll() { return objectOnlyIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete(target) {
+			objectOnlyDeleteTargets.push(typeof target === 'string' ? 'id' : 'primitive');
+			if (typeof target === 'string')
+				return false;
+			objectOnlyIds.splice(objectOnlyIds.indexOf(target.getState_PrimitiveId()), 1);
+			return true;
+		},
+		async placeComponentWithMouse() {
+			objectOnlyIds.push('object-only-1', 'object-only-2');
+			return true;
+		},
+	};
+	const objectOnlyStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const objectOnlyCheck = await handleComponentPlaceCheckTask({ sessionId: objectOnlyStart.sessionId });
+	assert.equal(objectOnlyCheck.placed, true);
+	assert.equal(objectOnlyCheck.duplicate, false);
+	assert.deepEqual(objectOnlyCheck.primitiveIds, ['object-only-1']);
+	assert.deepEqual(objectOnlyCheck.removedDuplicateIds, ['object-only-2']);
+	assert.deepEqual(objectOnlyDeleteTargets, ['id', 'primitive']);
+	assert.deepEqual(objectOnlyIds, ['existing', 'object-only-1']);
+
+	const stubbornIds = ['existing'];
+	const stubbornDeleteTargets = [];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...stubbornIds]; },
+		async getAll() { return stubbornIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete(target) {
+			stubbornDeleteTargets.push(typeof target === 'string' ? 'id' : 'primitive');
+			return false;
+		},
+		async placeComponentWithMouse() {
+			stubbornIds.push('stubborn-1', 'stubborn-2');
+			return true;
+		},
+	};
+	const stubbornStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const stubbornCheck = await handleComponentPlaceCheckTask({ sessionId: stubbornStart.sessionId });
+	assert.equal(stubbornCheck.placed, false);
+	assert.equal(stubbornCheck.duplicate, true);
+	assert.deepEqual(stubbornCheck.primitiveIds, ['stubborn-1', 'stubborn-2']);
+	assert.equal(stubbornCheck.removedDuplicateIds, undefined);
+	assert.deepEqual(stubbornDeleteTargets, ['id', 'primitive']);
+	assert.match(stubbornCheck.annotationWarning, /两种删除方式后仍存在/);
+
+	// A rejected native delete must not be reported as a successful cleanup.
+	const rejectedIds = ['existing'];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return [...rejectedIds]; },
+		async getAll() { return rejectedIds.map(id => id === 'existing' ? primitive(id, 'U4') : placedPrimitive(id)); },
+		async delete(id) {
+			rejectedIds.splice(rejectedIds.indexOf(id), 1);
+			throw new Error('native delete rejected');
+		},
+		async placeComponentWithMouse() {
+			rejectedIds.push('rejected-1', 'rejected-2');
+			return true;
+		},
+	};
+	const rejectedStart = await handleComponentPlaceStartTask({ component: { uuid: 'device', libraryUuid: 'library' } });
+	pressEscape();
+	const rejectedCheck = await handleComponentPlaceCheckTask({ sessionId: rejectedStart.sessionId });
+	assert.equal(rejectedCheck.placed, false);
+	assert.equal(rejectedCheck.duplicate, true);
+	assert.deepEqual(rejectedCheck.primitiveIds, ['rejected-1']);
+	assert.equal(rejectedCheck.removedDuplicateIds, undefined);
+	assert.match(rejectedCheck.annotationWarning, /native delete rejected/);
+
 	// An explicitly selected sub-part must still match the placed primitives.
 	const namedIds = ['existing'];
 	const deletedNamedIds = [];

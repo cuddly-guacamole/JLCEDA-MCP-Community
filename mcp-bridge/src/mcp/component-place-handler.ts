@@ -34,7 +34,7 @@ interface PlaceComponentApi {
 	placeComponentWithMouse: (component: { libraryUuid: string; uuid: string }, subPartName?: string) => Promise<boolean>;
 	getAllPrimitiveId: (componentType?: unknown, allSchematicPages?: boolean) => Promise<string[]>;
 	getAll: (componentType?: unknown, allSchematicPages?: boolean) => Promise<unknown[]>;
-	delete?: (primitiveId: string) => Promise<boolean>;
+	delete?: (primitive: string | object) => Promise<boolean>;
 	modify?: (primitiveId: string, property: { designator: string; otherProperty: Record<string, string | number | boolean> }) => Promise<unknown>;
 }
 
@@ -278,31 +278,73 @@ async function cleanupExactPlacementDuplicates(
 	const extraIds = primitiveIds.slice(1);
 	let deletionAttempted = false;
 	let deletionError: unknown;
+	let nativeDeleteResultUnknown = false;
+	let postDeleteReadbackFailed = false;
+	const readCurrentIds = async (): Promise<string[]> => {
+		await assertPlaceSessionPage(session.pageUuid);
+		const ids = await Promise.resolve(api.getAllPrimitiveId.call(api.context, undefined, false));
+		await assertPlaceSessionPage(session.pageUuid);
+		if (!Array.isArray(ids))
+			throw new TypeError('EDA 未返回当前器件 ID 列表。');
+		return ids;
+	};
 	for (const id of extraIds) {
+		let stage: 'delete' | 'readback' = 'delete';
 		try {
 			await assertPlaceSessionPage(session.pageUuid);
 			deletionAttempted = true;
 			await Promise.resolve(api.delete.call(api.context, id));
+			stage = 'readback';
+			let currentIds = await readCurrentIds();
+			if (currentIds.includes(id)) {
+				// Some EDA versions accept an ID but only delete the live primitive object.
+				await assertPlaceSessionPage(session.pageUuid);
+				const livePrimitives = await Promise.resolve(api.getAll.call(api.context, undefined, false));
+				await assertPlaceSessionPage(session.pageUuid);
+				if (!Array.isArray(livePrimitives))
+					throw new TypeError('EDA 未返回当前器件列表。');
+				const livePrimitive = livePrimitives.find(item => getSyncState(item, 'getState_PrimitiveId', '') === id);
+				if (!livePrimitive || typeof livePrimitive !== 'object')
+					throw new Error(`无法读取仍存在的重复器件 ${id}。`);
+				stage = 'delete';
+				await Promise.resolve(api.delete.call(api.context, livePrimitive));
+				stage = 'readback';
+				currentIds = await readCurrentIds();
+			}
+			if (currentIds.includes(id)) {
+				deletionError = new Error(`重复器件 ${id} 在两种删除方式后仍存在。`);
+				break;
+			}
 		}
 		catch (error: unknown) {
 			deletionError = error;
+			if (stage === 'readback')
+				postDeleteReadbackFailed = true;
+			else
+				nativeDeleteResultUnknown = isUnknownPlacementStartResult(toSafeErrorMessage(error));
 			break;
 		}
 	}
 	try {
-		await assertPlaceSessionPage(session.pageUuid);
-		const currentIds = await Promise.resolve(api.getAllPrimitiveId.call(api.context, undefined, false));
-		await assertPlaceSessionPage(session.pageUuid);
+		const currentIds = await readCurrentIds();
 		const remainingIds = currentIds.filter(id => id && !session.referenceIds.has(id));
-		if (deletionError && /timed out/i.test(toSafeErrorMessage(deletionError))) {
+		if (nativeDeleteResultUnknown) {
 			return {
 				primitiveIds: remainingIds,
-				warning: `重复器件删除超时，原生删除可能仍在执行：${toSafeErrorMessage(deletionError)}`,
+				warning: `重复器件删除结果未知，原生删除可能仍在执行：${toSafeErrorMessage(deletionError)}`,
 				commitUnknown: true,
 				nativeCallSettled: false,
 			};
 		}
-		if (remainingIds.length === 1 && remainingIds[0] === retainedId)
+		if (postDeleteReadbackFailed) {
+			return {
+				primitiveIds: remainingIds,
+				warning: `重复器件删除后的回读失败，删除结果未知：${toSafeErrorMessage(deletionError)}`,
+				commitUnknown: true,
+				nativeCallSettled: true,
+			};
+		}
+		if (!deletionError && remainingIds.length === 1 && remainingIds[0] === retainedId)
 			return { primitiveIds: remainingIds, removedDuplicateIds: extraIds };
 		return {
 			primitiveIds: remainingIds,
@@ -313,7 +355,7 @@ async function cleanupExactPlacementDuplicates(
 		return {
 			primitiveIds,
 			warning: `重复器件清理后的回读失败，删除结果未知：${toSafeErrorMessage(error)}`,
-			...(deletionAttempted ? { commitUnknown: true, nativeCallSettled: deletionError === undefined } : {}),
+			...(deletionAttempted ? { commitUnknown: true, nativeCallSettled: !nativeDeleteResultUnknown } : {}),
 		};
 	}
 }
