@@ -1023,6 +1023,8 @@ try {
     let missingViaGeometry = false;
     let missingRoutingLock = false;
     let missingArcMode = false;
+    let missingPolylineNet = false;
+    let missingPolylineGeometry = false;
     let switchPageAfterNets = false;
     let routingPrimitiveCalls = 0;
     attachTaskResponder(nativeRoutingFresh.socket, 'native-routing-fresh', message => {
@@ -1040,7 +1042,7 @@ try {
       const primitive = message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll'
         ? { primitiveId, net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1, primitiveLock: false }
         : message.payload.apiFullName === 'eda.pcb_PrimitivePolyline.getAll'
-          ? { primitiveId, net: 'VCC', layer: 1, polygonSource: '["L",0,0,1,1]', lineWidth: 0.2, primitiveLock: false }
+          ? { primitiveId, net: null, layer: 11, polygonSource: '["L",0,0,1,1]', lineWidth: 0.2, primitiveLock: false }
           : { primitiveId, net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 1, endY: 1, lineWidth: 0.2,
             primitiveLock: false,
             ...(message.payload.apiFullName === 'eda.pcb_PrimitiveArc.getAll' ? { arcAngle: 90, interactiveMode: 1 } : {}) };
@@ -1048,6 +1050,8 @@ try {
       if (missingViaGeometry && message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll') delete primitive.x;
       if (missingRoutingLock && message.payload.apiFullName === 'eda.pcb_PrimitiveLine.getAll') delete primitive.primitiveLock;
       if (missingArcMode && message.payload.apiFullName === 'eda.pcb_PrimitiveArc.getAll') delete primitive.interactiveMode;
+      if (missingPolylineNet && message.payload.apiFullName === 'eda.pcb_PrimitivePolyline.getAll') delete primitive.net;
+      if (missingPolylineGeometry && message.payload.apiFullName === 'eda.pcb_PrimitivePolyline.getAll') delete primitive.polygonSource;
       return { apiFullName: message.payload.apiFullName, routingPrimitives, routingPrimitiveCount: incompleteViaReadback && message.payload.apiFullName === 'eda.pcb_PrimitiveVia.getAll' ? 2 : 1 };
     });
     const routeReadback = {
@@ -1077,6 +1081,12 @@ try {
     missingArcMode = true;
     await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
     missingArcMode = false;
+    missingPolylineNet = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
+    missingPolylineNet = false;
+    missingPolylineGeometry = true;
+    await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /PCB routing readback.*incomplete/);
+    missingPolylineGeometry = false;
     switchPageAfterNets = true;
     await assert.rejects(nativeRoutingServer.request('/bridge/admin/recover-client', routeReadback, 2000), /Readback pageUuid does not match/);
     switchPageAfterNets = false;
@@ -1086,6 +1096,8 @@ try {
     assert.equal(verified.routingSnapshot.primitives.line.length, 1);
     assert.equal(verified.routingSnapshot.primitives.arc.length, 1);
     assert.equal(verified.routingSnapshot.primitives.polyline.length, 1);
+    assert.equal(verified.routingSnapshot.primitives.polyline[0].net, null);
+    assert.equal(verified.routingSnapshot.primitives.polyline[0].polygonSource, '["L",0,0,1,1]');
     assert.equal(verified.routingSnapshot.primitives.via.length, 1);
     assert.equal(verified.routingSnapshot.nets[0].length, 10.5);
     assert.equal(verified.writesRemainBlocked, false);

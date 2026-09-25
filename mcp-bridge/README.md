@@ -50,6 +50,8 @@ PCB 自动布局启动时，Bridge 会采集实际 PCB 身份并发送给 Server
 
 PCB `autoRouting` 指定网络时使用 `RoutingNets:["网络名"]`；官方方法示例的 `nets` 与参数接口声明不一致。`RoutingNets:[]` 等同不指定，目标为全部未布线网络，不执行选择范围核对。显式指定非空网络数组后，Bridge 保留原生 `result`，另返回 `requestedRoutingNets`、`reportedFailedNetsOutsideSelection`、`reportedTotalNetsCountExceedsSelection` 与 `selectionScopeUnconfirmed`；超出选择范围的原生报告不会被当作已确认成功，且无超范围报告也不能证明原生筛选生效。对最多 3 个明确指定的网络，Bridge 在调用前记录图元 ID 与长度；原生 RPC 超时后同页回读，并在 `routingObservation` 中报告网络变化或回读失败。它只是暂时快照，旧宿主仍持续隔离写入；返回 `success:true` 但部分网络失败时也明确报告未完成。对 PCB 的直线、圆弧、折线、过孔调用无参数 `getAll` 并设置 `includeCompleteRouting:true`，会额外返回不截断的 `routingPrimitives`，包含图元 ID、网络、层与几何。Server 受控恢复会在重启原宿主后读取四类图元及全部网络长度，确认仍在执行时的同一 PCB 后才解除隔离。
 
+完整布线快照不会跳过无网络的板框或丝印折线：EDA 返回的 `net:null` 会原样保留，图元 ID、层与多边形源数据仍需完整读取。
+
 PCB `import_changes` 打开原生确认对话框后，Bridge 和 Server 均暂停写入，只读查询可继续。用户在 EDA 点击应用修改或取消并确认对话框关闭后，从 `bridge_clients` 取得 `requestId`，调用 `bridge_recover_client action=resolve_import`，设置 `confirm:true` 和对应的 `resolution`。Server 核对同一 PCB 并完整回读器件与网络后发出解除指令。底层 API 不提供对话框完成事件；无法确认时先建立 `action=recover` 会话，重启原 EDA 宿主，再用新 Bridge 客户端执行 PCB 回读。
 
 2.1 版本新增 `schematic_document_action`，用于受限地检查原理图坐标/区域、选中对象、图元、导航、保存和导入。

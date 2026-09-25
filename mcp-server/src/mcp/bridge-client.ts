@@ -1963,7 +1963,8 @@ export class EdaBridgeServer {
     const number = (item: unknown): boolean => typeof item === 'number' && Number.isFinite(item);
     const kind = apiFullName.toLowerCase();
     const validPrimitive = (primitive: unknown): boolean => {
-      if (!isRecord(primitive) || !optionalString(primitive.primitiveId) || typeof primitive.net !== 'string'
+      if (!isRecord(primitive) || !optionalString(primitive.primitiveId)
+        || (typeof primitive.net !== 'string' && primitive.net !== null)
         || typeof primitive.primitiveLock !== 'boolean')
         return false;
       if (kind.includes('primitivevia'))

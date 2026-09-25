@@ -85,9 +85,9 @@ async function main() {
 	states.arc.set('arc-1', makeState('arc', 'arc-1'));
 	states.polyline.set('polyline-1', makeState('polyline', 'polyline-1'));
 	states.via.set('via-1', makeState('via', 'via-1'));
-	states.line.set('outline-line', makeState('line', 'outline-line', { layer: 11, net: '' }));
-	states.arc.set('silkscreen-arc', makeState('arc', 'silkscreen-arc', { layer: 3, net: '' }));
-	states.polyline.set('outline-polyline', makeState('polyline', 'outline-polyline', { layer: 11, net: '' }));
+	states.line.set('outline-line', makeState('line', 'outline-line', { layer: 11, net: null }));
+	states.arc.set('silkscreen-arc', makeState('arc', 'silkscreen-arc', { layer: 3, net: null }));
+	states.polyline.set('outline-polyline', makeState('polyline', 'outline-polyline', { layer: 11, net: null }));
 	globalThis.eda = {
 		dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: pageUuid }; } },
 		pcb_PrimitiveLine: routingApi('line'),
@@ -120,6 +120,10 @@ async function main() {
 	assert.equal(missing.primitive, null);
 	const outline = await handlePcbRoutingEditTask({ action: 'read', kind: 'line', primitiveId: 'outline-line' });
 	assert.equal(outline.found, false, 'board outline must not be reported as copper routing');
+	assert.equal((await handlePcbRoutingEditTask({ action: 'read', kind: 'arc', primitiveId: 'silkscreen-arc' })).found, false);
+	states.line.set('invalid-copper-line', makeState('line', 'invalid-copper-line', { net: null }));
+	await assert.rejects(() => handlePcbRoutingEditTask({ action: 'read' }), /EDA net must be a string/);
+	states.line.delete('invalid-copper-line');
 
 	const newArc = await handlePcbRoutingEditTask({ action: 'create', kind: 'arc', net: 'GND', layer: 1, startX: 1, startY: 2, endX: 3, endY: 4, arcAngle: 135, interactiveMode: 2, lineWidth: 0.5, primitiveLock: true });
 	assert.equal(newArc.ok, true);
