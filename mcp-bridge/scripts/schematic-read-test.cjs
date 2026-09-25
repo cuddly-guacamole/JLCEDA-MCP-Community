@@ -4,6 +4,7 @@ const process = require('node:process');
 process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', moduleResolution: 'node' });
 require('ts-node/register/transpile-only');
 
+const { handleApiInvokeTask } = require('../src/mcp/invoke-handler.ts');
 const { handleSchematicReadTask } = require('../src/mcp/schematic-read-handler.ts');
 const { toSerializable } = require('../src/utils.ts');
 
@@ -17,8 +18,24 @@ const existingComponent = {
 
 let currentPage = 'P1';
 globalThis.eda = {
-	dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: currentPage }; } },
+	dmt_Schematic: {
+		async getCurrentSchematicPageInfo() { return { uuid: currentPage }; },
+		async createSchematicPage() {
+			currentPage = 'P2';
+			return 'P2';
+		},
+	},
 	dmt_SelectControl: { async getCurrentDocumentInfo() { return { uuid: currentPage }; } },
+	dmt_EditorControl: {
+		async openDocument(pageUuid) {
+			currentPage = pageUuid;
+			return true;
+		},
+		async activateDocument(pageUuid) {
+			currentPage = pageUuid;
+			return true;
+		},
+	},
 	sch_PrimitiveComponent: {
 		async getAll(_componentType, allSchematicPages) {
 			return currentPage === 'P1' || allSchematicPages ? [existingComponent] : [];
@@ -50,6 +67,26 @@ async function readCount() {
 }
 
 async function main() {
+	const originalGetAll = globalThis.eda.sch_PrimitiveComponent.getAll;
+	const originalGetAllIds = globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId;
+	await handleApiInvokeTask({ apiFullName: 'eda.dmt_Schematic.createSchematicPage', args: ['schematic-1'] });
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [existingComponent];
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['old-page-component'];
+	await handleApiInvokeTask({ apiFullName: 'eda.dmt_EditorControl.activateDocument', args: ['P2'] });
+	const firstRead = await handleSchematicReadTask({});
+	assert.equal(firstRead.errorCode, 'PAGE_NOT_READY', 'first read after creating and activating P2 must reject cached P1 IDs');
+	globalThis.eda.sch_PrimitiveComponent.getAll = originalGetAll;
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = originalGetAllIds;
+	currentPage = 'P1';
+	const anotherOldComponent = { ...existingComponent, getState_PrimitiveId: () => 'old-page-component-2' };
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [anotherOldComponent];
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['old-page-component-2'];
+	await handleApiInvokeTask({ apiFullName: 'eda.dmt_EditorControl.openDocument', args: ['P3'] });
+	const firstReadAfterOpen = await handleSchematicReadTask({});
+	assert.equal(firstReadAfterOpen.errorCode, 'PAGE_NOT_READY', 'first read after opening P3 must reject cached P1 IDs');
+	globalThis.eda.sch_PrimitiveComponent.getAll = originalGetAll;
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = originalGetAllIds;
+	currentPage = 'P1';
 	assert.equal(await readCount(), 1);
 	currentPage = 'P2';
 	const emptyPage = await handleSchematicReadTask({});

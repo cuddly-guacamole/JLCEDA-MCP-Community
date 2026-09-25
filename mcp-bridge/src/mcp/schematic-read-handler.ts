@@ -58,6 +58,24 @@ async function assertCurrentComponentIds(components: unknown[]): Promise<string[
 	return ids;
 }
 
+/** 在切换或新建图页前记录当前页 ID，识别首次读取时仍返回的旧页缓存。 */
+export async function observeCurrentSchematicComponentPage(): Promise<void> {
+	try {
+		const context = await readPageContext();
+		const ids = await eda.sch_PrimitiveComponent.getAllPrimitiveId(undefined, false);
+		if (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !id.trim()))
+			return;
+		await assertSamePageContext(context);
+		for (const id of ids) {
+			if (!observedComponentPages.has(id))
+				observedComponentPages.set(id, context.pageUuid);
+		}
+	}
+	catch {
+		// The page transition must still be possible if pre-transition observation is unavailable.
+	}
+}
+
 function requiredState<T>(primitive: unknown, getter: string): T {
 	const method = primitive && typeof primitive === 'object' ? (primitive as Record<string, unknown>)[getter] : undefined;
 	if (typeof method !== 'function')

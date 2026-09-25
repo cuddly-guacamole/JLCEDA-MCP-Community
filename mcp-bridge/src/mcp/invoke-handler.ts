@@ -11,6 +11,7 @@
 
 import { isReadOnlyBridgeRequest } from '../bridge/bridge-contract';
 import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils';
+import { observeCurrentSchematicComponentPage } from './schematic-read-handler';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
@@ -23,6 +24,15 @@ const PCB_ROUTING_READBACKS = new Map([
 	['eda.pcb_primitivevia.getall', 'via'],
 ]);
 const SCHEMATIC_PAGES_GET_ALL = 'eda.dmt_schematic.getallschematicpagesinfo';
+const SCHEMATIC_PAGE_TRANSITIONS = new Set([
+	'eda.dmt_schematic.createschematicpage',
+	'eda.dmt_schematic.copyschematicpage',
+	'eda.dmt_schematic.deleteschematic',
+	'eda.dmt_schematic.deleteschematicpage',
+	'eda.dmt_editorcontrol.activatedocument',
+	'eda.dmt_editorcontrol.closedocument',
+	'eda.dmt_editorcontrol.opendocument',
+]);
 let pendingAutoLayoutPcbUuid: string | undefined;
 
 function isUnknownNativeRpcResult(errorMessage: string): boolean {
@@ -364,6 +374,8 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		: undefined;
 	let invokeResult: unknown;
 	try {
+		if (SCHEMATIC_PAGE_TRANSITIONS.has(normalizedPath))
+			await observeCurrentSchematicComponentPage();
 		invokeResult = await Promise.resolve(callable.apply(thisArg, invokeArgs));
 	}
 	catch (error: unknown) {
