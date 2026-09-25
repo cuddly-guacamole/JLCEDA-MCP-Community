@@ -6,7 +6,7 @@
 
 交互放置启动、重复器件清理或坐标放置若无法核对结果，恢复时必须读取原图页不截断的器件 ID 列表；`api_invoke` 的当前页 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 可传 `args:[null,false]` 与 `includeCompleteSchematicComponentIds:true` 获取该列表。原生调用尚未确认结束时，先重启原 EDA 宿主。
 
-PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔离写入。受控恢复需先重启原 EDA 宿主，再对任务执行时的同一 PCB 完整读回直线、圆弧、折线、过孔的网络与几何及全部网络长度；`api_invoke` 的这些图元 `getAll` 可用 `includeCompleteRouting:true` 获取不截断的快照。即使原生 API 返回 `success:true`，仍需检查失败网络与实际布线结果。
+PCB `autoRouting` 指定网络时使用 `RoutingNets:["网络名"]`；返回值会保留原生结果，并标出 EDA 报告的失败网络或参与数量是否超出请求范围。原生 RPC 超时时，Bridge 返回提交状态未知并隔离写入。受控恢复需先重启原 EDA 宿主，再对任务执行时的同一 PCB 完整读回直线、圆弧、折线、过孔的网络与几何及全部网络长度；`api_invoke` 的这些图元 `getAll` 可用 `includeCompleteRouting:true` 获取不截断的快照。即使原生 API 返回 `success:true`，仍需检查失败网络与实际布线结果。
 
 `pcb_connectivity_action` 可在当前 PCB 按精确网络名和铜层（SIGNAL 或 PLANE）直接创建直线导线，或按坐标、孔径与外径创建过孔。默认要求网络已存在；独立 PCB 新网络须显式传 `allowNewNet:true`。创建后回读图元；提交状态不明时隔离写入，对同一 PCB 完整回读全部布线图元和网络，原生调用可能未结束时还须重启 EDA 宿主。
 
