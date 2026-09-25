@@ -275,7 +275,9 @@ export class ToolDispatcher {
         const deadline = Date.now() + timeoutSeconds * 1000;
         while (Date.now() < deadline) {
           await delay(250);
-          const checkResult = await this.bridgeServer.request(`${placementPath}/check`, { sessionId }, 5000);
+          // The Bridge contract allows 25s for this write-capable check. Use the
+          // server's 30s request budget so cleanup/readback can finish normally.
+          const checkResult = await this.bridgeServer.request(`${placementPath}/check`, { sessionId });
           if (!isPlainObjectRecord(checkResult))
             throw new Error('placement check returned invalid data');
           primitiveIds = Array.isArray(checkResult.primitiveIds)

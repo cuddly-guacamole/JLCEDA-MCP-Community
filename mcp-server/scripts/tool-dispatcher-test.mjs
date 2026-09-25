@@ -22,6 +22,7 @@ const fakeBridge = {
       return { ok: true, sessionId: 'session-1' };
     }
     if (path === '/bridge/jlceda/component/place/check') {
+      assert.equal(timeoutMs, undefined, 'placement check must use the Bridge server default budget for the 25s contract route');
       return { ok: true, placed: true, primitiveIds: ['placed-1'], designatorChanges: [{ primitiveId: 'old', before: 'U4', after: 'U15' }], annotationWarning: 'Designators changed', userCancelled: false };
     }
     if (path === '/bridge/jlceda/component/place/close') {
@@ -95,6 +96,8 @@ assert.deepEqual(duplicateCalls, [
   '/bridge/jlceda/component/place/check',
   '/bridge/jlceda/component/place/close',
 ]);
+assert.equal(calls.find(call => call.path === '/bridge/jlceda/component/place/start').payload.timeoutSeconds, 30,
+  'the overall placement window must still be passed to the Bridge session');
 
 const uncertainCleanupBridge = {
   async request(path) {
