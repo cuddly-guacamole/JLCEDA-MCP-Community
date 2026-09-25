@@ -9,6 +9,21 @@ interface PcbLayerApi {
 	setTheNumberOfCopperLayers?: (count: number) => Promise<unknown>;
 }
 
+const LAYER_BOUND_PRIMITIVES = [
+	'pcb_PrimitiveLine',
+	'pcb_PrimitiveArc',
+	'pcb_PrimitivePolyline',
+	'pcb_PrimitiveFill',
+	'pcb_PrimitivePour',
+	'pcb_PrimitivePad',
+	'pcb_PrimitiveRegion',
+	'pcb_PrimitiveString',
+	'pcb_PrimitiveAttribute',
+	'pcb_PrimitiveImage',
+	'pcb_PrimitiveDimension',
+	'pcb_PrimitiveObject',
+] as const;
+
 function getPcbLayerApi(): PcbLayerApi {
 	const eda = getEdaRuntime();
 	const api = eda?.pcb_Layer;
@@ -70,6 +85,48 @@ async function readLayerState(api: PcbLayerApi, pageUuid: string): Promise<Recor
 	return { ok: true, action: 'read', scope: SCOPE, pageUuid, complete: true, copperLayerCount, layerCount: rawLayers.length, layers };
 }
 
+async function firstRemovedLayerPrimitive(pageUuid: string, before: Record<string, unknown>, requested: number): Promise<Record<string, unknown> | undefined> {
+	const copperLayerCount = Number(before.copperLayerCount);
+	const innerLayers = (before.layers as Array<Record<string, unknown>>)
+		.filter(layer => (layer.type === 'SIGNAL' || layer.type === 'PLANE')
+			&& (layer.layerStatus === 1 || layer.layerStatus === 2) && Number(layer.id) >= 15 && Number(layer.id) <= 44)
+		.sort((first, second) => Number(first.id) - Number(second.id));
+	if (innerLayers.length !== copperLayerCount - 2
+		|| innerLayers.some((layer, index) => layer.id !== 15 + index)) {
+		throw new Error('The active inner copper layers cannot be identified; layer reduction was not attempted.');
+	}
+	const removedLayerIds = new Set(innerLayers.slice(requested - 2).map(layer => Number(layer.id)));
+	const runtime = getEdaRuntime();
+	if (!runtime)
+		throw new TypeError('EDA runtime is unavailable.');
+	for (const apiName of LAYER_BOUND_PRIMITIVES) {
+		const primitiveApi = runtime[apiName];
+		if (!isPlainObjectRecord(primitiveApi) || typeof primitiveApi.getAll !== 'function')
+			throw new TypeError(`EDA ${apiName}.getAll is unavailable; layer reduction was not attempted.`);
+		const primitives = await (primitiveApi.getAll as () => Promise<unknown>).call(primitiveApi);
+		if (!Array.isArray(primitives))
+			throw new TypeError(`EDA ${apiName}.getAll did not return an array; layer reduction was not attempted.`);
+		for (const primitive of primitives) {
+			const layerGetter = (primitive as Record<string, unknown> | null)?.getState_Layer;
+			const idGetter = (primitive as Record<string, unknown> | null)?.getState_PrimitiveId;
+			if (typeof layerGetter !== 'function' || typeof idGetter !== 'function')
+				throw new TypeError(`EDA ${apiName} layer or primitive ID is unreadable; layer reduction was not attempted.`);
+			const layer = layerGetter.call(primitive);
+			if (removedLayerIds.has(layer)) {
+				const primitiveId = idGetter.call(primitive);
+				if (typeof primitiveId !== 'string' || !primitiveId)
+					throw new TypeError(`EDA ${apiName} primitive ID is unreadable; layer reduction was not attempted.`);
+				if (await currentPcbUuid() !== pageUuid)
+					throw new Error('The active PCB changed during the inner-layer inventory.');
+				return { apiName, primitiveId, layer };
+			}
+		}
+	}
+	if (await currentPcbUuid() !== pageUuid)
+		throw new Error('The active PCB changed during the inner-layer inventory.');
+	return undefined;
+}
+
 function unknownLayerWrite(error: unknown, pageUuid: string, requestedCopperLayerCount: number, beforeCopperLayerCount: unknown, nativeCallSettled: boolean): Record<string, unknown> {
 	const message = toSafeErrorMessage(error);
 	if (!nativeCallSettled && !NATIVE_RESULT_UNKNOWN.test(message))
@@ -93,6 +150,12 @@ export async function handlePcbLayerManageTask(payload: unknown): Promise<unknow
 		return before;
 	if (before.copperLayerCount === requested)
 		return { ok: true, action, scope: SCOPE, pageUuid, copperLayerCount: requested, previousCopperLayerCount: before.copperLayerCount, changed: false, verified: true };
+	if (Number(requested) < Number(before.copperLayerCount)) {
+		const blockingPrimitive = await firstRemovedLayerPrimitive(pageUuid, before, requested as number);
+		if (blockingPrimitive) {
+			return { ok: false, action, scope: SCOPE, pageUuid, reason: 'removed_layer_not_empty', requestedCopperLayerCount: requested, copperLayerCount: before.copperLayerCount, blockingPrimitive, changed: false, verified: true };
+		}
+	}
 	if (typeof api.setTheNumberOfCopperLayers !== 'function')
 		throw new TypeError('EDA pcb_Layer.setTheNumberOfCopperLayers API is unavailable in this client version.');
 	if (await currentPcbUuid() !== pageUuid)

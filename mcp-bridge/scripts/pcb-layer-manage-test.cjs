@@ -18,6 +18,21 @@ let readbackFails = false;
 let extraLayerCount = 0;
 let reportedCopperLayerCount;
 let omitLayerStatus = false;
+const primitiveApis = [
+	'pcb_PrimitiveLine',
+	'pcb_PrimitiveArc',
+	'pcb_PrimitivePolyline',
+	'pcb_PrimitiveFill',
+	'pcb_PrimitivePour',
+	'pcb_PrimitivePad',
+	'pcb_PrimitiveRegion',
+	'pcb_PrimitiveString',
+	'pcb_PrimitiveAttribute',
+	'pcb_PrimitiveImage',
+	'pcb_PrimitiveDimension',
+	'pcb_PrimitiveObject',
+];
+const primitiveInventories = new Map();
 
 globalThis.eda = {
 	dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: page }; } },
@@ -54,6 +69,13 @@ globalThis.eda = {
 		},
 	},
 };
+for (const apiName of primitiveApis) {
+	globalThis.eda[apiName] = {
+		async getAll() {
+			return primitiveInventories.get(apiName) ?? [];
+		},
+	};
+}
 
 async function main() {
 	const read = await handlePcbLayerManageTask({ action: 'read' });
@@ -79,6 +101,13 @@ async function main() {
 	assert.equal(set.layers[2].type, 'PLANE');
 	assert.equal(set.layers[2].layerStatus, 2);
 	assert.equal(setCalls, 1);
+	primitiveInventories.set('pcb_PrimitiveLine', [{ getState_Layer: () => 15, getState_PrimitiveId: () => 'inner-track' }]);
+	const blocked = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 2 });
+	assert.equal(blocked.reason, 'removed_layer_not_empty');
+	assert.deepEqual(blocked.blockingPrimitive, { apiName: 'pcb_PrimitiveLine', primitiveId: 'inner-track', layer: 15 });
+	assert.equal(blocked.changed, false);
+	assert.equal(setCalls, 1, 'a populated inner layer must never reach the native setter');
+	primitiveInventories.delete('pcb_PrimitiveLine');
 	setMode = 'reject';
 	const rejected = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 2 });
 	assert.equal(rejected.ok, false);
@@ -111,6 +140,13 @@ async function main() {
 	omitLayerStatus = true;
 	await assert.rejects(() => handlePcbLayerManageTask({ action: 'read' }), /readback is incomplete/);
 	omitLayerStatus = false;
+	setMode = 'success';
+	primitiveInventories.set('pcb_PrimitiveLine', [{ getState_Layer: () => 15, getState_PrimitiveId: () => 'retained-track' }]);
+	const retained = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 6 });
+	assert.equal(retained.verified, true, 'a populated inner layer that remains enabled does not block reduction');
+	primitiveInventories.delete('pcb_PrimitiveLine');
+	const emptyReduction = await handlePcbLayerManageTask({ action: 'set', copperLayerCount: 2 });
+	assert.equal(emptyReduction.verified, true, 'empty inner layers can be removed');
 	const calls = setCalls;
 	for (const invalid of [1, 3, 34, 4.5])
 		await assert.rejects(() => handlePcbLayerManageTask({ action: 'set', copperLayerCount: invalid }), /even integer/);
