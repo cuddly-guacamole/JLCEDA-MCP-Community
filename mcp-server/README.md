@@ -40,7 +40,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_layout_check` 对当前原理图执行保守的符号/引脚/属性/导线矩形碰撞检查，并显式报告属性几何和页面边界能力是否可用。修复模式需要 `confirm: true`，只移动属性文本，不改变电气连接。
 
-`schematic_connectivity_action` 提供 `wire_preview`、`wire_create`、`netport_create` 和 `netport_move`。新导线的 `line` 最多包含 512 个数（256 个坐标点）。先预览导线与现有导线的电气接触，再把确实要连接的导线 ID 传给 `allowedWireIds`；没有连接点的纯十字交叉不算接触，不同已命名网络的接触会被拒绝。创建后返回受影响导线 ID，仍需复查网表。NetPort 在当前图页创建或移动并回读图元；移动期间核对图页与编辑器文档 UUID，并拒绝已识别的旧页图元缓存。新建时还返回目标网络的引脚列表。NetPort 是层次图端口，可用于同页连接，不应当作跨页连接标识。
+`schematic_connectivity_action` 提供 `wire_preview`、`wire_create`、`netport_create` 和 `netport_move`。新导线的 `line` 最多包含 512 个数（256 个坐标点）。先预览导线与现有导线的电气接触，再把确实要连接的导线 ID 传给 `allowedWireIds`；没有连接点的纯十字交叉不算接触，不同已命名网络的接触会被拒绝。创建后返回受影响导线 ID，仍需复查网表。NetPort 在当前图页创建或移动并回读图元；移动期间核对图页与编辑器文档 UUID 及当前图元列表。新建时还返回目标网络的引脚列表。NetPort 是层次图端口，可用于同页连接，不应当作跨页连接标识。
 
 `schematic_component_edit` 的 `read` 返回当前原理图页全部普通器件的完整状态；`modify` 用 `primitiveId` 和 `property` 修改单个器件的位置、方向、位号或属性，`delete` 按 ID 删除一个器件。`property.otherProperty` 与已有 BOM 扩展属性合并；其余未指定字段保持原值。写入后核对目标 ID 和请求的状态变化；几何修改还比较目标器件各引脚网络。`pin_network_changed` 会列出误接引脚并隔离写入，恢复时需对同页执行 `schematic_read`，设置 `includeConnectivityPrimitives:true`，核对连接图元和语义网表后修正。其他 `commitUnknown:true` 使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/schematic/component-edit"`、`readbackPayload:{"action":"read"}`，完整读回执行时的原图页；诊断要求宿主重启时先重启原 EDA 宿主。
 
