@@ -61,6 +61,7 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 		|| path === '/bridge/jlceda/schematic/connectivity'
 		|| path === '/bridge/jlceda/schematic/component-edit'
 		|| path === '/bridge/jlceda/schematic/wire-manage'
+		|| path === '/bridge/jlceda/schematic/text-manage'
 		|| path === '/bridge/jlceda/netlabel/place'
 		|| path === '/bridge/jlceda/component/place/start'
 		|| path === '/bridge/jlceda/component/place/check'

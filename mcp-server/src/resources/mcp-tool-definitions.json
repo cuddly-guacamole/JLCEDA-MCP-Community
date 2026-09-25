@@ -46,8 +46,8 @@
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "可选的执行图页 UUID 核对值，必须与诊断记录一致；不能补充缺失的执行图页身份。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
-        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/pcb/pour-manage", "/bridge/jlceda/pcb/region-manage", "/bridge/jlceda/pcb/text-manage", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 区域写入使用 pcb_region_manage 及 {\"action\":\"read\"} 完整回读区域；PCB 文本或属性写入使用 pcb_text_manage 及 {\"action\":\"read\"} 完整回读文本与属性；PCB 器件创建、修改或删除同理使用 pcb_component_edit；PCB 走线编辑、autoRouting 与直线/过孔创建使用无参 eda.pcb_PrimitiveLine.getAll，恢复流程会补读全部圆弧、折线、过孔及网络；原理图器件修改或删除使用 schematic_component_edit；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll。" }
+        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/schematic/text-manage", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/pcb/pour-manage", "/bridge/jlceda/pcb/region-manage", "/bridge/jlceda/pcb/text-manage", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
+        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 区域写入使用 pcb_region_manage 及 {\"action\":\"read\"} 完整回读区域；PCB 文本或属性写入使用 pcb_text_manage 及 {\"action\":\"read\"} 完整回读文本与属性；PCB 器件创建、修改或删除同理使用 pcb_component_edit；PCB 走线编辑、autoRouting 与直线/过孔创建使用无参 eda.pcb_PrimitiveLine.getAll，恢复流程会补读全部圆弧、折线、过孔及网络；原理图器件修改或删除使用 schematic_component_edit；原理图文字写入使用 schematic_text_manage 的无过滤 read 完整回读；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -279,6 +279,44 @@
         { "type": "object", "properties": { "action": { "const": "modify" }, "primitiveId": { "type": "string", "minLength": 1 }, "property": { "type": "object", "minProperties": 1 }, "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true } }, "required": ["action", "primitiveId", "property"], "additionalProperties": false },
         { "type": "object", "properties": { "action": { "const": "delete" }, "primitiveId": { "type": "string", "minLength": 1 } }, "required": ["action", "primitiveId"], "additionalProperties": false }
       ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "schematic_text_manage",
+    "description": "完整读取当前原理图页文字标注，或按 ID 创建、修改、删除单条文字。写前核对图页与编辑器身份，写后按 ID 回读；提交状态未知时须完整回读原图页全部文字。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["read", "create", "modify", "delete"] },
+        "primitiveId": { "$ref": "#/$defs/primitiveId" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "content": { "type": "string" },
+        "rotation": { "$ref": "#/$defs/rotation" },
+        "textColor": { "type": ["string", "null"] },
+        "fontName": { "type": ["string", "null"] },
+        "fontSize": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+        "bold": { "type": "boolean" },
+        "italic": { "type": "boolean" },
+        "underLine": { "type": "boolean" },
+        "alignMode": { "$ref": "#/$defs/alignMode" },
+        "property": { "$ref": "#/$defs/property" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "required": ["action"],
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "read" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "create" }, "x": { "type": "number" }, "y": { "type": "number" }, "content": { "type": "string" }, "rotation": { "$ref": "#/$defs/rotation" }, "textColor": { "type": ["string", "null"] }, "fontName": { "type": ["string", "null"] }, "fontSize": { "type": ["number", "null"], "exclusiveMinimum": 0 }, "bold": { "type": "boolean" }, "italic": { "type": "boolean" }, "underLine": { "type": "boolean" }, "alignMode": { "$ref": "#/$defs/alignMode" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "x", "y", "content"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "property": { "$ref": "#/$defs/property" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "delete" }, "primitiveId": { "$ref": "#/$defs/primitiveId" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId"], "additionalProperties": false }
+      ],
+      "$defs": {
+        "primitiveId": { "type": "string", "minLength": 1 },
+        "rotation": { "type": "integer", "enum": [0, 90, 180, 270] },
+        "alignMode": { "type": "integer", "minimum": 1, "maximum": 9, "description": "1–9：左上、左中、左下、居上、居中、居下、右上、右中、右下。" },
+        "property": { "type": "object", "minProperties": 1, "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "content": { "type": "string" }, "rotation": { "$ref": "#/$defs/rotation" }, "textColor": { "type": ["string", "null"] }, "fontName": { "type": ["string", "null"] }, "fontSize": { "type": ["number", "null"], "exclusiveMinimum": 0 }, "bold": { "type": "boolean" }, "italic": { "type": "boolean" }, "underLine": { "type": "boolean" }, "alignMode": { "$ref": "#/$defs/alignMode" } }, "additionalProperties": false }
+      },
       "additionalProperties": false
     }
   },

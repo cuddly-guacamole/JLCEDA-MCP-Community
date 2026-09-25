@@ -121,6 +121,13 @@ assert.equal(bridgePathForTool('schematic_wire_manage'), '/bridge/jlceda/schemat
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/wire-manage', { action: 'read' }), true);
 for (const action of ['modify', 'delete'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/wire-manage', { action }), false);
+await dispatcher.dispatch({ name: 'schematic_text_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/schematic/text-manage');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('schematic_text_manage', { action: 'read' }) + 2000);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/text-manage', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/text-manage', { action }), false);
 await dispatcher.dispatch({ name: 'pcb_component_edit', arguments: { action: 'read' } });
 assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/component-edit');
 assert.deepEqual(calls.at(-1).payload, { action: 'read' });
@@ -627,6 +634,24 @@ for (const input of [
   assert.equal(regionSchema.safeParse(input).success, false, `pcb_region_manage should reject ${JSON.stringify(input)}`);
 }
 const textDefinition = definitions.find(definition => definition.name === 'pcb_text_manage');
+const schematicTextDefinition = definitions.find(definition => definition.name === 'schematic_text_manage');
+assert.ok(schematicTextDefinition);
+const schematicTextSchema = z.fromJSONSchema(schematicTextDefinition.inputSchema);
+for (const input of [
+  { action: 'read' },
+  { action: 'read', primitiveId: 'text-1' },
+  { action: 'create', x: 100, y: 200, content: 'Note' },
+  { action: 'modify', primitiveId: 'text-1', property: { content: 'Updated', fontSize: null } },
+  { action: 'delete', primitiveId: 'text-1' },
+])
+  assert.equal(schematicTextSchema.safeParse(input).success, true, `schematic_text_manage should accept ${JSON.stringify(input)}`);
+for (const input of [
+  { action: 'create', x: 100, y: 200 },
+  { action: 'create', x: 100, y: 200, content: 'Note', rotation: 45 },
+  { action: 'modify', primitiveId: 'text-1', property: { net: 'GND' } },
+  { action: 'delete' },
+])
+  assert.equal(schematicTextSchema.safeParse(input).success, false, `schematic_text_manage should reject ${JSON.stringify(input)}`);
 assert.ok(textDefinition);
 const textSchema = z.fromJSONSchema(textDefinition.inputSchema);
 for (const input of [

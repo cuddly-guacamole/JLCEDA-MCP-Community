@@ -101,6 +101,8 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(regionTool?.inputSchema, 'pcb_region_manage must be advertised');
     const textTool = toolsResponse.result.tools.find((tool) => tool.name === 'pcb_text_manage');
     assert.ok(textTool?.inputSchema, 'pcb_text_manage must be advertised');
+    const schematicTextTool = toolsResponse.result.tools.find((tool) => tool.name === 'schematic_text_manage');
+    assert.ok(schematicTextTool?.inputSchema, 'schematic_text_manage must be advertised');
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
