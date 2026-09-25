@@ -14,6 +14,7 @@ const { handleEdaContextTask } = require('../src/mcp/context-handler.ts');
 const { handleDesignArchiveExportTask } = require('../src/mcp/design-archive-export-handler.ts');
 const { handleDesignCompareTask } = require('../src/mcp/design-compare-handler.ts');
 const { handleDesignSourceExportTask } = require('../src/mcp/design-source-export-handler.ts');
+const { handleApiInvokeTask } = require('../src/mcp/invoke-handler.ts');
 const { handleLibraryClassificationTask } = require('../src/mcp/library-classification-handler.ts');
 const { handleLibraryPreviewTask } = require('../src/mcp/library-preview-handler.ts');
 const { handleLibrarySearchTask } = require('../src/mcp/library-search-handler.ts');
@@ -33,6 +34,7 @@ const { handleSchematicDocumentTask } = require('../src/mcp/schematic-document-h
 const { handleSchematicDrcCheckTask } = require('../src/mcp/schematic-drc-handler.ts');
 const { handleSchematicPagesManageTask } = require('../src/mcp/schematic-pages-manage-handler.ts');
 const { handleWorkspaceQueryTask } = require('../src/mcp/workspace-query-handler.ts');
+const { BridgeTaskQuarantine, requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
 const { toSerializableAsync } = require('../src/utils.ts');
 const { debugLog } = require('../src/utils/debug-log.ts');
 
@@ -650,6 +652,149 @@ async function main() {
 	assert.match(String(storageErrors[0][1]), /storage unavailable/);
 	console.error = originalConsoleError;
 	globalThis.eda.sys_Storage.setExtensionUserConfig = originalStorageWrite;
+	const originalSchematicComponents = globalThis.eda.sch_PrimitiveComponent;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId(_type, allPages) {
+			assert.equal(_type, null);
+			assert.equal(allPages, false);
+			return Array.from({ length: 125 }, (_, index) => `component-${index + 1}`);
+		},
+		async getAll(_type, allPages) {
+			assert.equal(_type, undefined);
+			assert.equal(allPages, false);
+			return Array.from({ length: 125 }, (_, index) => ({
+				getState_PrimitiveId: () => `component-${index + 1}`,
+				getState_Designator: () => `U${index + 1}`,
+				getState_OtherProperty: () => index === 0 ? { supplierId: 'C1' } : undefined,
+			}));
+		},
+	};
+	const completeSchematicIds = await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+		args: [null, false],
+		includeCompleteSchematicComponentIds: true,
+	});
+	assert.equal(completeSchematicIds.result.length, 120, 'ordinary API result retains its serialization limit');
+	assert.equal(completeSchematicIds.schematicComponentCount, 125);
+	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentIds.length, 125);
+	assert.equal(completeSchematicIds.schematicComponentIds[124], 'component-125');
+	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentStates.length, 125);
+	assert.deepEqual((await toSerializableAsync(completeSchematicIds)).schematicComponentStates[0], { primitiveId: 'component-1', designator: 'U1', otherPropertyJson: '{"supplierId":"C1"}' });
+	assert.deepEqual(completeSchematicIds.schematicComponentStates[124], { primitiveId: 'component-125', designator: 'U125', otherPropertyJson: '{}' });
+	await assert.rejects(() => handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+		args: [],
+		includeCompleteSchematicComponentIds: true,
+	}), /args \[null, false\]/);
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['same-id', 'same-id'];
+	assert.equal((await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+		args: [null, false],
+		includeCompleteSchematicComponentIds: true,
+	})).ok, false);
+	globalThis.eda.sch_PrimitiveComponent = originalSchematicComponents;
+	const originalCurrentPcbInfo = globalThis.eda.dmt_Pcb.getCurrentPcbInfo;
+	let activePcbUuid = 'pcb-1';
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => ({ uuid: activePcbUuid });
+	let pcbAutoLayoutCalls = 0;
+	globalThis.eda.pcb_Document.autoLayout = async () => {
+		pcbAutoLayoutCalls += 1;
+		throw new Error('RPC Call autoLayout Timed Out');
+	};
+	await assert.rejects(() => handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [], expectedPcbUuid: 'pcb-other' }), /PCB page changed between task start and autoLayout invocation/);
+	assert.equal(pcbAutoLayoutCalls, 0, 'a page mismatch must fail before the native autoLayout call');
+	const unknownLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
+	assert.equal(unknownLayout.commitState, 'unknown');
+	assert.equal(unknownLayout.retryBlocked, true);
+	assert.equal(unknownLayout.layoutContext.pageUuid, 'pcb-1');
+	const runtimeLayoutQuarantine = new BridgeTaskQuarantine();
+	const runtimeLayoutPath = '/bridge/jlceda/api/invoke';
+	if (requiresHostRestartForResult(runtimeLayoutPath, { apiFullName: 'eda.pcb_Document.autoLayout', args: [] }, unknownLayout))
+		runtimeLayoutQuarantine.requireHostRestart(runtimeLayoutPath);
+	const blockedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
+	assert.equal(blockedLayout.retryBlocked, true);
+	assert.equal(pcbAutoLayoutCalls, 1);
+	globalThis.eda.pcb_PrimitiveComponent = {
+		async getAll() { return Array.from({ length: 125 }, (_, index) => ({ uuid: `R${index + 1}`, x: 10 + index, y: 20, rotation: 90, footprint: '0402' })); },
+	};
+	const filteredReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] });
+	assert.equal(filteredReadback.autoLayoutReadbackPerformed, undefined);
+	assert.equal(filteredReadback.result[0].footprint, '0402', 'ordinary getAll must retain component fields');
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] })).retryBlocked, true);
+	activePcbUuid = 'pcb-2';
+	const otherPcbReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+	assert.equal(otherPcbReadback.autoLayoutReadbackPerformed, undefined);
+	assert.equal(otherPcbReadback.componentPositions, undefined);
+	assert.equal(otherPcbReadback.result[0].footprint, '0402');
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] })).retryBlocked, true);
+	activePcbUuid = 'pcb-1';
+	const layoutReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+	assert.equal(layoutReadback.autoLayoutReadbackPerformed, true);
+	assert.equal(layoutReadback.componentCount, 125);
+	assert.equal(layoutReadback.result[0].footprint, '0402');
+	assert.equal(layoutReadback.componentPositions.length, 125, 'layout recovery must return every component position');
+	assert.equal(layoutReadback.componentPositions[124].primitiveId, 'R125');
+	const serializedLayoutReadback = await toSerializableAsync(layoutReadback);
+	assert.equal(serializedLayoutReadback.componentPositions.length, 125, 'Bridge result serialization must preserve every verified position');
+	assert.equal(layoutReadback.componentPositions[0].rotation, 90);
+	assert.equal(runtimeLayoutQuarantine.requiresHostRestart(), true, 'same-page readback must not clear the runtime write barrier before EDA host restart');
+	globalThis.eda.pcb_Document.autoLayout = async () => ({ success: true, successComponentsCount: 1 });
+	const completedLayout = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoLayout', args: [] });
+	assert.equal(completedLayout.result.success, true);
+	const nextLayoutBaseline = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] });
+	assert.equal(nextLayoutBaseline.componentCount, undefined);
+	assert.equal(nextLayoutBaseline.result.length, 120, 'ordinary getAll retains its bounded generic serialization');
+	assert.equal(nextLayoutBaseline.result[0].footprint, '0402');
+	const requestedPositionReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [], includeCompletePositions: true });
+	assert.equal(requestedPositionReadback.componentCount, 125);
+	assert.equal(requestedPositionReadback.componentPositions[124].primitiveId, 'R125');
+	globalThis.eda.pcb_PrimitiveComponent.getAll = async () => [{ uuid: 'R1', footprint: '0402' }];
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] })).result[0].footprint, '0402');
+	assert.equal((await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [], includeCompletePositions: true })).ok, false, 'strict position validation applies only to requested recovery readbacks');
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = originalCurrentPcbInfo;
+	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: false, successNetsCount: 0, duration: 0, failedNets: ['VCC'] });
+	const failedRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });
+	assert.equal(failedRouting.ok, false);
+	assert.equal(failedRouting.routingState, 'not_started');
+	assert.deepEqual(failedRouting.result.failedNets, ['VCC']);
+	globalThis.eda.pcb_Document.autoRouting = async () => ({ success: true, totalNetsCount: 3, successNetsCount: 2, failedNets: ['GND'], duration: 42 });
+	const partialRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [] });
+	assert.equal(partialRouting.ok, false, 'successful start with unfinished nets must not report completed routing');
+	assert.equal(partialRouting.routingState, 'incomplete');
+	globalThis.eda.pcb_Document.autoRouting = async () => {
+		throw new Error('RPC Call autoRouting Timed Out');
+	};
+	const uncertainRouting = await handleApiInvokeTask({ apiFullName: 'eda.pcb_Document.autoRouting', args: [{ nets: ['VCC'] }] });
+	assert.equal(uncertainRouting.commitState, 'unknown');
+	assert.equal(uncertainRouting.commitUnknown, true);
+	assert.equal(uncertainRouting.retryBlocked, true);
+	const linePrimitives = Array.from({ length: 125 }, (_, index) => ({ primitiveId: `line-${index}`, net: 'VCC', layer: 1, startX: index, startY: 0, endX: index + 1, endY: 1, lineWidth: 0.2 }));
+	globalThis.eda.pcb_PrimitiveLine = {
+		async getAll() { return linePrimitives; },
+	};
+	globalThis.eda.pcb_PrimitiveArc = {
+		async getAll() { return [{ primitiveId: 'arc-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 1, endY: 1, arcAngle: 90, lineWidth: 0.2 }]; },
+	};
+	globalThis.eda.pcb_PrimitivePolyline = {
+		async getAll() { return [{ primitiveId: 'polyline-1', net: 'VCC', layer: 1, polygon: { getSource: () => ['L', 0, 0, 1, 1] }, lineWidth: 0.2 }]; },
+	};
+	globalThis.eda.pcb_PrimitiveVia = {
+		async getAll() { return [{ primitiveId: 'via-1', net: 'VCC', x: 1, y: 2, holeDiameter: 0.3, diameter: 0.6, viaType: 1 }]; },
+	};
+	const lineReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [], includeCompleteRouting: true });
+	assert.equal(lineReadback.result.length, 120, 'ordinary API result remains bounded');
+	assert.equal((await toSerializableAsync(lineReadback)).routingPrimitives.length, 125, 'complete routing geometry must not be truncated');
+	assert.equal(lineReadback.routingPrimitives[124].endX, 125);
+	linePrimitives[0] = { ...linePrimitives[0], net: undefined };
+	await assert.rejects(() => handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [], includeCompleteRouting: true }), /omitted an ID or geometry/);
+	linePrimitives[0].net = 'VCC';
+	const arcReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveArc.getAll', args: [], includeCompleteRouting: true });
+	assert.equal(arcReadback.routingPrimitives[0].arcAngle, 90);
+	const polylineReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitivePolyline.getAll', args: [], includeCompleteRouting: true });
+	assert.equal(polylineReadback.routingPrimitives[0].polygonSource, '["L",0,0,1,1]');
+	const viaReadback = await handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveVia.getAll', args: [], includeCompleteRouting: true });
+	assert.equal(viaReadback.routingPrimitives[0].diameter, 0.6);
+	await assert.rejects(() => handleApiInvokeTask({ apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: ['VCC'], includeCompleteRouting: true }), /only supported/);
 
 	const project = await handleProjectInfoTask({ includePages: true });
 	assert.equal(project.project.name, '2026');
@@ -765,7 +910,11 @@ async function main() {
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing' }), /routingType is required/);
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection' }), /confirm must be true/);
 	assert.equal((await handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection', confirm: true })).cleared, true);
-	assert.equal((await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' })).imported, true);
+	const pendingPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(pendingPcbImport.imported, true);
+	assert.equal(pendingPcbImport.commitState, 'pending_confirmation');
+	assert.equal(pendingPcbImport.importContext.pageUuid, 'pcb-1');
+	assert.equal(pendingPcbImport.requiresNativeConfirmation, true);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_json', fileName: 'route.json', dataBase64: 'e30=' })).bytes, 2);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_ses', fileName: 'route.ses', dataBase64: 'e30=' })).imported, true);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_layout_json', fileName: 'layout.json', dataBase64: 'e30=' })).imported, true);
@@ -791,7 +940,9 @@ async function main() {
 	assert.equal((await handlePcbDocumentTask({ action: 'start_ratline' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'stop_ratline' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection', confirm: true })).ok, false);
-	assert.equal((await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' })).ok, false);
+	const rejectedPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(rejectedPcbImport.ok, false);
+	assert.equal(rejectedPcbImport.commitState, 'not_started');
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_json', dataBase64: 'e30=' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_route_ses', dataBase64: 'e30=' })).ok, false);
 	assert.equal((await handlePcbDocumentTask({ action: 'import_auto_layout_json', dataBase64: 'e30=' })).ok, false);
@@ -820,6 +971,17 @@ async function main() {
 	assert.equal(largePcbNetList.total, 130);
 	assert.equal(largePcbNetList.returned, 130);
 	assert.equal(largePcbNetList.nets.length, 130);
+	globalThis.eda.pcb_Net.getAllNets = async () => [{ name: 'USB_D+' }, { name: 'GND' }];
+	globalThis.eda.pcb_Net.getAllNetsName = async () => Array.from({ length: 1001 }, (_, index) => `NET_${index}`);
+	const finalNetPage = await handlePcbNetQueryTask({ mode: 'names', offset: 1000, limit: 1000 });
+	assert.equal(finalNetPage.total, 1001);
+	assert.equal(finalNetPage.offset, 1000);
+	assert.deepEqual(finalNetPage.names, ['NET_1000']);
+	assert.equal(finalNetPage.truncated, false);
+	await assert.rejects(() => handlePcbNetQueryTask({ mode: 'names', offset: -1 }), /non-negative integer/);
+	delete globalThis.eda.pcb_Net.getAllNetsName;
+	globalThis.eda.pcb_Net.getAllNets = async () => [{ net: 'NET_A' }, { net: 'NET_B' }];
+	assert.deepEqual((await handlePcbNetQueryTask({ mode: 'names', offset: 1, limit: 1 })).names, ['NET_B']);
 	globalThis.eda.pcb_Net.getAllNets = async () => [{ name: 'USB_D+' }, { name: 'GND' }];
 	await assert.rejects(() => handleManufactureExportTask({ domain: 'pcb', kind: 'netlist', netlistType: 'Ngspice' }), /netlistType must be one of: Allegro, PADS, Protel2, JLCEDA/);
 	await assert.rejects(() => handleManufactureExportTask({ domain: 'schematic', kind: 'simulation_netlist', netlistType: 'Allegro' }), /netlistType must be one of: Ngspice/);

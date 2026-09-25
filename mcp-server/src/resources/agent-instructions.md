@@ -10,12 +10,21 @@
 ## 工具调用约束
 
 - `bridge_clients`：列出所有已连接 EDA 页面及其官方 API 返回的项目、文档、图页身份。在存在多个客户端，或用户指定了项目/页面时，任何 EDA 读取或修改操作前必须先调用并核对目标。
-- `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
-- `schematic_read`：仅在执行器件选型（`component_select`）或器件放置（`component_place`）任务时，需要了解当前页已有器件与网络连接关系时才调用，用于获取辅助上下文。仅覆盖当前激活页面。禁止在原理图检查、审查、功能分析、连线核查等场景调用此工具；此类场景必须使用 `schematic_review`。
+- `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。待命客户端先经过双向队列探活；若提示旧扩展不支持探活，升级该页面的 Bridge 后再选择。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
+- EDA 修改超时、已开始的写任务中途失联，或工具返回 `commitUnknown: true` 后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`，先用 `bridge_recover_client` 的 `action=recover` 建立恢复会话。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，再重启原 EDA 宿主以终止旧调用，打开目标图页，等待恢复会话建立后的新 Bridge 连接和全新 `clientId`；最后以 `action=readback` 验证新客户端身份和当前页状态。恢复请求本身不能取消 EDA 调用；普通掉线自动重连保留旧 `clientId`，建立恢复会话时已连接的客户端即使更换 WebSocket 也不能用于本次回读。
+- 原理图当前页器件 ID 回读优先用 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args: [null, false]`；需要器件对象时可用 `eda.sch_PrimitiveComponent.getAll` 搭配同样的参数。这两种精确参数形式可通过恢复期只读隔离，无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。跨页查询不得用于判断当前页的超时操作是否提交。
+- `wire_create`、`netport_create`、`netport_move` 超时或提交状态不明时，恢复回读须设置 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；先检查完整导线、NetPort、NET 属性和语义网表，再决定是否重试。原生调用未确认结束时还须重启原宿主并传 `hostRestartConfirmed:true`。只读 `/context` 不会解除该写入隔离。
+- `netlabel_place` 创建结果不明时同样用 `schematic_read` 的 `includeConnectivityPrimitives:true` 完整读回当前页 NET 属性、NetFlag 和语义网表；原生调用未确认结束时先重启原宿主。普通标签在 EDA 3.x 不支持，无需尝试创建。`netlabel_place` 与 `component_place_auto` 的整批默认超时为 300 秒，较大批次可设置 `timeoutMs`（最多 600 秒）。
+- PCB 器件位置恢复回读可用 `api_invoke` 调用 `eda.pcb_PrimitiveComponent.getAll`，传 `args: []`。若原操作是 `eda.pcb_Document.autoLayout`，先重启原宿主，`bridge_recover_client` 须传 `hostRestartConfirmed:true` 并以该完整器件列表作为回读；只读 `/context` 不会解除写阻断。先核对活动 PCB 的文档身份，再与超时前的位置快照比较。
+- `pcb_connectivity_action` 创建直线或过孔的提交状态不明时，使用无参数 `eda.pcb_PrimitiveLine.getAll` 作为恢复回读入口；Server 会继续读回全部直线、圆弧、折线、过孔的网络与几何及网络长度。若诊断包含 `hostRestartRequired:true`，先重启原 EDA 宿主并在读回时传 `hostRestartConfirmed:true`；原生创建已经结束而图元回读失败时，只需原客户端断开、恢复会话后的新客户端和完整同板回读。
+- 交互放置的 `component/place/start` 或 `component/place/check` 若返回 `commitUnknown:true`，恢复回读须用 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 和 `args:[null,false]`；Server 会自动请求不截断的 `schematicComponentIds`、位号及 BOM 属性，并核对执行时图页及回读前后的图页身份。查看候选 `primitiveIds` 在完整列表中是否仍存在后再决定是否清理或重试；诊断要求重启时先退出放置模式并重启原宿主。
+- 可写 `api_invoke` 遇到原生 RPC 超时或断线时会保留未确认写入诊断。诊断要求重启时，先重启原宿主，再用全新 Bridge 核对目标文档和受影响图元；只读调用的失败不进入写入恢复。
+- `schematic_read`：在器件选型（`component_select`）或器件放置（`component_place`）需要当前页辅助上下文时调用；上述三种连接写入的受控恢复是另一项明确用途。仅覆盖当前激活页面。普通原理图检查、审查、功能分析、连线核查等场景应使用 `schematic_review`。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`components` 为器件列表，每个器件含 `componentDesignator`（位号）、`componentSymbolName`（符号名）、`pins`（引脚列表，每个引脚含 `pinNumber`、`pinSignalName`、`pinElectricalType`、`connectedNetworkName`（引脚所连网络名，空字符串表示工具未能识别到连接——可能是引脚真正悬空，也可能是该引脚位于复用块（Reuse Block）内部、复用块内部导线对 API 不可见所致；若 `drcCheckPassed` 为 `true`，则空值大概率属于工具限制而非真实错误，应提示用户自行在原理图中核实）、`hasNoConnectMark`）；`networks` 为网络列表，每个网络含 `networkName` 和 `connectedPinRefs`（连接该网络的所有引脚引用，格式为位号.引脚号）。
 - `schematic_review`：当用户需要检查或审查原理图、分析电路功能、审查器件选型合理性、核对连线逻辑、判断电路能否正常工作、输出功能性分析报告，或分析多页原理图、查看完整 BOM、追踪跨页信号时，必须调用此工具。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`netlistText` 为全工程网表文件原始文本，包含所有原理图页面的器件与网络连接关系。
   获取数据后，必须输出与 `schematic_read` 相同的六类分析项（以专业 Markdown 表格形式呈现）：①电路功能概述；②器件清单与选型合理性；③电源方案分析；④信号与连线检查；⑤保护与可靠性分析；⑥整体可用性评估。分析须覆盖所有页面的器件与网络。
+- `schematic_connectivity_action`：创建导线前先用 `wire_preview` 查看当前页电气接触；没有连接点的纯十字交叉不算接触。确认意图后在 `wire_create.allowedWireIds` 中明确列出允许接触的导线 ID；写入后用 `schematic_review` 检查网表。若返回 `commitUnknown: true`，先核对当前图页，避免直接重复写入；按时或迟到的未知结果都会保留恢复诊断。`netport_create` 是创建同页连接/层次图端口的选项，结果会回读当前页图元和目标网络；它不等于跨页连接标识。移动已有端口用 `netport_move`，不要对 NetPort 调用仅支持普通器件的 `sch_PrimitiveComponent.modify`。
 - `component_select`：当用户要求搜索、筛选或确认具体器件型号时，必须调用此工具返回候选列表并等待用户确认。keyword 只写用户给出的型号或描述本身，禁止擅自追加封装、尺寸、引脚数或任何其他限定词；仅对电阻、电容、电感这类需要数值的器件才允许补充带单位的阻值/容值/感值参数，例如 `1kΩ`、`100nF`、`10uH`。用户确认后的结果即为最终结果，不得擅自改选或要求重新选择；用户取消或跳过时视为永久放弃该器件，必须立即停止针对该器件的所有选型动作，**禁止**以任何方式重试，包括但不限于：换关键词、换描述、换型号、拆分关键词、加宽或缩小筛选范围后再次调用 `component_select`；跳过后直接跳到下一步，不得就该器件再做任何动作。
 - `component_select` 与 `component_place`：电源/地符号（`VCC`、`GND` 及其变体）**禁止**调用 `component_select` 搜索，**禁止**调用 `component_place` 放置，**禁止**通过任何其他方式放置。电源/地符号只能由用户在 EDA 中手动放置。`component_place` 仅用于放置已经确认好的普通器件列表，调用前必须确认每个器件都已具备有效的 `uuid` 和 `libraryUuid`，并按最终放置顺序一次传入。
 
@@ -23,6 +32,7 @@
 
 - `pcb_drc_check`：只读检查当前 PCB 的设计规则。默认不打开 DRC UI；返回结构化违规列表。调用前确认当前页面是 PCB。
 - `pcb_net_query`：只读查询当前 PCB 网络，可用 `query` 和 `limit` 缩小结果范围；对单个网络使用 `mode: "exact"` 时，可按需请求 `analysis.length`、`analysis.color` 或 `analysis.primitives`。
+- `pcb_connectivity_action`：在当前 PCB 上创建单条直线导线或过孔。先用 `pcb_net_query` 取得精确网络名、用 `pcb_layer_query` 确认启用且未锁定的铜层（SIGNAL 或 PLANE）；独立 PCB 新建网络时显式传 `allowNewNet:true`。`line_create` 须提供 `net`、`layer`、起终点和正数 `lineWidth`；`via_create` 须提供 `net`、中心点、正数 `holeDiameter` 与 `diameter`。坐标及尺寸遵循当前 PCB 数据单位。写后核对返回的图元/网络，按需运行 `pcb_drc_check`。
 - 自动布局/布线可能运行较久。超时后 Bridge 会隔离当前客户端，直到底层 EDA Promise 结束；在此期间不得通过 `api_invoke` 重试写操作。
 - `schematic_drc_check`：只读检查当前原理图页；默认不打开 UI，返回结构化违规列表。
 - `pcb_constraints_query`：只读读取当前 PCB 的规则、网络类、差分对、等长组或焊盘对组。需要 PCB 页面。
@@ -31,13 +41,18 @@
 - `pcb_layer_query`：读取当前 PCB 图层、当前工作层和铜层数量。
 - `pcb_realtime_drc`：默认只查询实时 DRC 状态；只有用户明确要求时才执行 `start` 或 `stop`。
 - `component_select`：可使用 `properties.supplierId` 等 0.4.15 精确字段查询器件。`keyword` 与 `properties` 二选一，结果仍必须等待用户确认后才能放置。
+- `netlabel_place`：先通过 `eda_context` 确认编辑器版本。普通网络标签的官方 API 从 EDA v4 起提供；3.x 返回 `EDA_VERSION_UNSUPPORTED`、`commitStatus: not_started`，无需重试。电源/地网络标识仍可放置；不要把电源标识当成普通信号标签。
 - `project_info`：读取工程、板子、原理图、PCB 和图页身份，适合在跨页面任务开始时建立上下文。
 - `manufacture_export`：仅生成白名单制造数据，不直接写入本地文件系统。默认返回文件元数据和文本预览；只有用户明确需要下载数据时才设置 `includeData: true`，并注意 Base64 结果可能很大。
 - `manufacture_templates_query`：在 PCB BOM 导出前读取当前可用模板；将返回的模板名原样传给 `manufacture_export` 的 `template` 参数，不要猜测模板名称。原理图查询只返回官方装配变体。
 - `manufacture_templates_query` 还会返回原理图装配变体；如需指定变体，必须将返回的完整 `{text, value}` 传给 schematic `manufacture_export` 的 `assemblyVariantsConfig`。
 - `library_search`：搜索或按 UUID 读取官方 device、symbol、footprint 库资产；device 可使用 `supplierId` 等精确字段，也可用官方 `lcscIds` 将 LCSC C 编号映射到 EasyEDA 器件（支持批量查询），symbol/footprint 使用各自支持的 `keyword` 搜索。device 的 `keyword`、`properties`、`lcscIds` 与 `uuid` 必须按 schema 选择其一；symbol/footprint 可使用 `keyword` 或 `uuid`。
 - `pcb_constraints_query`：按需读取当前规则、命名规则配置、网络规则、网络间规则、区域规则或约束组；查询命名规则配置时必须提供 `configurationName`，查询焊盘对最短线长时使用 `pad_pair_min_wire_length` 和 `padPairGroupName`。
-- `pcb_document_action`：读取 PCB 计算状态、画布/过滤器、选中图元或坐标区域图元，进行坐标转换和画布导航，或执行用户明确要求的保存、飞线计算启停、布线清除、原理图变更导入、JSON/SES 自动布线/布局导入。`clear_routing` 必须指定 `routingType` 并传入 `confirm: true`；导航动作也会改变 EDA 状态，必须先确认用户意图。区域查询必须提供有效边界并使用 `limit` 控制结果大小；导入文件必须使用 Base64，执行后应运行 DRC 并让用户确认结果。
+- `pcb_document_action`：读取 PCB 计算状态、画布/过滤器、选中图元或坐标区域图元，进行坐标转换和画布导航，或执行用户明确要求的保存、飞线计算启停、布线清除、原理图变更导入、JSON/SES 自动布线/布局导入。`clear_routing` 必须指定 `routingType` 并传入 `confirm: true`；导航仅改变画布视图，可在写入隔离期间调用，但仍应遵循用户的导航意图。区域查询必须提供有效边界并使用 `limit` 控制结果大小；导入文件必须使用 Base64，执行后应运行 DRC 并让用户确认结果。
+- `schematic_document_action` 的纯查询和画布导航也可在写入隔离期间调用；图元选择、清除选择、保存和导入仍按写操作隔离。
+- `pcb_document_action` 的 `import_changes` 返回 `commitState: "pending_confirmation"` 时，EDA 仅打开原生确认框，`imported: true` 不代表已提交。用户在 EDA 点击“应用修改”或取消并确认对话框关闭后，从 `bridge_clients` 取得该请求的 `requestId`，调用 `bridge_recover_client action=resolve_import`，传入 `confirm:true` 和对应的 `resolution:applied` 或 `resolution:cancelled`；Server 会核对同一 PCB 并自动完整读回器件和网络，成功后才解除写入阻断。无法确认对话框已关闭时，先建立 `action=recover` 会话，再重启原 EDA 宿主并通过全新客户端执行 `action=readback`。
+- 通过 `api_invoke` 调用 `eda.pcb_Document.autoLayout` 前，先记录当前 PCB UUID，并用无参数 `eda.pcb_PrimitiveComponent.getAll()` 搭配 `includeCompletePositions: true` 记录全部器件位置和旋转。普通 `getAll()` 的 `result` 保留通用 API 序列化规则，完整位置快照在 `componentPositions`。若布局返回 `commitState: "unknown"`，布局可能已在后台提交；先从 `bridge_clients` 取得诊断 `requestId` 并调用 `bridge_recover_client action=recover`，然后关闭并重启原 EDA 宿主，保持 MCP Server 运行以保留诊断。恢复会话建立后的新 Bridge 连接同一 PCB 时，用无参数 `getAll()` 完成 `action=readback`，Server 会自动请求完整位置快照，再与调用前快照比较。仅重连 Bridge 不等于终止原生布局；旧连接未断开或其他 PCB、带过滤参数的读回都不会解除写阻断。
+- `eda.pcb_Document.autoRouting` 属于 BETA API。调用前可对无参数的 PCB Line、Arc、Polyline、Via `getAll` 分别传 `includeCompleteRouting:true`，记录全部网络、层和几何。若返回 `routingState:"not_started"` 或 `"incomplete"`，需检查实际导线、过孔与 DRC；`success:true` 仍需结合 `successNetsCount`、`totalNetsCount`、`failedNets` 和图元回读判断是否全部完成。若原生 RPC 超时并返回 `commitState:"unknown"`，不得立即重试：从 `bridge_clients` 获取诊断并 `action=recover`，重启原 EDA 宿主后，以全新 Bridge 客户端对同一 PCB 执行 `action=readback`，设置 `hostRestartConfirmed:true`、`readbackPath:"/bridge/jlceda/api/invoke"` 和 `readbackPayload:{"apiFullName":"eda.pcb_PrimitiveLine.getAll","args":[]}`。Server 会完整读回直线、圆弧、折线、过孔及网络长度，并在分段读取前后核对 PCB 身份。官方示例使用 `nets`，当前 `IPCB_AutoRoutingProps` 类型定义使用 `RoutingNets`；调用前用 `api_search` 检索该类型确认字段。
 - `pcb_net_query`：默认返回网络详情；只需名称时使用 `mode: "names"`，查询单个官方网络时使用 `mode: "exact"` 与原始大小写的 `query`。
 
 ## 透传 API 工具约束

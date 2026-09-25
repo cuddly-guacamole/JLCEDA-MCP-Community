@@ -27,6 +27,7 @@ import { handlePcbNetQueryTask } from '../mcp/net-query-handler.ts';
 import { handleNetLabelModifyTask } from '../mcp/netlabel-modify-handler.ts';
 import { handleNetLabelPlaceTask } from '../mcp/netlabel-place-handler.ts';
 import { handleNetlistCompareTask } from '../mcp/netlist-compare-handler.ts';
+import { handlePcbConnectivityTask } from '../mcp/pcb-connectivity-handler.ts';
 import { handlePcbConstraintsQueryTask } from '../mcp/pcb-constraints-handler.ts';
 import { handlePcbConstraintsManageTask } from '../mcp/pcb-constraints-manage-handler.ts';
 import { handlePcbDocumentTask } from '../mcp/pcb-document-handler.ts';
@@ -34,6 +35,7 @@ import { handlePcbDrcCheckTask } from '../mcp/pcb-drc-handler.ts';
 import { handlePcbLayerQueryTask } from '../mcp/pcb-layer-handler.ts';
 import { handlePcbRealtimeDrcTask } from '../mcp/pcb-realtime-drc-handler.ts';
 import { handleProjectInfoTask } from '../mcp/project-info-handler.ts';
+import { handleSchematicConnectivityTask } from '../mcp/schematic-connectivity-handler.ts';
 import { handleSchematicDocumentTask } from '../mcp/schematic-document-handler.ts';
 import { handleSchematicDrcCheckTask } from '../mcp/schematic-drc-handler.ts';
 import { handleSchematicLayoutCheckTask } from '../mcp/schematic-layout-check-handler.ts';
@@ -41,6 +43,7 @@ import { handleSchematicPagesManageTask } from '../mcp/schematic-pages-manage-ha
 import { handleSchematicReadTask } from '../mcp/schematic-read-handler.ts';
 import { handleSchematicReviewTask } from '../mcp/schematic-review-handler.ts';
 import { handleWorkspaceQueryTask } from '../mcp/workspace-query-handler.ts';
+import { handlePcbImportResolveTask } from './pcb-import-confirm-barrier.ts';
 
 export type BridgeTaskHandler = (payload: unknown) => Promise<unknown>;
 
@@ -62,11 +65,13 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/netlabel/place': handleNetLabelPlaceTask,
 	'/bridge/jlceda/pcb/drc-check': handlePcbDrcCheckTask,
 	'/bridge/jlceda/pcb/document': handlePcbDocumentTask,
+	'/bridge/jlceda/pcb/import-resolve': handlePcbImportResolveTask,
 	'/bridge/jlceda/schematic/drc-check': handleSchematicDrcCheckTask,
 	'/bridge/jlceda/schematic/document': handleSchematicDocumentTask,
 	'/bridge/jlceda/schematic/pages-manage': handleSchematicPagesManageTask,
 	'/bridge/jlceda/pcb/constraints-query': handlePcbConstraintsQueryTask,
 	'/bridge/jlceda/pcb/constraints-manage': handlePcbConstraintsManageTask,
+	'/bridge/jlceda/pcb/connectivity': handlePcbConnectivityTask,
 	'/bridge/jlceda/netlist/compare': handleNetlistCompareTask,
 	'/bridge/jlceda/pcb/layer-query': handlePcbLayerQueryTask,
 	'/bridge/jlceda/pcb/realtime-drc': handlePcbRealtimeDrcTask,
@@ -83,6 +88,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/net/query-pcb': handlePcbNetQueryTask,
 	'/bridge/jlceda/schematic/read': handleSchematicReadTask,
 	'/bridge/jlceda/schematic/layout-check': handleSchematicLayoutCheckTask,
+	'/bridge/jlceda/schematic/connectivity': handleSchematicConnectivityTask,
 	'/bridge/jlceda/schematic/review': handleSchematicReviewTask,
 	'/bridge/jlceda/workspace/query': handleWorkspaceQueryTask,
 };

@@ -22,7 +22,8 @@ const fakeBridge = {
       return { ok: true, sessionId: 'session-1' };
     }
     if (path === '/bridge/jlceda/component/place/check') {
-      return { ok: true, placed: true, userCancelled: false };
+      assert.equal(timeoutMs, undefined, 'placement check must use the Bridge server default budget for the 25s contract route');
+      return { ok: true, placed: true, primitiveIds: ['placed-1'], designatorChanges: [{ primitiveId: 'old', before: 'U4', after: 'U15' }], annotationWarning: 'Designators changed', userCancelled: false };
     }
     if (path === '/bridge/jlceda/component/place/close') {
       return { ok: true };
@@ -61,10 +62,116 @@ const result = await dispatcher.dispatch({
   },
 });
 
-assert.equal(result.structuredContent.ok, true);
+assert.equal(result.structuredContent.ok, false);
 assert.equal(result.structuredContent.placedCount, 1);
+assert.deepEqual(result.structuredContent.results[0].primitiveIds, ['placed-1']);
+assert.equal(result.structuredContent.results[0].annotationWarning, 'Designators changed');
 assert.deepEqual(calls.map((call) => call.path), [
   '/bridge/jlceda/component/place',
+  '/bridge/jlceda/component/place/start',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/close',
+]);
+
+const duplicateCalls = [];
+const duplicateBridge = {
+  async request(path) {
+    duplicateCalls.push(path);
+    if (path === '/bridge/jlceda/component/place') {
+      return { placement: { components: [{ uuid: 'one' }, { uuid: 'two' }], timeoutSeconds: 30, retryCount: 3 } };
+    }
+    if (path.endsWith('/start')) return { ok: true, sessionId: 'duplicate-session' };
+    if (path.endsWith('/check')) return { ok: true, placed: false, duplicate: true, primitiveIds: ['a', 'b'] };
+    if (path.endsWith('/close')) return { ok: true };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const duplicateResult = await new ToolDispatcher(duplicateBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(duplicateResult.structuredContent.ok, false);
+assert.equal(duplicateResult.structuredContent.notAttemptedCount, 1);
+assert.deepEqual(duplicateResult.structuredContent.results[0].primitiveIds, ['a', 'b']);
+assert.deepEqual(duplicateCalls, [
+  '/bridge/jlceda/component/place',
+  '/bridge/jlceda/component/place/start',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/close',
+]);
+assert.equal(calls.find(call => call.path === '/bridge/jlceda/component/place/start').payload.timeoutSeconds, 30,
+  'the overall placement window must still be passed to the Bridge session');
+await dispatcher.dispatch({ name: 'component_place_auto', arguments: { components: [{ uuid: 'one' }] } });
+assert.equal(calls.at(-1).timeoutMs, 302000, 'coordinate batches need a longer Bridge execution budget');
+await dispatcher.dispatch({ name: 'netlabel_place', arguments: { placements: [{ componentId: 'one' }], timeoutMs: 420000 } });
+assert.equal(calls.at(-1).timeoutMs, 422000, 'label batches must pass the override with transport grace');
+
+const uncertainCleanupBridge = {
+  async request(path) {
+    if (path === '/bridge/jlceda/component/place')
+      return { placement: { components: [{ uuid: 'one' }], timeoutSeconds: 30 } };
+    if (path.endsWith('/start')) return { ok: true, sessionId: 'cleanup-session' };
+    if (path.endsWith('/check')) return { ok: false, commitUnknown: true, readbackRequired: true, nativeCallSettled: false, primitiveIds: ['a', 'b'], designatorChanges: [{ primitiveId: 'old-u', before: 'U4', after: 'U15' }], restoredDesignators: [{ primitiveId: 'old-r', before: 'R8', after: 'R1' }], annotationWarning: 'Designators need review', error: 'duplicate cleanup readback failed' };
+    if (path.endsWith('/close')) return { ok: true };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const uncertainCleanupResult = await new ToolDispatcher(uncertainCleanupBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(uncertainCleanupResult.structuredContent.ok, false);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].commitUnknown, true);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].readbackRequired, true);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].nativeCallSettled, false);
+assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].primitiveIds, ['a', 'b']);
+assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].designatorChanges, [{ primitiveId: 'old-u', before: 'U4', after: 'U15' }]);
+assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].restoredDesignators, [{ primitiveId: 'old-r', before: 'R8', after: 'R1' }]);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].annotationWarning, 'Designators need review');
+assert.match(uncertainCleanupResult.structuredContent.results[0].error, /cleanup readback failed/);
+
+const uncertainStartBridge = {
+  async request(path) {
+    if (path === '/bridge/jlceda/component/place')
+      return { placement: { components: [{ uuid: 'one' }], timeoutSeconds: 30 } };
+    if (path.endsWith('/start'))
+      return { ok: false, commitUnknown: true, readbackRequired: true, nativeCallSettled: false, error: 'RPC Call Timed Out' };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const uncertainStartResult = await new ToolDispatcher(uncertainStartBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(uncertainStartResult.structuredContent.ok, false);
+assert.equal(uncertainStartResult.structuredContent.results[0].commitUnknown, true);
+assert.equal(uncertainStartResult.structuredContent.results[0].readbackRequired, true);
+assert.equal(uncertainStartResult.structuredContent.results[0].nativeCallSettled, false);
+
+const batchCalls = [];
+let startedCount = 0;
+let firstCheckCount = 0;
+const batchBridge = {
+  async request(path, payload) {
+    batchCalls.push(path);
+    if (path === '/bridge/jlceda/component/place') {
+      return { placement: { components: [{ uuid: 'first' }, { uuid: 'second' }], timeoutSeconds: 30 } };
+    }
+    if (path.endsWith('/start')) return { ok: true, sessionId: `session-${++startedCount}` };
+    if (path.endsWith('/check') && payload.sessionId === 'session-1') {
+      firstCheckCount += 1;
+      return firstCheckCount === 1
+        ? { ok: true, placed: false, awaitingExit: true, candidatePrimitiveIds: ['floating-id'], userCancelled: false }
+        : { ok: true, placed: true, primitiveIds: ['first-id'], removedDuplicateIds: ['first-extra'], restoredDesignators: [{ primitiveId: 'old-u', before: 'U15', after: 'U4' }], userCancelled: false };
+    }
+    if (path.endsWith('/check')) return { ok: true, placed: true, primitiveIds: ['second-id'], userCancelled: false };
+    if (path.endsWith('/close')) return { ok: true };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const batchResult = await new ToolDispatcher(batchBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(batchResult.structuredContent.ok, true);
+assert.deepEqual(batchResult.structuredContent.results.map((item) => item.primitiveIds), [['first-id'], ['second-id']]);
+assert.deepEqual(batchResult.structuredContent.results[0].removedDuplicateIds, ['first-extra']);
+assert.deepEqual(batchResult.structuredContent.results[0].restoredDesignators, [{ primitiveId: 'old-u', before: 'U15', after: 'U4' }]);
+assert.equal(batchResult.structuredContent.results[0].candidatePrimitiveIds, undefined);
+assert.deepEqual(batchCalls, [
+  '/bridge/jlceda/component/place',
+  '/bridge/jlceda/component/place/start',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/check',
+  '/bridge/jlceda/component/place/close',
   '/bridge/jlceda/component/place/start',
   '/bridge/jlceda/component/place/check',
   '/bridge/jlceda/component/place/close',
@@ -125,6 +232,14 @@ assert.equal(pcbNetQueryResult.structuredContent.ok, true);
 const pcbNetQueryCall = calls.find(call => call.path === '/bridge/jlceda/net/query-pcb');
 assert.equal(pcbNetQueryCall.timeoutMs, 44000);
 
+const pcbConnectivityPayload = { action: 'line_create', net: 'VCC', layer: 1,
+  startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2, timeoutMs: 42000 };
+const pcbConnectivityResult = await dispatcher.dispatch({ name: 'pcb_connectivity_action', arguments: pcbConnectivityPayload });
+assert.equal(pcbConnectivityResult.structuredContent.ok, true);
+const pcbConnectivityCall = calls.find(call => call.path === '/bridge/jlceda/pcb/connectivity');
+assert.deepEqual(pcbConnectivityCall.payload, pcbConnectivityPayload);
+assert.equal(pcbConnectivityCall.timeoutMs, 44000);
+
 for (const [name, timeoutMs] of [
   ['pcb_drc_check', 62_000],
   ['schematic_drc_check', 62_000],
@@ -133,6 +248,7 @@ for (const [name, timeoutMs] of [
   ['design_archive_export', 62_000],
   ['manufacture_export', 62_000],
   ['pcb_document_action', 62_000],
+  ['pcb_connectivity_action', 32_000],
   ['schematic_document_action', 62_000],
   ['pcb_net_query', 62_000],
   ['design_source_export', 32_000],
@@ -283,6 +399,18 @@ const pcbNetQuerySchema = z.fromJSONSchema(pcbNetQueryDefinition.inputSchema);
 assert.equal(pcbNetQuerySchema.safeParse({ mode: 'all', timeoutMs: 6000 }).success, true);
 assert.equal(pcbNetQuerySchema.safeParse({ mode: 'exact', query: 'USB_D+', timeoutMs: 6000 }).success, true);
 
+const pcbConnectivityDefinition = definitions.find((definition) => definition.name === 'pcb_connectivity_action');
+assert.ok(pcbConnectivityDefinition);
+const pcbConnectivitySchema = z.fromJSONSchema(pcbConnectivityDefinition.inputSchema);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'line_create', net: 'VCC', layer: 1,
+  startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2 }).success, true);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'via_create', net: 'NEW_NET', allowNewNet: true,
+  x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6 }).success, true);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'line_create', net: 'VCC', layer: 1,
+  startX: 0, startY: 0, endX: 10, endY: 0 }).success, false);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'via_create', net: 'VCC',
+  x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6, layer: 1 }).success, false);
+
 const componentSelectDefinition = definitions.find((definition) => definition.name === 'component_select');
 assert.ok(componentSelectDefinition);
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
@@ -366,6 +494,24 @@ assert.ok(schematicDocumentDefinition);
 const schematicDocumentSchema = z.fromJSONSchema(schematicDocumentDefinition.inputSchema);
 assert.equal(schematicDocumentSchema.safeParse({ action: 'primitive_at_point', x: 1, y: 2, ids: ['unexpected'] }).success, false);
 assert.equal(schematicDocumentSchema.safeParse({ action: 'primitives_by_id', ids: ['primitive-1'], limit: 1 }).success, false);
+
+const connectivityDefinition = definitions.find((definition) => definition.name === 'schematic_connectivity_action');
+assert.ok(connectivityDefinition);
+const connectivitySchema = z.fromJSONSchema(connectivityDefinition.inputSchema);
+assert.equal(connectivitySchema.safeParse({ action: 'wire_preview', line: [0, 0, 100, 0] }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'wire_create', line: [0, 0, 100, 0], allowedWireIds: ['wire-1'] }).success, true);
+const maximumWireLine = Array.from({ length: 256 }, (_, index) => [index, 0]).flat();
+assert.equal(connectivityDefinition.inputSchema.properties.line.maxItems, 512);
+for (const action of ['wire_preview', 'wire_create']) {
+  const actionSchema = connectivityDefinition.inputSchema.oneOf.find((variant) => variant.properties.action.const === action);
+  assert.equal(actionSchema.properties.line.maxItems, 512);
+  assert.equal(connectivitySchema.safeParse({ action, line: maximumWireLine }).success, true);
+  assert.equal(connectivitySchema.safeParse({ action, line: [...maximumWireLine, 256, 0] }).success, false);
+}
+assert.equal(connectivitySchema.safeParse({ action: 'netport_create', net: 'SIGNAL', x: 10, y: 20 }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'netport_move', id: 'port-1', x: 10, y: 20 }).success, true);
+assert.equal(connectivitySchema.safeParse({ action: 'netport_move', id: 'port-1', x: 10 }).success, false);
+assert.equal(connectivitySchema.safeParse({ action: 'wire_create', line: [0, 0, 100, 0], id: 'port-1' }).success, false);
 
 const pcbDocumentDefinition = definitions.find((definition) => definition.name === 'pcb_document_action');
 assert.ok(pcbDocumentDefinition);

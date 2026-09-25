@@ -10,11 +10,21 @@ export function formatInternalClientEndpoint(port: number): string {
 interface BridgePeer {
   clientId: string;
   bridgeVersion: string;
+  selectionProbeVersion?: number;
   connectedAt: number;
   context?: BridgeClientContext;
   isReady: boolean;
   lastSeenAt: number;
+  lastHeartbeatAt: number;
   socket: WebSocket;
+}
+
+interface PendingSelectionProbe {
+  clientId: string;
+  socket: WebSocket;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
 }
 
 interface BridgeClientContext {
@@ -53,6 +63,18 @@ interface RecoveryDiagnostic {
   timeoutMs: number;
   timedOutAtMs: number;
   mutating: boolean;
+  pageBound: boolean;
+  targetProjectUuid?: string;
+  targetSchematicUuid?: string;
+  targetSchematicMayBeEmpty?: boolean;
+  targetSchematicPageUuid?: string;
+  sourceSchematicPageUuid?: string;
+  targetPageMayBeAbsent?: boolean;
+  requiredReadback?: 'pcb_component_positions' | 'pcb_routing_state' | 'schematic_project_review' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids';
+  hostRestartRequired?: boolean;
+  pendingNativeConfirmation?: boolean;
+  importContextConflict?: boolean;
+  uncertaintyReason?: string;
   context?: BridgeClientContext;
 }
 
@@ -60,11 +82,12 @@ interface RecoverySession {
   recoveryId: string;
   diagnostic: RecoveryDiagnostic;
   requestedAt: string;
-  requestedAtMs: number;
   sourceConnected: boolean;
-  sourceConnectedAt?: number;
+  sourceSocket?: WebSocket;
+  preRecoverySockets: Set<WebSocket>;
+  preRecoveryClientIds: Set<string>;
   targetClientId?: string;
-  targetConnectedAt?: number;
+  targetSocket?: WebSocket;
 }
 
 interface BridgeTask {
@@ -102,10 +125,117 @@ export class BridgeTaskError extends Error {
 const BRIDGE_QUEUE_TIMEOUT_MS = 15 * 60 * 1000;
 const INTERNAL_QUEUE_RESPONSE_GRACE_MS = 5_000;
 const BRIDGE_MAX_PENDING_REQUESTS = 64;
+const SELECTION_PROBE_TIMEOUT_MS = 1_500;
 const RECOVERY_READBACK_TIMEOUT_MS = 15_000;
 const RECOVERY_DIAGNOSTIC_TTL_MS = 15 * 60 * 1000;
+const TARGETED_SCHEMATIC_PAGE_APIS = new Set([
+  'eda.dmt_schematic.createschematicpage',
+  'eda.dmt_schematic.copyschematicpage',
+  'eda.dmt_schematic.modifyschematicpagename',
+  'eda.dmt_schematic.reorderschematicpages',
+  'eda.dmt_schematic.deleteschematicpage',
+]);
 function isReadOnlyRequest(path: string, payload: unknown): boolean {
 	return isReadOnlyBridgeRequest(path, payload);
+}
+
+function isPageBoundWrite(path: string, payload: unknown): boolean {
+  if (isTargetedSchematicPageMutation(path, payload))
+    return false;
+  if (path === '/bridge/jlceda/api/invoke' && isRecord(payload) && typeof payload.apiFullName === 'string') {
+    const apiFullName = payload.apiFullName.trim().toLowerCase();
+    if (apiFullName === 'eda.sch_primitivecomponent.delete')
+      return false;
+    return apiFullName.startsWith('eda.sch_') || apiFullName.startsWith('eda.pcb_');
+  }
+  return path.startsWith('/bridge/jlceda/pcb/')
+    || path.startsWith('/bridge/jlceda/schematic/')
+    || path.startsWith('/bridge/jlceda/component/')
+    || path.startsWith('/bridge/jlceda/netlabel/')
+    || path.startsWith('/bridge/jlceda/auto/');
+}
+
+function isTargetedSchematicPageMutation(path: string, payload: unknown): boolean {
+  if (path === '/bridge/jlceda/schematic/pages-manage')
+    return true;
+  if (path !== '/bridge/jlceda/api/invoke' || !isRecord(payload) || typeof payload.apiFullName !== 'string')
+    return false;
+  return TARGETED_SCHEMATIC_PAGE_APIS.has(payload.apiFullName.trim().toLowerCase());
+}
+
+function schematicPageMutationTarget(path: string, payload: unknown): Pick<RecoveryDiagnostic,
+  'targetSchematicUuid' | 'targetSchematicMayBeEmpty' | 'targetSchematicPageUuid' | 'sourceSchematicPageUuid' | 'targetPageMayBeAbsent'> {
+  if (!isRecord(payload)) return {};
+  if (path === '/bridge/jlceda/schematic/pages-manage') {
+    const operation = optionalString(payload.operation);
+    return {
+      targetSchematicUuid: optionalString(payload.schematicUuid),
+      ...((operation === 'create' || operation === 'copy') ? { targetSchematicMayBeEmpty: true } : {}),
+      ...(operation === 'rename' ? { targetSchematicPageUuid: optionalString(payload.schematicPageUuid) } : {}),
+      ...(operation === 'copy' ? { sourceSchematicPageUuid: optionalString(payload.sourcePageUuid) } : {}),
+    };
+  }
+  if (path !== '/bridge/jlceda/api/invoke' || !Array.isArray(payload.args)) return {};
+  const api = optionalString(payload.apiFullName)?.toLowerCase();
+  const first = optionalString(payload.args[0]);
+  const second = optionalString(payload.args[1]);
+  switch (api) {
+    case 'eda.dmt_schematic.createschematicpage':
+      return { targetSchematicUuid: first, targetSchematicMayBeEmpty: true };
+    case 'eda.dmt_schematic.reorderschematicpages':
+      return { targetSchematicUuid: first };
+    case 'eda.dmt_schematic.copyschematicpage':
+      return { sourceSchematicPageUuid: first, targetSchematicUuid: second, targetSchematicMayBeEmpty: true };
+    case 'eda.dmt_schematic.modifyschematicpagename':
+      return { targetSchematicPageUuid: first };
+    case 'eda.dmt_schematic.deleteschematicpage':
+      return { targetSchematicPageUuid: first, targetPageMayBeAbsent: true };
+    default:
+      return {};
+  }
+}
+
+function knownProjectTargetUuid(path: string, payload: unknown): string | undefined {
+  if (path !== '/bridge/jlceda/api/invoke' || !isRecord(payload)
+    || typeof payload.apiFullName !== 'string'
+    || payload.apiFullName.trim().toLowerCase() !== 'eda.dmt_project.modifyprojectfriendlyname'
+    || !Array.isArray(payload.args)) return undefined;
+  return optionalString(payload.args[0]);
+}
+
+function isCrossPageComponentDelete(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && isRecord(payload)
+    && typeof payload.apiFullName === 'string'
+    && payload.apiFullName.trim().toLowerCase() === 'eda.sch_primitivecomponent.delete';
+}
+
+function isSchematicConnectivityMutation(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/netlabel/place'
+    || (path === '/bridge/jlceda/schematic/connectivity'
+      && isRecord(payload)
+      && (payload.action === 'wire_create' || payload.action === 'netport_create' || payload.action === 'netport_move'));
+}
+
+function isSchematicPlacementWrite(path: string): boolean {
+  return path === '/bridge/jlceda/component/place/start'
+    || path === '/bridge/jlceda/component/place/check'
+    || path === '/bridge/jlceda/component/place-auto';
+}
+
+function isSchematicConnectivityReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  return path === '/bridge/jlceda/schematic/read' && payload.includeConnectivityPrimitives === true;
+}
+
+function validWireLine(value: unknown): boolean {
+  const flat = (part: unknown): boolean => Array.isArray(part) && part.length >= 4 && part.length % 2 === 0
+    && part.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate));
+  if (flat(value)) return true;
+  if (!Array.isArray(value) || value.length === 0) return false;
+  if (value.every(part => Array.isArray(part) && part.length === 2
+    && part.every(coordinate => typeof coordinate === 'number' && Number.isFinite(coordinate))))
+    return value.length >= 2;
+  return value.every(flat);
 }
 
 function hasMutatingRecoveryDiagnostics(diagnostics: Iterable<RecoveryDiagnostic>): boolean {
@@ -164,6 +294,67 @@ function optionalString(value: unknown): string | undefined {
   return text || undefined;
 }
 
+function isPcbAutoLayoutRequest(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && isRecord(payload)
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_document.autolayout';
+}
+
+function isPendingPcbImportResult(path: string | undefined, payload: unknown, result: unknown): boolean {
+  return path === '/bridge/jlceda/pcb/document'
+    && isRecord(payload)
+    && payload.action === 'import_changes'
+    && isRecord(result)
+    && result.commitState === 'pending_confirmation';
+}
+
+function isPcbComponentReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  const args = payload.args;
+  return path === '/bridge/jlceda/api/invoke'
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_primitivecomponent.getall'
+    && (args === undefined || (Array.isArray(args) && args.length === 0));
+}
+
+function isPcbAutoRoutingRequest(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && isRecord(payload)
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.pcb_document.autorouting';
+}
+
+function isPcbConnectivityMutation(path: string, payload: unknown): boolean {
+  return path === '/bridge/jlceda/pcb/connectivity'
+    && isRecord(payload)
+    && (payload.action === 'line_create' || payload.action === 'via_create');
+}
+
+const PCB_ROUTING_READBACK_APIS = [
+  'eda.pcb_PrimitiveLine.getAll',
+  'eda.pcb_PrimitiveArc.getAll',
+  'eda.pcb_PrimitivePolyline.getAll',
+  'eda.pcb_PrimitiveVia.getAll',
+] as const;
+
+function isPcbRoutingReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  const args = payload.args;
+  return path === '/bridge/jlceda/api/invoke'
+    && optionalString(payload.apiFullName)?.toLowerCase() === PCB_ROUTING_READBACK_APIS[0].toLowerCase()
+    && (args === undefined || (Array.isArray(args) && args.length === 0));
+}
+
+function isSchematicComponentIdReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  return path === '/bridge/jlceda/api/invoke'
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.sch_primitivecomponent.getallprimitiveid'
+    && Array.isArray(payload.args) && payload.args.length === 2
+    && payload.args[0] === null && payload.args[1] === false;
+}
+
+function isSchematicPageInventoryReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  const args = payload.args;
+  return path === '/bridge/jlceda/api/invoke'
+    && optionalString(payload.apiFullName)?.toLowerCase() === 'eda.dmt_schematic.getallschematicpagesinfo'
+    && (args === undefined || (Array.isArray(args) && args.length === 0));
+}
+
 function serializeBridgeError(error: unknown): unknown {
   if (!(error instanceof Error)) {
     return String(error);
@@ -213,15 +404,45 @@ function parseClientContext(value: unknown): BridgeClientContext | undefined {
   };
 }
 
-function extractReadbackIdentity(value: unknown): { documentUuid?: string; projectUuid?: string } {
+function updatePendingPcbImportContext(diagnostic: RecoveryDiagnostic, result: unknown): void {
+  const importContext = isRecord(result) ? parseClientContext(result.importContext) : undefined;
+  if (!importContext)
+    return;
+  const executionContext = diagnostic.context;
+  if ((executionContext?.pageKind && importContext.pageKind && executionContext.pageKind !== importContext.pageKind)
+    || (executionContext?.pageUuid && importContext.pageUuid && executionContext.pageUuid !== importContext.pageUuid)
+    || (executionContext?.documentUuid && importContext.documentUuid && executionContext.documentUuid !== importContext.documentUuid)
+    || (executionContext?.projectUuid && importContext.projectUuid && executionContext.projectUuid !== importContext.projectUuid)) {
+    diagnostic.importContextConflict = true;
+    diagnostic.uncertaintyReason = 'native PCB import identity disagrees with execution context';
+    return;
+  }
+  diagnostic.context = {
+    ...executionContext,
+    ...(importContext.pageKind ? { pageKind: importContext.pageKind } : {}),
+    ...(importContext.pageUuid ? { pageUuid: importContext.pageUuid } : {}),
+    ...(importContext.documentUuid ? { documentUuid: importContext.documentUuid } : {}),
+    ...(importContext.projectUuid ? { projectUuid: importContext.projectUuid } : {}),
+  };
+}
+
+function extractReadbackIdentity(value: unknown, pageKind?: BridgeClientContext['pageKind']): { documentUuid?: string; projectUuid?: string; pageUuid?: string } {
   if (!isRecord(value)) {
     return {};
   }
   const document = isRecord(value.currentDocumentInfo) ? value.currentDocumentInfo : isRecord(value.currentDocument) ? value.currentDocument : undefined;
   const project = isRecord(value.currentProjectInfo) ? value.currentProjectInfo : isRecord(value.project) ? value.project : undefined;
+  const schematicPage = isRecord(value.currentSchematicPageInfo) ? value.currentSchematicPageInfo : undefined;
+  const pcb = isRecord(value.currentPcbInfo) ? value.currentPcbInfo : undefined;
+  const pageUuid = pageKind === 'schematic'
+    ? optionalString(schematicPage?.uuid)
+    : pageKind === 'pcb'
+      ? optionalString(pcb?.uuid)
+      : optionalString(schematicPage?.uuid) ?? optionalString(pcb?.uuid);
   return {
     documentUuid: optionalString(document?.uuid),
     projectUuid: optionalString(document?.parentProjectUuid) ?? optionalString(project?.uuid),
+    pageUuid,
   };
 }
 
@@ -231,12 +452,16 @@ export class EdaBridgeServer {
   private readonly clientIdBySocket = new Map<WebSocket, string>();
   private readonly mcpClients = new Set<WebSocket>();
   private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly pendingSelectionProbes = new Map<string, PendingSelectionProbe>();
   private readonly reconnectBarriers = new Map<string, { path: string; until: number }>();
   private readonly recoveryDiagnostics = new Map<string, RecoveryDiagnostic>();
+  private readonly pendingImportSockets = new Map<string, WebSocket>();
+  private readonly resolvingImports = new Set<string>();
   private recoverySession: RecoverySession | undefined;
   private readonly instanceId = randomUUID();
   private requestIdCounter = 0;
   private activeClientId = '';
+  private activeClientExplicitlySelected = false;
   private leaseTerm = 0;
   private started = false;
   private isMainServer = false;
@@ -389,7 +614,7 @@ export class EdaBridgeServer {
   private expireStalePeers(): void {
     const now = Date.now();
     for (const peer of [...this.peers.values()]) {
-      if (now - peer.lastSeenAt <= this.peerTtlMs) {
+      if (now - (peer.lastHeartbeatAt || peer.connectedAt) <= this.peerTtlMs) {
         continue;
       }
       this.rejectPendingForClient(peer.clientId, 'EDA client heartbeat timed out');
@@ -463,6 +688,7 @@ export class EdaBridgeServer {
         socket,
         optionalString(rawMessage.bridgeVersion) ?? 'unknown',
         parseClientContext(rawMessage.context),
+        rawMessage.selectionProbeVersion === 1 ? 1 : undefined,
       );
 		this.trySend(socket, {
 			type: 'bridge/welcome',
@@ -482,7 +708,9 @@ export class EdaBridgeServer {
     const peer = this.getBoundPeer(socket, rawMessage.clientId);
     peer.lastSeenAt = Date.now();
     if (type === 'bridge/heartbeat') {
+      peer.lastHeartbeatAt = peer.lastSeenAt;
       peer.context = parseClientContext(rawMessage.context) ?? peer.context;
+      this.promoteReadyPeerIfNeeded(peer);
       this.trySend(socket, {
         type: 'bridge/heartbeat-ack',
         clientId: peer.clientId,
@@ -493,6 +721,17 @@ export class EdaBridgeServer {
     }
     if (type === 'bridge/ready') {
       peer.isReady = true;
+      this.promoteReadyPeerIfNeeded(peer);
+      return;
+    }
+    if (type === 'bridge/probe-ack') {
+      const probeId = String(rawMessage.probeId ?? '');
+      const pendingProbe = this.pendingSelectionProbes.get(probeId);
+      if (pendingProbe?.clientId === peer.clientId && pendingProbe.socket === socket) {
+        clearTimeout(pendingProbe.timeout);
+        this.pendingSelectionProbes.delete(probeId);
+        pendingProbe.resolve();
+      }
       return;
     }
     if (type === 'bridge/task-started') {
@@ -516,12 +755,14 @@ export class EdaBridgeServer {
     socket: WebSocket,
     bridgeVersion: string,
     context: BridgeClientContext | undefined,
+    selectionProbeVersion: number | undefined,
   ): BridgePeer {
     const previous = this.peers.get(clientId);
     if (previous && previous.socket !== socket) {
+      this.rejectSelectionProbesForSocket(previous.socket, 'EDA client connection was replaced during selection probe');
       if (this.recoverySession?.targetClientId === clientId) {
         this.recoverySession.targetClientId = undefined;
-        this.recoverySession.targetConnectedAt = undefined;
+        this.recoverySession.targetSocket = undefined;
       }
       this.enterReconnectBarrier(clientId);
       this.rejectPendingForClient(clientId, 'EDA client reconnected before the pending request completed');
@@ -532,16 +773,19 @@ export class EdaBridgeServer {
     const peer: BridgePeer = {
       clientId,
       bridgeVersion,
+      selectionProbeVersion,
       connectedAt: previous?.socket === socket ? previous.connectedAt : now,
       context,
       isReady: previous?.socket === socket ? previous.isReady : false,
       lastSeenAt: now,
+      lastHeartbeatAt: previous?.socket === socket ? previous.lastHeartbeatAt : 0,
       socket,
     };
     this.peers.set(clientId, peer);
     this.clientIdBySocket.set(socket, clientId);
     if (!this.activeClientId || !this.peers.has(this.activeClientId)) {
       this.activeClientId = clientId;
+      this.activeClientExplicitlySelected = false;
       this.leaseTerm += 1;
     }
     return peer;
@@ -561,6 +805,7 @@ export class EdaBridgeServer {
   }
 
   private removeEdaSocket(socket: WebSocket): void {
+    this.rejectSelectionProbesForSocket(socket, 'EDA client disconnected during selection probe');
     const clientId = this.clientIdBySocket.get(socket);
     if (!clientId) {
       return;
@@ -575,12 +820,13 @@ export class EdaBridgeServer {
       // The readback target is a socket generation, not merely a clientId.
       // Permit a later generation to rebind after this socket disconnects.
       this.recoverySession.targetClientId = undefined;
-      this.recoverySession.targetConnectedAt = undefined;
+      this.recoverySession.targetSocket = undefined;
     }
     if (this.activeClientId === clientId) {
       this.rejectPendingForClient(clientId, 'Active EDA client disconnected');
-      const replacement = [...this.peers.values()].sort((left, right) => left.connectedAt - right.connectedAt)[0];
+      const replacement = [...this.peers.values()].filter(candidate => this.isPeerReady(candidate)).sort((left, right) => left.connectedAt - right.connectedAt)[0];
       this.activeClientId = replacement?.clientId ?? '';
+      this.activeClientExplicitlySelected = false;
       this.leaseTerm += 1;
       this.broadcastRoles('Active client disconnected; standby promoted');
     }
@@ -603,10 +849,35 @@ export class EdaBridgeServer {
     const requestId = String(message.requestId ?? '');
     const pending = this.pendingRequests.get(requestId);
     if (!pending || pending.clientId !== peer.clientId || pending.edaSocket !== peer.socket || pending.leaseTerm !== Number(message.leaseTerm)) {
-      // A timed-out EDA Promise can still send its result later. Seeing that
-      // result is the only safe indication that the background mutation settled.
+      // A Bridge task timeout or an unknown commit state does not mean the
+      // underlying EDA Promise settled. Keep the write quarantine in that case.
       const diagnostic = this.recoveryDiagnostics.get(requestId);
-      if (diagnostic?.clientId === peer.clientId) {
+      this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
+      const bridgeTimedOut = getBridgeTaskTimeoutMs(message.error) !== undefined
+        || (isRecord(message.error) && message.error.code === 'BRIDGE_TASK_TIMEOUT');
+      const commitUnknown = isRecord(message.result)
+        && (message.result.commitState === 'unknown' || message.result.commitUnknown === true);
+      if (diagnostic?.clientId === peer.clientId
+        && isRecord(message.result)
+        && ((diagnostic.requiredReadback === 'pcb_routing_state'
+          && diagnostic.path === '/bridge/jlceda/pcb/connectivity'
+          && (message.result.nativeCallSettled === true
+            || (message.result.ok === true && message.result.verified === true)))
+          || ((diagnostic.requiredReadback === 'schematic_component_ids'
+            || diagnostic.requiredReadback === 'schematic_connectivity_primitives')
+            && message.result.nativeCallSettled === true)))
+        diagnostic.hostRestartRequired = false;
+      const pendingImport = diagnostic?.clientId === peer.clientId
+        && isPendingPcbImportResult(diagnostic.path, { action: 'import_changes' }, message.result);
+      if (pendingImport) {
+        diagnostic.pendingNativeConfirmation = true;
+        diagnostic.uncertaintyReason = 'native PCB import confirmation pending';
+        updatePendingPcbImportContext(diagnostic, message.result);
+        this.pendingImportSockets.set(requestId, peer.socket);
+      }
+      else if (diagnostic?.clientId === peer.clientId && !bridgeTimedOut && !commitUnknown
+        && diagnostic.requiredReadback !== 'pcb_component_positions'
+        && diagnostic.requiredReadback !== 'pcb_routing_state') {
         this.recoveryDiagnostics.delete(requestId);
       }
       return;
@@ -617,6 +888,33 @@ export class EdaBridgeServer {
     if (bridgeTimeoutMs !== undefined) {
       this.recordTimedOutRequest(requestId, pending, bridgeTimeoutMs);
     }
+    else if (isPcbAutoLayoutRequest(pending.path ?? '', pending.payload)
+      && isRecord(message.result)
+      && message.result.ok === false
+      && message.result.commitState === 'unknown'
+      && message.result.retryBlocked === true) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native autoLayout timeout');
+    }
+    else if (isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
+      && isRecord(message.result)
+      && message.result.commitState === 'unknown'
+      && message.result.retryBlocked === true) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native autoRouting timeout');
+    }
+    else if (!isReadOnlyRequest(pending.path ?? '', pending.payload)
+      && isRecord(message.result)
+      && message.result.commitUnknown === true) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000,
+        'write result could not be verified', message.result.nativeCallSettled === true);
+    }
+    else if (isPendingPcbImportResult(pending.path, pending.payload, message.result)) {
+      this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, 'native PCB import confirmation pending');
+      const diagnostic = this.recoveryDiagnostics.get(requestId)!;
+      diagnostic.pendingNativeConfirmation = true;
+      updatePendingPcbImportContext(diagnostic, message.result);
+      this.pendingImportSockets.set(requestId, peer.socket);
+    }
+    this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
     if (isRecord(message.error) && typeof message.error.message === 'string') {
       const code = typeof message.error.code === 'string' ? message.error.code : undefined;
       const timeoutMs = Number(message.error.timeoutMs);
@@ -645,6 +943,14 @@ export class EdaBridgeServer {
 
     pending.started = true;
     pending.startedAt = Date.now();
+    if (!isReadOnlyRequest(pending.path ?? '', pending.payload)) {
+      const executionContext = parseClientContext(message.context);
+      pending.context = isPcbAutoLayoutRequest(pending.path ?? '', pending.payload)
+        ? executionContext?.pageKind === 'pcb' && executionContext.pageUuid
+          ? executionContext
+          : { pageKind: 'pcb' }
+        : executionContext;
+    }
     this.clearPendingTimeout(pending);
     const executionTimeoutMs = pending.executionTimeoutMs ?? 30000;
     if (pending.mcpSocket && pending.internalRequestId) {
@@ -788,12 +1094,33 @@ export class EdaBridgeServer {
     if (path === '/bridge/admin/select-client') {
       const clientId = isRecord(payload) ? String(payload.clientId ?? '').trim() : '';
       const force = isRecord(payload) && payload.force === true;
-      return this.selectClient(clientId, force);
+      return this.selectClientWithProbe(clientId, force);
     }
     if (path === '/bridge/admin/recover-client') {
       return this.recoverClient(payload, timeoutMs);
     }
     return this.dispatchToEda(path, payload, timeoutMs, mcpSocket, false, undefined, internalRequestId);
+  }
+
+  private isPeerReady(peer: BridgePeer, now = Date.now()): boolean {
+    return peer.isReady
+      && peer.socket.readyState === WebSocket.OPEN
+      && now - (peer.lastHeartbeatAt || peer.connectedAt) <= this.peerTtlMs;
+  }
+
+  private promoteReadyPeerIfNeeded(peer: BridgePeer): void {
+    if (!this.isPeerReady(peer) || this.activeClientId === peer.clientId)
+      return;
+    const active = this.peers.get(this.activeClientId);
+    if ((active && (this.isPeerReady(active) || this.activeClientExplicitlySelected))
+      || this.recoverySession || this.resolvingImports.size > 0
+      || hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values())
+      || [...this.pendingRequests.values()].some(request => request.clientId === this.activeClientId))
+      return;
+    this.activeClientId = peer.clientId;
+    this.activeClientExplicitlySelected = false;
+    this.leaseTerm += 1;
+    this.broadcastRoles('Ready standby promoted');
   }
 
   private getClientSnapshot(): Record<string, unknown> {
@@ -804,10 +1131,12 @@ export class EdaBridgeServer {
       .map((peer) => ({
         clientId: peer.clientId,
         active: peer.clientId === this.activeClientId,
-        ready: peer.isReady && peer.socket.readyState === WebSocket.OPEN,
+        ready: this.isPeerReady(peer, now),
         bridgeVersion: peer.bridgeVersion,
+        selectionProbeSupported: peer.selectionProbeVersion === 1,
         connectedAt: new Date(peer.connectedAt).toISOString(),
         lastSeenMsAgo: Math.max(0, now - peer.lastSeenAt),
+        lastHeartbeatMsAgo: peer.lastHeartbeatAt ? Math.max(0, now - peer.lastHeartbeatAt) : null,
         context: peer.context,
         quarantine: this.recoverySession?.targetClientId === peer.clientId
           ? { state: 'readback-required', recoveryId: this.recoverySession.recoveryId }
@@ -833,8 +1162,10 @@ export class EdaBridgeServer {
         active: false,
         ready: false,
         bridgeVersion: 'unknown',
+        selectionProbeSupported: false,
         connectedAt: diagnostics[0].startedAt,
         lastSeenMsAgo: Math.max(0, now - diagnostics.reduce((earliest, diagnostic) => Math.min(earliest, diagnostic.timedOutAtMs), now)),
+        lastHeartbeatMsAgo: null,
         context: diagnostics.find((diagnostic) => diagnostic.context)?.context,
         quarantine: { state: 'timed-out', diagnostics },
       });
@@ -842,12 +1173,55 @@ export class EdaBridgeServer {
     return { activeClientId: this.activeClientId || null, leaseTerm: this.leaseTerm, clients };
   }
 
+  private async selectClientWithProbe(clientId: string, force: boolean): Promise<Record<string, unknown>> {
+    if (!clientId)
+      throw new Error('clientId is required');
+    const peer = this.peers.get(clientId);
+    if (!peer || !this.isPeerReady(peer))
+      throw new Error(`EDA client is not connected and ready: ${clientId}`);
+    if (this.activeClientId === clientId)
+      return this.selectClient(clientId, force);
+    if (this.recoverySession)
+      throw new Error(`Cannot switch EDA client while recovery ${this.recoverySession.recoveryId} is awaiting readback.`);
+    if (!force && [...this.pendingRequests.values()].some(pending => pending.clientId === this.activeClientId))
+      throw new Error('Cannot switch EDA client while the active client has a pending task');
+    if (peer.selectionProbeVersion !== 1)
+      throw new Error(`EDA client ${clientId} does not support selection probe; upgrade its Bridge extension before selecting it.`);
+    await this.probeClient(peer);
+    if (this.peers.get(clientId) !== peer || !this.isPeerReady(peer))
+      throw new Error(`EDA client disconnected before selection completed: ${clientId}`);
+    return this.selectClient(clientId, force);
+  }
+
+  private probeClient(peer: BridgePeer): Promise<void> {
+    const probeId = this.createRequestId();
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingSelectionProbes.delete(probeId);
+        reject(new Error(`EDA client selection probe timed out: ${peer.clientId}`));
+      }, SELECTION_PROBE_TIMEOUT_MS);
+      this.pendingSelectionProbes.set(probeId, { clientId: peer.clientId, socket: peer.socket, resolve, reject, timeout });
+      if (!this.trySend(peer.socket, { type: 'bridge/probe', clientId: peer.clientId, probeId }))
+        this.rejectSelectionProbesForSocket(peer.socket, `Could not send selection probe to EDA client: ${peer.clientId}`);
+    });
+  }
+
+  private rejectSelectionProbesForSocket(socket: WebSocket, reason: string): void {
+    for (const [probeId, pending] of this.pendingSelectionProbes) {
+      if (pending.socket !== socket)
+        continue;
+      clearTimeout(pending.timeout);
+      this.pendingSelectionProbes.delete(probeId);
+      pending.reject(new Error(reason));
+    }
+  }
+
   private selectClient(clientId: string, force: boolean, allowRecoverySessionSwitch = false): Record<string, unknown> {
     if (!clientId) {
       throw new Error('clientId is required');
     }
     const peer = this.peers.get(clientId);
-    if (!peer || !peer.isReady || peer.socket.readyState !== WebSocket.OPEN) {
+    if (!peer || !this.isPeerReady(peer)) {
       throw new Error(`EDA client is not connected and ready: ${clientId}`);
     }
     if (this.recoverySession && this.activeClientId !== clientId && !allowRecoverySessionSwitch) {
@@ -867,14 +1241,17 @@ export class EdaBridgeServer {
       this.leaseTerm += 1;
       this.broadcastRoles('Client explicitly selected by MCP');
     }
+    this.activeClientExplicitlySelected = true;
     return this.getClientSnapshot();
   }
 
-  private recordTimedOutRequest(requestId: string, pending: PendingRequest, timeoutMs: number): void {
+  private recordTimedOutRequest(requestId: string, pending: PendingRequest, timeoutMs: number, uncertaintyReason = 'execution timeout', nativeCallSettled = false): void {
     if (!pending.clientId) {
       return;
     }
     this.enterReconnectBarrier(pending.clientId);
+    const mutating = !isReadOnlyRequest(pending.path ?? '', pending.payload);
+    const targetProjectUuid = mutating ? knownProjectTargetUuid(pending.path ?? '', pending.payload) : undefined;
     const diagnostic: RecoveryDiagnostic = {
       requestId,
       clientId: pending.clientId,
@@ -882,10 +1259,45 @@ export class EdaBridgeServer {
       startedAt: new Date(pending.startedAt ?? Date.now()).toISOString(),
       timeoutMs,
       timedOutAtMs: Date.now(),
-      mutating: !isReadOnlyRequest(pending.path ?? '', pending.payload),
+      mutating,
+      pageBound: mutating && isPageBoundWrite(pending.path ?? '', pending.payload),
+      ...(mutating && pending.path === '/bridge/jlceda/api/invoke'
+        ? { hostRestartRequired: !nativeCallSettled } : {}),
+      ...(targetProjectUuid ? { targetProjectUuid } : {}),
+      ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
+      ...((isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
+        || isPcbConnectivityMutation(pending.path ?? '', pending.payload))
+        ? { requiredReadback: 'pcb_routing_state' as const,
+            hostRestartRequired: !nativeCallSettled || isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) }
+        : {}),
+      ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
+      ...(mutating && isSchematicPlacementWrite(pending.path ?? '')
+        ? { requiredReadback: 'schematic_component_ids' as const, hostRestartRequired: !nativeCallSettled }
+        : {}),
+      ...(mutating && isSchematicConnectivityMutation(pending.path ?? '', pending.payload)
+        ? { requiredReadback: 'schematic_connectivity_primitives' as const, hostRestartRequired: !nativeCallSettled } : {}),
+      ...(mutating && isTargetedSchematicPageMutation(pending.path ?? '', pending.payload)
+        ? { requiredReadback: 'schematic_page_inventory' as const, ...schematicPageMutationTarget(pending.path ?? '', pending.payload) } : {}),
+      uncertaintyReason,
       context: pending.context,
     };
     this.recoveryDiagnostics.set(requestId, diagnostic);
+  }
+
+  private updateAutoLayoutDiagnostic(requestId: string, result: unknown, clientId: string): void {
+    const diagnostic = this.recoveryDiagnostics.get(requestId);
+    if (diagnostic?.clientId !== clientId || diagnostic.requiredReadback !== 'pcb_component_positions' || !isRecord(result))
+      return;
+    const layoutContext = parseClientContext(result.layoutContext);
+    const pageUuid = layoutContext?.pageKind === 'pcb' ? layoutContext.pageUuid : optionalString(result.pcbUuid);
+    if (!pageUuid)
+      return;
+    diagnostic.context = {
+      pageKind: 'pcb',
+      pageUuid,
+      documentUuid: layoutContext?.documentUuid,
+      projectUuid: layoutContext?.projectUuid,
+    };
   }
 
   private async recoverClient(payload: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
@@ -894,8 +1306,12 @@ export class EdaBridgeServer {
       throw new Error('bridge_recover_client requires confirm=true.');
     }
     const action = payload.action === undefined ? 'recover' : String(payload.action);
-    if (action !== 'recover' && action !== 'readback') {
-      throw new Error('bridge_recover_client action must be recover or readback.');
+    if (action !== 'recover' && action !== 'readback' && action !== 'resolve_import') {
+      throw new Error('bridge_recover_client action must be recover, readback, or resolve_import.');
+    }
+
+    if (action === 'resolve_import') {
+      return await this.resolvePendingPcbImport(payload, timeoutMs);
     }
 
     if (action === 'recover') {
@@ -909,20 +1325,26 @@ export class EdaBridgeServer {
       const diagnostic = this.recoveryDiagnostics.get(requestId);
       if (!diagnostic)
         throw new Error(`No unresolved timeout diagnostic exists for requestId: ${requestId}`);
+      if (diagnostic.importContextConflict)
+        throw new Error('PCB import identity disagrees with its execution context; inspect both PCB pages before restarting the MCP Server. Writes remain blocked.');
       const sourceClientId = diagnostic.clientId;
       if (!diagnostic.mutating) {
         throw new Error('The active timed-out task was read-only and does not require controlled mutation recovery.');
       }
+      if (this.resolvingImports.has(requestId)) {
+        throw new Error('PCB import resolution is already in progress.');
+      }
       const source = this.peers.get(sourceClientId);
-      const sourceConnected = Boolean(source?.isReady && source.socket.readyState === WebSocket.OPEN);
+      const sourceConnected = Boolean(source && this.isPeerReady(source));
       const recoveryId = randomUUID();
       this.recoverySession = {
         recoveryId,
         diagnostic,
         requestedAt: new Date().toISOString(),
-        requestedAtMs: Date.now(),
         sourceConnected,
-        sourceConnectedAt: source?.connectedAt,
+        sourceSocket: source?.socket,
+        preRecoverySockets: new Set([...this.peers.values()].map(peer => peer.socket)),
+        preRecoveryClientIds: new Set([sourceClientId, ...this.peers.keys()]),
       };
       if (sourceConnected) {
         this.trySend(source!.socket, {
@@ -948,9 +1370,14 @@ export class EdaBridgeServer {
     if (!session) {
       throw new Error('No Bridge recovery is awaiting readback.');
     }
+    const pcbRoutingWriteLabel = session.diagnostic.path === '/bridge/jlceda/api/invoke'
+      ? 'Timed-out PCB autoRouting' : 'Unverified PCB routing write';
     if (String(payload.recoveryId ?? '').trim() !== session.recoveryId) {
       throw new Error('recoveryId does not match the active recovery session.');
     }
+    if (session.diagnostic.importContextConflict)
+      throw new Error('PCB import identity disagrees with its execution context; writes remain blocked.');
+    const pendingImportAtReadbackStart = session.diagnostic.pendingNativeConfirmation === true;
     const targetClientId = String(payload.clientId ?? '').trim();
     if (!targetClientId) {
       throw new Error('clientId must identify the fresh Bridge client reported by bridge_clients.');
@@ -963,42 +1390,181 @@ export class EdaBridgeServer {
     if (!isReadOnlyRequest(readbackPath, readbackPayload)) {
       throw new Error('readbackPath and readbackPayload must describe a read-only operation; schematic layout mode=fix is not allowed.');
     }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
+      && !isPcbComponentReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Timed-out PCB autoLayout requires eda.pcb_PrimitiveComponent.getAll with no arguments for recovery readback.');
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state'
+      && !isPcbRoutingReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error(`${pcbRoutingWriteLabel} requires eda.pcb_PrimitiveLine.getAll with no arguments for recovery readback.`);
+    }
+    if (session.diagnostic.requiredReadback === 'schematic_project_review'
+      && readbackPath !== '/bridge/jlceda/schematic/review') {
+      throw new Error('Cross-page schematic component deletion requires schematic_review of the whole project for recovery readback.');
+    }
+    if (session.diagnostic.requiredReadback === 'schematic_component_ids'
+      && !isSchematicComponentIdReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Schematic placement requires current-page eda.sch_PrimitiveComponent.getAllPrimitiveId with args [null, false] for recovery readback.');
+    }
+    if (session.diagnostic.requiredReadback === 'schematic_page_inventory'
+      && !isSchematicPageInventoryReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Schematic page mutation requires eda.dmt_Schematic.getAllSchematicPagesInfo with no arguments for recovery readback.');
+    }
+    if (session.diagnostic.requiredReadback === 'schematic_connectivity_primitives'
+      && !isSchematicConnectivityReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Schematic connectivity mutation requires schematic_read with includeConnectivityPrimitives=true for recovery readback.');
+    }
+    if (session.diagnostic.requiredReadback === 'schematic_component_ids'
+      && (session.diagnostic.context?.pageKind !== 'schematic' || !session.diagnostic.context.pageUuid)) {
+      throw new Error('Schematic placement has no verified execution-time schematic page identity; writes remain blocked.');
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions'
+      && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
+      throw new Error('Timed-out PCB autoLayout has no verified execution-time PCB page identity; writes remain blocked.');
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state'
+      && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
+      throw new Error(`${pcbRoutingWriteLabel} has no verified execution-time PCB page identity; writes remain blocked.`);
+    }
+    if (session.diagnostic.hostRestartRequired && payload.hostRestartConfirmed !== true) {
+      const writeLabel = session.diagnostic.requiredReadback === 'schematic_component_ids'
+        ? 'Unverified schematic placement'
+        : session.diagnostic.requiredReadback === 'schematic_connectivity_primitives'
+          ? 'Unverified schematic connectivity write'
+          : session.diagnostic.requiredReadback === 'pcb_routing_state'
+            ? pcbRoutingWriteLabel
+            : session.diagnostic.requiredReadback === 'pcb_component_positions'
+              ? 'Unverified PCB autoLayout'
+              : 'Unverified EDA API write';
+      throw new Error(`${writeLabel} requires confirmation that the original EDA host was restarted; writes remain blocked.`);
+    }
+    if (session.diagnostic.pendingNativeConfirmation
+      && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload))) {
+      throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
+    }
+    if (session.sourceSocket
+      && this.peers.get(session.diagnostic.clientId)?.socket === session.sourceSocket) {
+      throw new Error('The original Bridge client must disconnect before recovery readback. Wait for its EDA call to settle, or restart the EDA host if it remains hung.');
+    }
     const target = this.peers.get(targetClientId);
-    if (!target || !target.isReady || target.socket.readyState !== WebSocket.OPEN)
+    if (!target || !this.isPeerReady(target))
       throw new Error(`EDA client is not connected and ready: ${targetClientId}`);
-    if (session.targetClientId && session.targetConnectedAt !== target.connectedAt) {
+    if (session.targetClientId && session.targetSocket !== target.socket) {
       throw new Error('Recovery readback target connection was replaced; retry with the new Bridge generation.');
     }
-    if (session.sourceConnected && target.connectedAt < session.requestedAtMs)
+    // A disconnected source may still have a native EDA call in flight; an
+    // already-connected standby is not a new host generation.
+    // A routine transport reconnect replaces the socket but keeps the same
+    // Bridge runtime clientId. Controlled recovery or a new runtime changes it.
+    if (session.preRecoverySockets.has(target.socket) || session.preRecoveryClientIds.has(target.clientId))
       throw new Error('clientId is not a fresh Bridge generation created after recovery was requested.');
-    if (targetClientId === session.diagnostic.clientId
-      && target.connectedAt <= (session.sourceConnectedAt ?? session.requestedAtMs)) {
-      throw new Error('clientId must identify a newer Bridge generation than the timed-out source.');
-    }
-    const expectedDocumentUuid = optionalString(payload.expectedDocumentUuid) ?? session.diagnostic.context?.documentUuid;
-    const expectedProjectUuid = optionalString(payload.expectedProjectUuid) ?? session.diagnostic.context?.projectUuid;
+    const executionContext = session.diagnostic.context;
+    if (session.diagnostic.pageBound && (!executionContext?.pageKind || !executionContext.pageUuid))
+      throw new Error('Timed-out write has no verified execution-time page identity; writes remain blocked.');
+    const requestedPageUuid = optionalString(payload.expectedPageUuid);
+    if (requestedPageUuid && (!session.diagnostic.pageBound || requestedPageUuid !== executionContext?.pageUuid))
+      throw new Error('expectedPageUuid does not match the verified execution-time page identity; writes remain blocked.');
+    const expectedDocumentUuid = session.diagnostic.pageBound
+      ? executionContext?.documentUuid ?? optionalString(payload.expectedDocumentUuid)
+      : optionalString(payload.expectedDocumentUuid);
+    const expectedProjectUuid = session.diagnostic.targetProjectUuid
+      ?? (session.diagnostic.pageBound || session.diagnostic.requiredReadback === 'schematic_project_review'
+        || session.diagnostic.requiredReadback === 'schematic_page_inventory'
+        ? executionContext?.projectUuid : undefined)
+      ?? optionalString(payload.expectedProjectUuid);
+    const expectedPageUuid = session.diagnostic.pageBound ? executionContext?.pageUuid : undefined;
+    const expectedPageKind = session.diagnostic.pageBound ? executionContext?.pageKind : undefined;
+    const executionIdentity = {
+      pageKind: executionContext?.pageKind,
+      pageUuid: executionContext?.pageUuid,
+      documentUuid: executionContext?.documentUuid,
+      projectUuid: executionContext?.projectUuid,
+    };
     if (!expectedDocumentUuid && !expectedProjectUuid)
-      throw new Error('Recovery requires expectedDocumentUuid or expectedProjectUuid when the original client did not report document identity.');
+      throw new Error('Recovery requires a target expectedDocumentUuid or expectedProjectUuid for this write.');
     if (expectedDocumentUuid && target.context?.documentUuid && target.context.documentUuid !== expectedDocumentUuid)
       throw new Error('Fresh Bridge client documentUuid does not match the expected document; writes remain blocked.');
     if (expectedProjectUuid && target.context?.projectUuid && target.context.projectUuid !== expectedProjectUuid)
       throw new Error('Fresh Bridge client projectUuid does not match the expected project; writes remain blocked.');
+    if (expectedPageUuid && target.context?.pageUuid !== expectedPageUuid)
+      throw new Error('Fresh Bridge client pageUuid does not match the timed-out page; writes remain blocked.');
     this.selectClient(targetClientId, true, true);
     session.targetClientId = targetClientId;
-    session.targetConnectedAt = target.connectedAt;
-    const readback = await this.dispatchToEda(readbackPath, readbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+    session.targetSocket = target.socket;
+    if (session.diagnostic.requiredReadback === 'pcb_routing_state') {
+      if (!expectedPageUuid)
+        throw new Error(`${pcbRoutingWriteLabel} has no verified execution-time PCB page identity; writes remain blocked.`);
+      const beforeRoutingReadback = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+      this.assertPcbIdentity(beforeRoutingReadback, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+    }
+    if (session.diagnostic.requiredReadback === 'schematic_component_ids') {
+      const beforeComponentReadback = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+      this.assertSchematicIdentity(beforeComponentReadback, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid!);
+    }
+    const requiresPcbPositions = session.diagnostic.requiredReadback === 'pcb_component_positions'
+      || session.diagnostic.pendingNativeConfirmation;
+    const effectiveReadbackPayload = requiresPcbPositions
+      ? { ...readbackPayload, includeCompletePositions: true }
+      : session.diagnostic.requiredReadback === 'pcb_routing_state'
+        ? { ...readbackPayload, includeCompleteRouting: true }
+        : session.diagnostic.requiredReadback === 'schematic_component_ids'
+          ? { ...readbackPayload, includeCompleteSchematicComponentIds: true }
+        : readbackPayload;
+    const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+    if (isRecord(readback) && readback.ok === false) {
+      const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
+        || readbackPath === '/bridge/jlceda/schematic/drc-check';
+      if (!expectedNegative || optionalString(readback.error)) {
+        throw new Error(`Recovery readback failed: ${optionalString(readback.error) ?? 'the read-only operation returned ok:false'}`);
+      }
+    }
+    if (session.diagnostic.requiredReadback === 'pcb_component_positions' || session.diagnostic.pendingNativeConfirmation)
+      this.validateCompletePcbComponents(readback);
+    const routingSnapshot = session.diagnostic.requiredReadback === 'pcb_routing_state'
+      ? await this.readCompletePcbRoutingState(readback, targetClientId, timeoutMs)
+      : undefined;
+    if (session.diagnostic.requiredReadback === 'schematic_page_inventory')
+      this.validateCompleteSchematicPages(readback, session.diagnostic);
+    if (session.diagnostic.requiredReadback === 'schematic_connectivity_primitives')
+      this.validateCompleteSchematicConnectivity(readback, session.diagnostic);
+    if (session.diagnostic.requiredReadback === 'schematic_component_ids')
+      this.validateCompleteSchematicComponentIds(readback);
     const identityReadback = readbackPath === '/bridge/jlceda/context'
       ? readback
       : await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
-    const identity = extractReadbackIdentity(identityReadback);
+    const identity = extractReadbackIdentity(identityReadback, expectedPageKind);
     if (expectedDocumentUuid && identity.documentUuid !== expectedDocumentUuid) {
       throw new Error('Readback documentUuid does not match expectedDocumentUuid; writes remain blocked.');
     }
     if (expectedProjectUuid && identity.projectUuid !== expectedProjectUuid) {
       throw new Error('Readback projectUuid does not match expectedProjectUuid; writes remain blocked.');
     }
+    if (expectedPageUuid && identity.pageUuid !== expectedPageUuid) {
+      throw new Error('Readback pageUuid does not match the timed-out page; writes remain blocked.');
+    }
+    if (session.diagnostic.pendingNativeConfirmation) {
+      if (!expectedPageUuid || expectedPageKind !== 'pcb')
+        throw new Error('Pending PCB import recovery requires the original PCB page identity; writes remain blocked.');
+      await this.readCompletePcbNets(targetClientId, timeoutMs);
+      const finalContext = await this.dispatchToEda('/bridge/jlceda/context', {}, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+      this.assertPcbIdentity(finalContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+    }
+    if (session.diagnostic.context?.pageKind !== executionIdentity.pageKind
+      || session.diagnostic.context?.pageUuid !== executionIdentity.pageUuid
+      || session.diagnostic.context?.documentUuid !== executionIdentity.documentUuid
+      || session.diagnostic.context?.projectUuid !== executionIdentity.projectUuid) {
+      throw new Error('Write execution identity changed during recovery readback; retry against the actual page.');
+    }
+    if (session.diagnostic.importContextConflict)
+      throw new Error('PCB import identity disagrees with its execution context during recovery readback; writes remain blocked.');
+    if ((session.diagnostic.pendingNativeConfirmation === true) !== pendingImportAtReadbackStart)
+      throw new Error('PCB import confirmation state changed during recovery readback; retry the import confirmation recovery flow. Writes remain blocked.');
+    if (session.diagnostic.pendingNativeConfirmation
+      && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload)))
+      throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
     this.recoverySession = undefined;
     this.recoveryDiagnostics.delete(session.diagnostic.requestId);
+    this.pendingImportSockets.delete(session.diagnostic.requestId);
     return {
       ok: true,
       action,
@@ -1007,16 +1573,303 @@ export class EdaBridgeServer {
       writesRemainBlocked: hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values()),
       unresolvedMutatingRequestIds: [...this.recoveryDiagnostics.values()].filter(item => item.mutating).map(item => item.requestId),
       readback,
+      ...(routingSnapshot ? { routingSnapshot } : {}),
       identityReadback,
       warningAcknowledged: true,
     };
+  }
+
+  private assertPcbIdentity(value: unknown, documentUuid: string | undefined, projectUuid: string | undefined, pageUuid: string): void {
+    const identity = extractReadbackIdentity(value, 'pcb');
+    if ((documentUuid && identity.documentUuid !== documentUuid)
+      || (projectUuid && identity.projectUuid !== projectUuid)
+      || identity.pageUuid !== pageUuid) {
+      throw new Error('PCB document or page identity changed during readback; writes remain blocked.');
+    }
+  }
+
+  private validateCompletePcbComponents(value: unknown): number {
+    if (!isRecord(value)
+      || optionalString(value.apiFullName)?.toLowerCase() !== 'eda.pcb_primitivecomponent.getall'
+      || !Array.isArray(value.componentPositions)
+      || value.componentCount !== value.componentPositions.length
+      || value.componentPositions.some(position => !isRecord(position)
+        || !optionalString(position.primitiveId)
+        || !Number.isFinite(position.x) || !Number.isFinite(position.y)
+        || !Number.isFinite(position.rotation))) {
+      throw new Error('PCB component position readback did not return a complete component list; writes remain blocked.');
+    }
+    return value.componentPositions.length;
+  }
+
+  private assertSchematicIdentity(value: unknown, documentUuid: string | undefined, projectUuid: string | undefined, pageUuid: string): void {
+    const identity = extractReadbackIdentity(value, 'schematic');
+    if ((documentUuid && identity.documentUuid !== documentUuid)
+      || (projectUuid && identity.projectUuid !== projectUuid)
+      || identity.pageUuid !== pageUuid) {
+      throw new Error('Schematic document or page identity changed during component readback; writes remain blocked.');
+    }
+  }
+
+  private validateCompleteSchematicComponentIds(value: unknown): string[] {
+    const validOtherPropertyJson = (raw: unknown): boolean => {
+      if (typeof raw !== 'string') return false;
+      try {
+        const properties: unknown = JSON.parse(raw);
+        return isRecord(properties) && Object.values(properties).every(item =>
+          typeof item === 'string' || typeof item === 'boolean' || (typeof item === 'number' && Number.isFinite(item)));
+      } catch {
+        return false;
+      }
+    };
+    if (!isRecord(value)
+      || optionalString(value.apiFullName)?.toLowerCase() !== 'eda.sch_primitivecomponent.getallprimitiveid'
+      || !Array.isArray(value.schematicComponentIds)
+      || !Array.isArray(value.schematicComponentStates)
+      || value.schematicComponentCount !== value.schematicComponentIds.length
+      || value.schematicComponentStates.length !== value.schematicComponentIds.length
+      || value.schematicComponentIds.some(id => typeof id !== 'string' || !id.trim())
+      || new Set(value.schematicComponentIds).size !== value.schematicComponentIds.length
+      || value.schematicComponentStates.some(state => !isRecord(state)
+        || !optionalString(state.primitiveId) || typeof state.designator !== 'string'
+        || !validOtherPropertyJson(state.otherPropertyJson))
+      || new Set(value.schematicComponentStates.map(state => state.primitiveId)).size !== value.schematicComponentIds.length
+      || value.schematicComponentStates.some(state => !(value.schematicComponentIds as string[]).includes(state.primitiveId))) {
+      throw new Error('Schematic component state readback was incomplete; writes remain blocked.');
+    }
+    return value.schematicComponentIds as string[];
+  }
+
+  private validatePcbRoutingPrimitives(value: unknown, apiFullName: string): Record<string, unknown>[] {
+    const number = (item: unknown): boolean => typeof item === 'number' && Number.isFinite(item);
+    const kind = apiFullName.toLowerCase();
+    const validPrimitive = (primitive: unknown): boolean => {
+      if (!isRecord(primitive) || !optionalString(primitive.primitiveId) || typeof primitive.net !== 'string')
+        return false;
+      if (kind.includes('primitivevia'))
+        return number(primitive.x) && number(primitive.y) && number(primitive.holeDiameter) && number(primitive.diameter)
+          && (typeof primitive.viaType === 'string' || number(primitive.viaType));
+      if (!(typeof primitive.layer === 'string' || number(primitive.layer)) || !number(primitive.lineWidth))
+        return false;
+      if (kind.includes('primitivepolyline')) {
+        if (typeof primitive.polygonSource !== 'string') return false;
+        try {
+          const source: unknown = JSON.parse(primitive.polygonSource);
+          return Array.isArray(source) && source.length > 0 && source.every(part => typeof part === 'string' || number(part));
+        } catch {
+          return false;
+        }
+      }
+      return number(primitive.startX) && number(primitive.startY) && number(primitive.endX) && number(primitive.endY)
+        && (!kind.includes('primitivearc') || number(primitive.arcAngle));
+    };
+    if (!isRecord(value)
+      || optionalString(value.apiFullName)?.toLowerCase() !== apiFullName.toLowerCase()
+      || !Array.isArray(value.routingPrimitives)
+      || value.routingPrimitiveCount !== value.routingPrimitives.length
+      || value.routingPrimitives.some(primitive => !validPrimitive(primitive))) {
+      throw new Error(`PCB routing readback for ${apiFullName} was incomplete; writes remain blocked.`);
+    }
+    return value.routingPrimitives as Record<string, unknown>[];
+  }
+
+  private async readCompletePcbRoutingState(firstReadback: unknown, clientId: string, timeoutMs: number): Promise<Record<string, unknown>> {
+    const primitives: Record<string, Record<string, unknown>[]> = {
+      line: this.validatePcbRoutingPrimitives(firstReadback, PCB_ROUTING_READBACK_APIS[0]),
+    };
+    for (const [index, kind] of ['arc', 'polyline', 'via'].entries()) {
+      const apiFullName = PCB_ROUTING_READBACK_APIS[index + 1];
+      const value = await this.dispatchToEda('/bridge/jlceda/api/invoke', { apiFullName, args: [], includeCompleteRouting: true }, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, clientId);
+      primitives[kind] = this.validatePcbRoutingPrimitives(value, apiFullName);
+    }
+
+    let total: number | undefined;
+    let offset = 0;
+    const nets: Array<{ net: string; length: number }> = [];
+    do {
+      const value = await this.dispatchToEda('/bridge/jlceda/net/query-pcb', { mode: 'all', limit: 1000, offset }, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, clientId);
+      if (!isRecord(value) || value.ok !== true || value.mode !== 'all'
+        || !Number.isSafeInteger(value.total) || Number(value.total) < 0
+        || value.offset !== offset || !Array.isArray(value.nets)
+        || value.returned !== value.nets.length || (total !== undefined && value.total !== total)
+        || value.nets.some(net => !isRecord(net) || typeof net.net !== 'string' || !Number.isFinite(net.length))) {
+        throw new Error('PCB routing net readback was incomplete; writes remain blocked.');
+      }
+      total = Number(value.total);
+      nets.push(...value.nets.map(net => ({ net: (net as Record<string, unknown>).net as string, length: (net as Record<string, unknown>).length as number })));
+      offset += value.nets.length;
+      if (offset > total || value.truncated !== (offset < total) || (offset < total && value.nets.length === 0))
+        throw new Error('PCB routing net readback was incomplete; writes remain blocked.');
+    } while (offset < total);
+    return { primitives, nets, netCount: total };
+  }
+
+  private validateCompleteSchematicPages(value: unknown, diagnostic: RecoveryDiagnostic): number {
+    if (!isRecord(value)
+      || optionalString(value.apiFullName)?.toLowerCase() !== 'eda.dmt_schematic.getallschematicpagesinfo'
+      || !Array.isArray(value.schematicPages)
+      || !Number.isSafeInteger(value.pageCount)
+      || value.pageCount !== value.schematicPages.length) {
+      throw new Error('Schematic page inventory readback was incomplete; writes remain blocked.');
+    }
+    const pages = value.schematicPages as unknown[];
+    const uuids = new Set<string>();
+    for (const page of pages) {
+      if (!isRecord(page) || !optionalString(page.uuid) || !optionalString(page.parentSchematicUuid)
+        || uuids.has(page.uuid as string)) {
+        throw new Error('Schematic page inventory readback was incomplete; writes remain blocked.');
+      }
+      uuids.add(page.uuid as string);
+    }
+    if (diagnostic.targetSchematicUuid && !diagnostic.targetSchematicMayBeEmpty
+      && !pages.some(page => isRecord(page) && page.parentSchematicUuid === diagnostic.targetSchematicUuid)) {
+      throw new Error('Target schematic is absent from the page inventory; writes remain blocked.');
+    }
+    if (diagnostic.targetSchematicPageUuid && !diagnostic.targetPageMayBeAbsent
+      && !uuids.has(diagnostic.targetSchematicPageUuid)) {
+      throw new Error('Target schematic page is absent from the page inventory; writes remain blocked.');
+    }
+    if (diagnostic.sourceSchematicPageUuid && !uuids.has(diagnostic.sourceSchematicPageUuid)) {
+      throw new Error('Source schematic page is absent from the page inventory; writes remain blocked.');
+    }
+    return pages.length;
+  }
+
+  private validateCompleteSchematicConnectivity(value: unknown, diagnostic: RecoveryDiagnostic): void {
+    let primitives: unknown;
+    let semantic: unknown;
+    try {
+      if (!isRecord(value) || value.ok !== true
+        || typeof value.connectivityPrimitivesSnapshot !== 'string'
+        || typeof value.schematicCircuitSnapshot !== 'string')
+        throw new Error('missing readback');
+      primitives = JSON.parse(value.connectivityPrimitivesSnapshot);
+      semantic = JSON.parse(value.schematicCircuitSnapshot);
+    } catch {
+      throw new Error('Schematic connectivity readback was incomplete; writes remain blocked.');
+    }
+    if (!isRecord(primitives) || primitives.scope !== 'current_schematic_page' || primitives.complete !== true
+      || primitives.pageUuid !== diagnostic.context?.pageUuid
+      || diagnostic.context?.pageKind !== 'schematic'
+      || !Array.isArray(primitives.wires) || !Array.isArray(primitives.netPorts)
+      || !Array.isArray(primitives.netFlags) || !Array.isArray(primitives.netLabels)
+      || !Number.isSafeInteger(primitives.wireCount) || primitives.wireCount !== primitives.wires.length
+      || !Number.isSafeInteger(primitives.netPortCount) || primitives.netPortCount !== primitives.netPorts.length
+      || !Number.isSafeInteger(primitives.netFlagCount) || primitives.netFlagCount !== primitives.netFlags.length
+      || !Number.isSafeInteger(primitives.netLabelCount) || primitives.netLabelCount !== primitives.netLabels.length
+      || !isRecord(semantic) || !Array.isArray(semantic.components) || !Array.isArray(semantic.networks)
+      || semantic.componentCount !== semantic.components.length || semantic.networkCount !== semantic.networks.length) {
+      throw new Error('Schematic connectivity readback was incomplete or from another page; writes remain blocked.');
+    }
+    const ids = new Set<string>();
+    for (const wire of primitives.wires) {
+      if (!isRecord(wire) || !optionalString(wire.primitiveId) || ids.has(wire.primitiveId as string)
+        || typeof wire.net !== 'string' || !validWireLine(wire.line))
+        throw new Error('Schematic wire readback was incomplete; writes remain blocked.');
+      ids.add(wire.primitiveId as string);
+    }
+    for (const port of primitives.netPorts) {
+      if (!isRecord(port) || !optionalString(port.primitiveId) || ids.has(port.primitiveId as string)
+        || !optionalString(port.net) || !Number.isFinite(port.x) || !Number.isFinite(port.y))
+        throw new Error('Schematic NetPort readback was incomplete; writes remain blocked.');
+      ids.add(port.primitiveId as string);
+    }
+    for (const flag of primitives.netFlags) {
+      if (!isRecord(flag) || !optionalString(flag.primitiveId) || ids.has(flag.primitiveId as string)
+        || !optionalString(flag.net) || !Number.isFinite(flag.x) || !Number.isFinite(flag.y))
+        throw new Error('Schematic NetFlag readback was incomplete; writes remain blocked.');
+      ids.add(flag.primitiveId as string);
+    }
+    for (const label of primitives.netLabels) {
+      if (!isRecord(label) || !optionalString(label.primitiveId) || ids.has(label.primitiveId as string)
+        || typeof label.parentWireId !== 'string' || typeof label.net !== 'string'
+        || (label.x !== null && !Number.isFinite(label.x))
+        || (label.y !== null && !Number.isFinite(label.y)))
+        throw new Error('Schematic NET attribute readback was incomplete; writes remain blocked.');
+      ids.add(label.primitiveId as string);
+    }
+  }
+
+  private async readCompletePcbNets(clientId: string, timeoutMs: number): Promise<number> {
+    let total: number | undefined;
+    let offset = 0;
+    const names = new Set<string>();
+    do {
+      const value = await this.dispatchToEda('/bridge/jlceda/net/query-pcb', { mode: 'names', limit: 1000, offset }, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, clientId);
+      if (!isRecord(value) || value.ok !== true || value.mode !== 'names'
+        || !Number.isSafeInteger(value.total) || Number(value.total) < 0
+        || value.offset !== offset || !Array.isArray(value.names)
+        || value.returned !== value.names.length || (total !== undefined && value.total !== total)
+        || value.names.some(name => typeof name !== 'string' || names.has(name))) {
+        throw new Error('PCB import net readback was incomplete; writes remain blocked.');
+      }
+      total = Number(value.total);
+      for (const name of value.names) names.add(name as string);
+      offset += value.names.length;
+      if (offset > total || value.truncated !== (offset < total) || (offset < total && value.names.length === 0))
+        throw new Error('PCB import net readback was incomplete; writes remain blocked.');
+    } while (offset < total);
+    return total;
+  }
+
+  private async resolvePendingPcbImport(payload: Record<string, unknown>, timeoutMs: number): Promise<Record<string, unknown>> {
+    const requestId = optionalString(payload.requestId);
+    const resolution = payload.resolution;
+    if (!requestId || (resolution !== 'applied' && resolution !== 'cancelled'))
+      throw new Error('resolve_import requires requestId and resolution=applied or cancelled after the native EDA dialog was closed.');
+    const diagnostic = this.recoveryDiagnostics.get(requestId);
+    if (!diagnostic?.pendingNativeConfirmation)
+      throw new Error(`No pending PCB import confirmation exists for requestId: ${requestId}`);
+    if (diagnostic.importContextConflict)
+      throw new Error('PCB import identity disagrees with its execution context; writes remain blocked.');
+    if (this.recoverySession || this.resolvingImports.has(requestId))
+      throw new Error('A Bridge recovery or PCB import resolution is already in progress.');
+    const peer = this.peers.get(diagnostic.clientId);
+    if (!peer || !this.isPeerReady(peer) || peer.socket !== this.pendingImportSockets.get(requestId)
+      || this.activeClientId !== peer.clientId)
+      throw new Error('The original active Bridge connection is unavailable; restart the EDA host and use controlled recovery.');
+    const expectedPageUuid = diagnostic.context?.pageUuid;
+    const expectedDocumentUuid = diagnostic.context?.documentUuid;
+    const expectedProjectUuid = diagnostic.context?.projectUuid;
+    if (diagnostic.context?.pageKind !== 'pcb' || !expectedPageUuid || (!expectedDocumentUuid && !expectedProjectUuid))
+      throw new Error('The original PCB identity is incomplete; restart the EDA host and use controlled recovery.');
+    this.resolvingImports.add(requestId);
+    try {
+      const read = (path: string, body: Record<string, unknown>) => this.dispatchToEda(path, body, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, peer.clientId);
+      const firstContext = await read('/bridge/jlceda/context', {});
+      this.assertPcbIdentity(firstContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+      const components = await read('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [], includeCompletePositions: true });
+      const componentCount = this.validateCompletePcbComponents(components);
+      const netCount = await this.readCompletePcbNets(peer.clientId, timeoutMs);
+      const finalContext = await read('/bridge/jlceda/context', {});
+      this.assertPcbIdentity(finalContext, expectedDocumentUuid, expectedProjectUuid, expectedPageUuid);
+      if (this.peers.get(peer.clientId)?.socket !== peer.socket || this.recoveryDiagnostics.get(requestId) !== diagnostic || this.recoverySession)
+        throw new Error('Bridge connection or recovery state changed during import readback; writes remain blocked.');
+      const acknowledgement = await read('/bridge/jlceda/pcb/import-resolve', { confirm: true, requestId, resolution, expectedPageUuid });
+      if (!isRecord(acknowledgement) || acknowledgement.ok !== true || acknowledgement.pageUuid !== expectedPageUuid)
+        throw new Error('Bridge did not acknowledge PCB import resolution; writes remain blocked.');
+      this.recoveryDiagnostics.delete(requestId);
+      this.pendingImportSockets.delete(requestId);
+      return {
+        ok: true,
+        action: 'resolve_import',
+        resolution,
+        readbackVerified: true,
+        componentCount,
+        netCount,
+        identityReadback: finalContext,
+        writesRemainBlocked: hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values()),
+      };
+    } finally {
+      this.resolvingImports.delete(requestId);
+    }
   }
 
   private async dispatchToEda(path: string, payload: unknown, timeoutMs: number, mcpSocket?: WebSocket, recoveryReadback = false, targetClientId?: string, internalRequestId?: string): Promise<unknown> {
     this.pruneRecoveryDiagnostics();
     const routedClientId = targetClientId ?? this.activeClientId;
     const peer = this.peers.get(routedClientId);
-    if (!peer || !peer.isReady || peer.socket.readyState !== WebSocket.OPEN) {
+    if (!peer || !this.isPeerReady(peer)) {
       throw new Error('No ready EDA client connected');
     }
     if (!recoveryReadback && !isReadOnlyRequest(path, payload) && (this.recoverySession || hasMutatingRecoveryDiagnostics(this.recoveryDiagnostics.values()))) {
@@ -1044,7 +1897,7 @@ export class EdaBridgeServer {
         executionTimeoutMs: timeoutMs,
         started: false,
         clientId: peer.clientId,
-        context: peer.context,
+        context: isReadOnlyRequest(path, payload) ? peer.context : undefined,
         leaseTerm: this.leaseTerm,
         mcpSocket,
         internalRequestId,
@@ -1162,6 +2015,8 @@ export class EdaBridgeServer {
       if (pending.clientId !== clientId) {
         continue;
       }
+      if (pending.started && !isReadOnlyRequest(pending.path ?? '', pending.payload))
+        this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, reason);
       this.clearPendingTimeout(pending);
       this.pendingRequests.delete(requestId);
       pending.reject(new Error(reason));
@@ -1206,6 +2061,8 @@ export class EdaBridgeServer {
         // the tombstone before deleting the pending request.
         this.enterReconnectBarrier(pending.clientId);
       }
+      if (pending.started && !isReadOnlyRequest(pending.path ?? '', pending.payload))
+        this.recordTimedOutRequest(requestId, pending, pending.executionTimeoutMs ?? 30000, reason);
       this.clearPendingTimeout(pending);
       this.pendingRequests.delete(requestId);
       pending.reject(new Error(reason));
@@ -1227,6 +2084,8 @@ export class EdaBridgeServer {
       this.peerSweepTimer = null;
     }
     this.rejectAllPending('Bridge server closed');
+    for (const peer of this.peers.values())
+      this.rejectSelectionProbesForSocket(peer.socket, 'Bridge server closed');
     this.internalClient?.close();
     this.internalClient = null;
     for (const peer of this.peers.values()) {

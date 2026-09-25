@@ -1,4 +1,4 @@
-import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, toSerializableAsync } from '../utils.ts';
+import { getEdaRuntime, isPlainObjectRecord, preserveBoundedArray, safeCall, toSerializableAsync } from '../utils.ts';
 
 type PcbDocumentAction = 'status' | 'canvas_origin' | 'filter_configuration' | 'selection' | 'mouse_position' | 'select_primitives' | 'clear_selection' | 'primitive_type_by_id' | 'primitive_by_id' | 'primitives_by_id' | 'primitives_bbox' | 'primitive_at_point' | 'primitives_in_region' | 'convert_canvas_to_data' | 'convert_data_to_canvas' | 'navigate_to_coordinates' | 'navigate_to_region' | 'zoom_to_board_outline' | 'save' | 'start_ratline' | 'stop_ratline' | 'clear_routing' | 'import_changes' | 'import_auto_route_json' | 'import_auto_route_ses' | 'import_auto_layout_json';
 
@@ -318,8 +318,31 @@ export async function handlePcbDocumentTask(payload: unknown): Promise<unknown> 
 		if (typeof api.importChanges !== 'function')
 			throw new TypeError('EDA pcb_Document.importChanges API is unavailable in this client version.');
 		const uuid = optionalString(payload, 'uuid');
+		// Capture the actual page at the native call. The connection context is
+		// refreshed periodically and may still identify the previously open PCB.
+		const [pcbInfo, documentInfo, projectInfo] = await Promise.all([
+			safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
+			safeCall(() => eda.dmt_SelectControl.getCurrentDocumentInfo()),
+			safeCall(() => eda.dmt_Project.getCurrentProjectInfo()),
+		]);
+		const importContext = {
+			pageKind: 'pcb',
+			pageUuid: pcbInfo?.uuid,
+			documentUuid: documentInfo?.uuid,
+			projectUuid: documentInfo?.parentProjectUuid ?? projectInfo?.uuid,
+		};
 		const imported = await api.importChanges(uuid);
-		return { ok: imported === true, action, imported: await toSerializableAsync(imported) };
+		// EDA returns true when it opens the native import preview. The user must
+		// still apply that dialog before the PCB actually changes.
+		return {
+			ok: imported === true,
+			action,
+			imported: await toSerializableAsync(imported),
+			importContext,
+			commitState: imported === true ? 'pending_confirmation' : 'not_started',
+			requiresNativeConfirmation: imported === true,
+			verification: imported === true ? 'After applying or cancelling the native EDA dialog and confirming it closed, get this requestId from bridge_clients and call bridge_recover_client with action=resolve_import, confirm=true, and resolution=applied or cancelled. The Server then reads back all PCB components and nets before unblocking writes.' : undefined,
+		};
 	}
 	const methodName = action === 'import_auto_route_json' ? 'importAutoRouteJsonFile' : action === 'import_auto_route_ses' ? 'importAutoRouteSesFile' : 'importAutoLayoutJsonFile';
 	const method = api[methodName];

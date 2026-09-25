@@ -1,7 +1,7 @@
 [
   {
     "name": "bridge_clients",
-    "description": "列出当前连接的嘉立创 EDA 页面、项目/文档身份、就绪状态和活动目标。多页面环境下，在任何读取或修改 EDA 的操作前先调用本工具确认目标。",
+    "description": "列出当前连接的嘉立创 EDA 页面、项目/文档身份、最近心跳时间、就绪状态和活动目标。多页面环境下，在任何读取或修改 EDA 的操作前先调用本工具确认目标。",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -10,7 +10,7 @@
   },
   {
     "name": "bridge_select_client",
-    "description": "按精确 clientId 选择后续 MCP 操作所针对的嘉立创 EDA 页面。调用前必须先使用 bridge_clients 核对项目和页面；活动页面存在未完成任务时禁止切换，除非该任务已确认卡死并明确设置 force=true 进行故障恢复。",
+    "description": "按精确 clientId 选择后续 MCP 操作所针对的嘉立创 EDA 页面。待命页面须先通过短时双向探活，旧版 Bridge 不支持该探活时需升级扩展。调用前必须先使用 bridge_clients 核对项目和页面；活动页面存在未完成任务时禁止切换，除非该任务已确认卡死并明确设置 force=true 进行故障恢复。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -32,24 +32,28 @@
   },
   {
     "name": "bridge_recover_client",
-    "description": "对不可取消 EDA 写操作超时后的 Bridge 执行受控恢复。先以 action=recover 和 confirm=true 请求原 Bridge 创建新运行时，再通过 bridge_clients 确认新的 clientId；随后以 action=readback、同一 recoveryId、预期文档身份和 confirm=true 执行只读回读。回读成功前所有 EDA 写操作均被阻止，超时写操作可能已经完成。",
+    "description": "处理 EDA 写操作超时、执行中失联、提交未确认状态及 PCB 导入待确认状态。先从 bridge_clients 取得 requestId，以 action=recover、confirm=true 建立恢复会话；诊断含 hostRestartRequired:true 时须重启原宿主。等待原 Bridge 断开及恢复会话后的全新 clientId，就原文档和图页只读回读并以 action=readback 完成。原客户端和先前已连接客户端的普通重连不能用于回读；交互或坐标放置须完整读回当前页器件 ID、位号与 BOM 扩展属性，PCB 自动布局须完整读回器件位置，自动布线及 PCB 直线/过孔创建须完整读回导线、过孔及网络。import_changes 返回 pending_confirmation 后全局阻止写入；用户在原生对话框应用或取消后，以 action=resolve_import、confirm=true、resolution=applied/cancelled 显式确认，Server 核对同一 PCB 并完整读回器件和网络后解除。无法确认弹框已关闭时，先 action=recover，再重启原 EDA 宿主，以全新连接 action=readback，另需 hostRestartConfirmed=true。隔离期间只读查询可用。",
     "inputSchema": {
       "type": "object",
       "properties": {
-        "action": { "type": "string", "enum": ["recover", "readback"], "default": "recover" },
+        "action": { "type": "string", "enum": ["recover", "readback", "resolve_import"], "default": "recover" },
         "confirm": { "const": true, "description": "必须显式确认恢复和可能已完成的修改。" },
-        "requestId": { "type": "string", "minLength": 1, "description": "bridge_clients 返回的具体超时写操作 requestId。" },
+        "requestId": { "type": "string", "minLength": 1, "description": "bridge_clients 返回的具体超时、失联或提交未确认写操作 requestId。" },
         "recoveryId": { "type": "string", "minLength": 1 },
         "clientId": { "type": "string", "minLength": 1, "description": "readback 时 bridge_clients 返回的全新 Bridge clientId。" },
         "expectedDocumentUuid": { "type": "string", "minLength": 1 },
         "expectedProjectUuid": { "type": "string", "minLength": 1 },
-        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {} }
+        "expectedPageUuid": { "type": "string", "minLength": 1, "description": "可选的执行图页 UUID 核对值，必须与诊断记录一致；不能补充缺失的执行图页身份。" },
+        "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
+        "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
+        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
+        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接或网络标识写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}，完整读回导线、NetPort、NetFlag、NET 属性和语义网表；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID、位号和 BOM 扩展属性；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
       },
       "required": ["confirm"],
       "allOf": [
         { "if": { "properties": { "action": { "const": "recover" } } }, "then": { "required": ["requestId"] } },
-        { "if": { "properties": { "action": { "const": "readback" } }, "required": ["action"] }, "then": { "required": ["recoveryId", "clientId"] } }
+        { "if": { "properties": { "action": { "const": "readback" } }, "required": ["action"] }, "then": { "required": ["recoveryId", "clientId"] } },
+        { "if": { "properties": { "action": { "const": "resolve_import" } }, "required": ["action"] }, "then": { "required": ["requestId", "resolution"] } }
       ],
       "additionalProperties": false
     }
@@ -119,6 +123,21 @@
           "items": {},
           "description": "API 调用参数列表，严格按 signatureText 中的参数顺序填写。无入参时传空数组 []。"
         },
+        "includeCompletePositions": {
+          "type": "boolean",
+          "const": true,
+          "description": "仅用于无参数的 eda.pcb_PrimitiveComponent.getAll：额外返回全部器件位置快照 componentPositions 和 componentCount；普通 result 仍按通用 API 规则序列化。"
+        },
+        "includeCompleteRouting": {
+          "type": "boolean",
+          "const": true,
+          "description": "仅用于无参数的 PCB PrimitiveLine、PrimitiveArc、PrimitivePolyline 或 PrimitiveVia.getAll：额外返回不截断的网络、层和几何快照 routingPrimitives。"
+        },
+        "includeCompleteSchematicComponentIds": {
+          "type": "boolean",
+          "const": true,
+          "description": "仅用于 eda.sch_PrimitiveComponent.getAllPrimitiveId 且 args:[null,false]：额外返回不截断的当前原理图页器件 ID 列表、ID/位号/BOM 扩展属性快照 schematicComponentStates 和数量。"
+        },
         "timeoutMs": {
           "type": "integer",
           "minimum": 1000,
@@ -168,10 +187,13 @@
   },
   {
     "name": "schematic_read",
-    "description": "读取当前原理图页面的完整电路语义快照。",
+    "description": "读取当前原理图页面的完整电路语义快照。受控恢复可选 includeConnectivityPrimitives=true，同时完整回读导线 ID/几何、NetPort ID/坐标/网络及 NET 属性；方向属性无法由当前 EDA API 验证。",
     "inputSchema": {
       "type": "object",
-      "properties": {}
+      "properties": {
+        "includeConnectivityPrimitives": { "type": "boolean", "default": false, "description": "仅在连接图元写入结果未知后的受控恢复中使用；返回完整的当前页连接图元 JSON 快照。" }
+      },
+      "additionalProperties": false
     }
   },
   {
@@ -193,6 +215,31 @@
           "additionalProperties": false
         }
       },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "schematic_connectivity_action",
+    "description": "安全预览和创建原理图导线，或在当前图页创建、移动 NetPort。NetPort 是层次图端口，可用于同页连接；跨页连接请用跨页连接标识。纯十字交叉没有连接点时不算接触；导线电气接触现有导线时须先预览并明确列出允许接触的导线 ID；写入后需回读网表确认。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["wire_preview", "wire_create", "netport_create", "netport_move"] },
+        "line": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 512, "description": "导线坐标，平铺为 [x1, y1, x2, y2, ...]，最多 256 个坐标点。" },
+        "net": { "type": "string", "minLength": 1, "description": "可选的目标网络名。" },
+        "direction": { "type": "string", "enum": ["IN", "OUT", "BI"], "default": "BI", "description": "NetPort 方向。" },
+        "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true, "description": "明确允许新导线接触的现有导线图元 ID。" },
+        "id": { "type": "string", "minLength": 1, "description": "待移动 NetPort 的图元 ID。" },
+        "x": { "type": "number", "description": "NetPort 目标 X 坐标。" },
+        "y": { "type": "number", "description": "NetPort 目标 Y 坐标。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "wire_preview" }, "line": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 512 }, "net": { "type": "string", "minLength": 1 }, "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "line"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "wire_create" }, "line": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 512 }, "net": { "type": "string", "minLength": 1 }, "allowedWireIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "line"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "netport_create" }, "net": { "type": "string", "minLength": 1 }, "direction": { "type": "string", "enum": ["IN", "OUT", "BI"], "default": "BI" }, "x": { "type": "number" }, "y": { "type": "number" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "net", "x", "y"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "netport_move" }, "id": { "type": "string", "minLength": 1 }, "x": { "type": "number" }, "y": { "type": "number" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "id", "x", "y"], "additionalProperties": false }
+      ],
       "additionalProperties": false
     }
   },
@@ -276,7 +323,7 @@
   },
   {
     "name": "component_place",
-    "description": "引导用户按顺序交互放置已确认的器件列表。",
+    "description": "引导用户按顺序交互放置已确认的器件列表；每件需按 Esc 或右键结束当前放置模式才继续。返回新增图元 ID，精确重叠副本会回读后清理；已有器件位号若被 EDA 改动会保留 BOM 属性并尝试恢复。清理、恢复失败或超时后停止，不自动重试。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -332,7 +379,7 @@
   },
   {
     "name": "component_place_auto",
-    "description": "自动将器件放置到原理图的指定坐标。支持 AI 计算智能布局，或使用网格/线性自动布局。放置后用户可手动调整位置。",
+    "description": "自动将器件放置到原理图的指定坐标。支持网格/线性布局；逐件核对当前图页与图元 ID，已有器件位号变化时尝试恢复，无法核对时停止剩余批次。整批默认超时 300 秒，大批量可调 timeoutMs。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -463,6 +510,13 @@
               "default": 0
             }
           }
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 25000,
+          "maximum": 600000,
+          "default": 300000,
+          "description": "整批坐标放置的执行超时，单位毫秒；大型批次可适当提高。"
         }
       },
       "required": [
@@ -472,7 +526,7 @@
   },
   {
     "name": "netlabel_place",
-    "description": "在指定器件引脚位置放置网络标签，通过网络标签代替导线实现电气连接。电源和地网络创建对应网络标识，其他网络创建普通网络标签。",
+    "description": "在指定器件引脚位置放置网络标签，通过网络标签代替导线实现电气连接。电源和地网络创建对应网络标识；普通网络标签需要 EDA v4，EDA 3.x 会直接报告不支持。整批默认超时 300 秒，大批量可调 timeoutMs；原生创建结果未定时停止批次。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -492,7 +546,7 @@
               },
               "netName": {
                 "type": "string",
-                "description": "网络名称。电源网络如 VCC、+5V、+3V3 会自动放置电源符号；地网络如 GND、VSS 会自动放置地符号；其他如 UART_TX、SPI_CLK 等放置普通网络标签。相同网络名的标签会自动形成电气连接。"
+                "description": "网络名称。电源网络如 VCC、+5V、+3V3 会自动放置电源符号；地网络如 GND、VSS 会自动放置地符号；其他如 UART_TX、SPI_CLK 等需要 EDA v4 才能放置普通网络标签。相同网络名的标签会自动形成电气连接。"
               }
             },
             "required": [
@@ -503,6 +557,13 @@
           },
           "minItems": 1,
           "maxItems": 100
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 25000,
+          "maximum": 600000,
+          "default": 300000,
+          "description": "整批网络标识放置的执行超时，单位毫秒；大型批次可适当提高。"
         }
       },
       "required": [
@@ -687,14 +748,43 @@
     }
   },
   {
+    "name": "pcb_connectivity_action",
+    "description": "在当前 PCB 为指定网络创建单条直线导线或过孔。默认要求网络已存在；新网络须显式设置 allowNewNet:true。先用 pcb_net_query 和 pcb_layer_query 确认网络及可用铜层，再按当前 PCB 数据单位提供坐标与尺寸；写入后回读图元和网络，必要时执行 PCB DRC。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["line_create", "via_create"] },
+        "net": { "type": "string", "minLength": 1, "description": "PCB 网络名；默认需与 pcb_net_query 返回的 net 完全一致。" },
+        "allowNewNet": { "type": "boolean", "default": false, "description": "显式允许以新网络名创建图元。" },
+        "layer": { "type": "integer", "description": "line_create 的可用铜层编号，来自 pcb_layer_query；支持 SIGNAL 与 PLANE。" },
+        "startX": { "type": "number" },
+        "startY": { "type": "number" },
+        "endX": { "type": "number" },
+        "endY": { "type": "number" },
+        "lineWidth": { "type": "number", "exclusiveMinimum": 0 },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "holeDiameter": { "type": "number", "exclusiveMinimum": 0 },
+        "diameter": { "type": "number", "exclusiveMinimum": 0 },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "line_create" }, "net": { "type": "string", "minLength": 1 }, "allowNewNet": { "type": "boolean", "default": false }, "layer": { "type": "integer" }, "startX": { "type": "number" }, "startY": { "type": "number" }, "endX": { "type": "number" }, "endY": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "net", "layer", "startX", "startY", "endX", "endY", "lineWidth"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "via_create" }, "net": { "type": "string", "minLength": 1 }, "allowNewNet": { "type": "boolean", "default": false }, "x": { "type": "number" }, "y": { "type": "number" }, "holeDiameter": { "type": "number", "exclusiveMinimum": 0 }, "diameter": { "type": "number", "exclusiveMinimum": 0 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "net", "x", "y", "holeDiameter", "diameter"], "additionalProperties": false }
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "pcb_net_query",
-    "description": "Read PCB network details from the active PCB document, optionally filtered by a network name or property.",
+    "description": "Read PCB network details from the active PCB document, optionally filtered by a network name or property. Use offset and limit to page through all/names results.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "query": { "type": "string", "default": "" },
         "mode": { "type": "string", "enum": ["all", "names", "exact"], "default": "all", "description": "all returns details, names returns only names, exact uses the official getNet API." },
         "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 },
+        "offset": { "type": "integer", "minimum": 0, "default": 0, "description": "For all/names modes, start reading at this zero-based item index." },
         "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000 },
         "analysis": {
           "type": "object",
@@ -716,6 +806,7 @@
             "query": { "type": "string", "default": "" },
             "mode": { "enum": ["all", "names"] },
             "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200 },
+            "offset": { "type": "integer", "minimum": 0, "default": 0 },
             "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000 }
           },
           "additionalProperties": false
@@ -1016,7 +1107,7 @@
   },
   {
     "name": "pcb_document_action",
-    "description": "Inspect PCB coordinates, selection, filters, and primitives; navigate the active canvas; read calculation state; or perform explicitly requested PCB document actions/imports.",
+    "description": "Inspect PCB coordinates, selection, filters, and primitives; navigate the active canvas; read calculation state; or perform explicitly requested PCB document actions/imports. import_changes may open a native confirmation dialog; commitState=pending_confirmation is not a completed import.",
     "inputSchema": {
       "type": "object",
       "properties": {

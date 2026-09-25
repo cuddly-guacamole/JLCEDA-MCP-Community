@@ -10,6 +10,7 @@
 				},
 				"optional": {
 					"protocolVersion": "positive-integer",
+					"selectionProbeVersion": "positive-integer",
 					"context": "context"
 				}
 			},
@@ -34,6 +35,9 @@
 					"requestId": "non-empty-string",
 					"leaseTerm": "non-negative-integer",
 					"startedAt": "finite-number"
+				},
+				"optional": {
+					"context": "context"
 				}
 			},
 			"bridge/result": {
@@ -51,6 +55,12 @@
 				"required": {
 					"clientId": "non-empty-string",
 					"log": "record"
+				}
+			},
+			"bridge/probe-ack": {
+				"required": {
+					"clientId": "non-empty-string",
+					"probeId": "non-empty-string"
 				}
 			}
 		},
@@ -84,6 +94,12 @@
 					"clientId": "non-empty-string",
 					"sentAt": "finite-number",
 					"receivedAt": "non-empty-string"
+				}
+			},
+			"bridge/probe": {
+				"required": {
+					"clientId": "non-empty-string",
+					"probeId": "non-empty-string"
 				}
 			},
 			"bridge/task": {
@@ -135,6 +151,12 @@
 			"minMs": 5000,
 			"maxMs": 120000,
 			"allowOverride": true
+		},
+		"batch-write": {
+			"defaultMs": 300000,
+			"minMs": 25000,
+			"maxMs": 600000,
+			"allowOverride": true
 		}
 	},
 	"operations": [
@@ -171,7 +193,21 @@
 			"toolName": "api_invoke",
 			"path": "/bridge/jlceda/api/invoke",
 			"owner": "bridge",
-			"timeoutPolicy": "api"
+			"timeoutPolicy": "api",
+			"readOnlyIfNoArgsApiFullNames": [
+				"eda.sch_PrimitiveComponent.getAllPrimitiveId",
+				"eda.sch_PrimitiveComponent.getAll",
+				"eda.pcb_PrimitiveComponent.getAll",
+				"eda.pcb_PrimitiveLine.getAll",
+				"eda.pcb_PrimitiveArc.getAll",
+				"eda.pcb_PrimitivePolyline.getAll",
+				"eda.pcb_PrimitiveVia.getAll",
+				"eda.dmt_Schematic.getAllSchematicPagesInfo"
+			],
+			"readOnlyIfCurrentPageArgsApiFullNames": [
+				"eda.sch_PrimitiveComponent.getAllPrimitiveId",
+				"eda.sch_PrimitiveComponent.getAll"
+			]
 		},
 		{
 			"toolName": "eda_context",
@@ -206,6 +242,16 @@
 			}
 		},
 		{
+			"toolName": "schematic_connectivity_action",
+			"path": "/bridge/jlceda/schematic/connectivity",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "wire_preview"
+			}
+		},
+		{
 			"toolName": "schematic_review",
 			"path": "/bridge/jlceda/schematic/review",
 			"owner": "bridge",
@@ -229,13 +275,13 @@
 			"toolName": "component_place_auto",
 			"path": "/bridge/jlceda/component/place-auto",
 			"owner": "bridge",
-			"timeoutPolicy": "default"
+			"timeoutPolicy": "batch-write"
 		},
 		{
 			"toolName": "netlabel_place",
 			"path": "/bridge/jlceda/netlabel/place",
 			"owner": "bridge",
-			"timeoutPolicy": "default"
+			"timeoutPolicy": "batch-write"
 		},
 		{
 			"toolName": "netlabel_modify",
@@ -315,13 +361,29 @@
 			"toolName": "pcb_document_action",
 			"path": "/bridge/jlceda/pcb/document",
 			"owner": "bridge",
-			"timeoutPolicy": "extended-read"
+			"timeoutPolicy": "extended-read",
+			"readOnlyIf": {
+				"field": "action",
+				"defaultValue": "status",
+				"equals": ["status", "canvas_origin", "filter_configuration", "selection", "mouse_position", "primitive_type_by_id", "primitive_by_id", "primitives_by_id", "primitives_bbox", "primitive_at_point", "primitives_in_region", "convert_canvas_to_data", "convert_data_to_canvas", "navigate_to_coordinates", "navigate_to_region", "zoom_to_board_outline"]
+			}
+		},
+		{
+			"toolName": "pcb_connectivity_action",
+			"path": "/bridge/jlceda/pcb/connectivity",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read"
 		},
 		{
 			"toolName": "schematic_document_action",
 			"path": "/bridge/jlceda/schematic/document",
 			"owner": "bridge",
-			"timeoutPolicy": "extended-read"
+			"timeoutPolicy": "extended-read",
+			"readOnlyIf": {
+				"field": "action",
+				"defaultValue": "status",
+				"equals": ["status", "filter_configuration", "selection", "mouse_position", "primitive_type_by_id", "primitive_by_id", "primitives_by_id", "primitives_bbox", "primitive_at_point", "primitives_in_region", "navigate_to_coordinates", "navigate_to_region"]
+			}
 		},
 		{
 			"toolName": "schematic_pages_manage",
@@ -407,6 +469,12 @@
 	],
 	"internalOperations": [
 		{
+			"path": "/bridge/jlceda/pcb/import-resolve",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnly": true
+		},
+		{
 			"path": "/bridge/jlceda/component/place/start",
 			"owner": "bridge",
 			"timeoutPolicy": "default"
@@ -414,8 +482,7 @@
 		{
 			"path": "/bridge/jlceda/component/place/check",
 			"owner": "bridge",
-			"timeoutPolicy": "default",
-			"readOnly": true
+			"timeoutPolicy": "default"
 		},
 		{
 			"path": "/bridge/jlceda/component/place/close",

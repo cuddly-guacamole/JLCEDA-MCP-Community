@@ -4,9 +4,12 @@ export interface BridgeOperation {
 	toolName?: string;
 	path: string;
 	owner: 'server' | 'bridge';
-	timeoutPolicy?: 'default' | 'api' | 'standard-read' | 'extended-read';
+	timeoutPolicy?: 'default' | 'api' | 'standard-read' | 'extended-read' | 'batch-write';
 	readOnly?: boolean;
+	readOnlyIf?: { field: string; equals: unknown; defaultValue?: unknown };
 	readOnlyUnless?: { field: string; equals: unknown };
+	readOnlyIfNoArgsApiFullNames?: string[];
+	readOnlyIfCurrentPageArgsApiFullNames?: string[];
 }
 
 type FieldKind = 'any' | 'bridge-path' | 'context' | 'debug-switch' | 'finite-number' | 'non-empty-string' | 'non-negative-integer' | 'positive-integer' | 'record' | 'role' | 'string' | 'task-error';
@@ -18,7 +21,7 @@ interface MessageShape {
 export const BRIDGE_CONTRACT = contract as {
 	contractVersion: string;
 	protocol: { version: number; clientMessages: Record<string, MessageShape>; serverMessages: Record<string, MessageShape> };
-	timeoutPolicies: Record<'default' | 'api' | 'standard-read' | 'extended-read', { defaultMs: number; minMs: number; maxMs: number; allowOverride: boolean }>;
+	timeoutPolicies: Record<'default' | 'api' | 'standard-read' | 'extended-read' | 'batch-write', { defaultMs: number; minMs: number; maxMs: number; allowOverride: boolean }>;
 	operations: BridgeOperation[];
 	internalOperations: BridgeOperation[];
 };
@@ -45,6 +48,30 @@ export function bridgePathForTool(toolName: string): string {
 		throw new Error(`Unknown Bridge tool: ${toolName}`);
 	}
 	return path;
+}
+
+export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean {
+	const operation = operationForBridgePath(path);
+	if (operation?.readOnlyIfNoArgsApiFullNames || operation?.readOnlyIfCurrentPageArgsApiFullNames) {
+		if (!isRecord(payload))
+			return false;
+		const apiFullName = String(payload.apiFullName ?? '').trim().toLowerCase();
+		const args = payload.args;
+		const noArgs = !Array.isArray(args) || args.length === 0;
+		const currentPageArgs = Array.isArray(args) && args.length === 2 && args[0] === null && args[1] === false;
+		return (noArgs && (operation.readOnlyIfNoArgsApiFullNames?.some(name => name.toLowerCase() === apiFullName) ?? false))
+			|| (currentPageArgs && (operation.readOnlyIfCurrentPageArgsApiFullNames?.some(name => name.toLowerCase() === apiFullName) ?? false));
+	}
+	if (operation?.readOnlyIf) {
+		const condition = operation.readOnlyIf;
+		const value = isRecord(payload) ? payload[condition.field] ?? condition.defaultValue : undefined;
+		return Array.isArray(condition.equals) ? condition.equals.includes(value) : value === condition.equals;
+	}
+	if (!operation?.readOnly)
+		return false;
+	if (!operation.readOnlyUnless)
+		return true;
+	return !isRecord(payload) || payload[operation.readOnlyUnless.field] !== operation.readOnlyUnless.equals;
 }
 
 export function resolveContractTimeoutMs(path: string, payload: unknown): number {

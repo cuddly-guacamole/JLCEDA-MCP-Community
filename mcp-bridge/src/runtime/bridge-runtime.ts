@@ -12,7 +12,7 @@
 import type { BridgeClientContext, BridgeDebugSwitch, BridgeRole, BridgeServerRoleMessage } from '../bridge/protocol.ts';
 import type { UnifiedLogEntry } from '../logging/log.ts';
 import extensionConfig from '../../extension.json';
-import { operationForBridgePath } from '../bridge/bridge-contract.ts';
+import { isReadOnlyBridgeRequest, operationForBridgePath } from '../bridge/bridge-contract.ts';
 import { getConfiguredMcpUrl, getMcpServerUrlChangedTopic } from '../bridge/config.ts';
 import { BridgeLogDispatchPipeline } from '../logging/log-dispatch.ts';
 import { bridgeLogPipeline } from '../logging/log.ts';
@@ -21,14 +21,17 @@ import {
 } from '../mcp/component-place-handler.ts';
 import { BridgeStateManager } from '../state/state-manager.ts';
 import { BridgeStatusReporter } from '../state/status-reporter.ts';
-import { safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
+import { isPlainObjectRecord, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils.ts';
 import { debugLog } from '../utils/debug-log.ts';
 import { getBridgeTaskHandler } from './bridge-handler-registry.ts';
 import { BridgeTransport } from './bridge-transport.ts';
-import { BridgeTaskQuarantine, BridgeTaskTimeoutError, resolveBridgeTaskTimeoutMs, startTimedTask } from './task-timeout.ts';
+import { getPcbImportWriteRejection, hasPendingPcbImport, markPcbImportPending } from './pcb-import-confirm-barrier.ts';
+import { getPlacementModeWriteRejection } from './placement-mode-barrier.ts';
+import { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForResult, resolveBridgeTaskTimeoutMs, startTimedTask } from './task-timeout.ts';
 
 const RECONNECT_INTERVAL_MS = 1200;
 const CONTEXT_SYNC_INTERVAL_MS = 1000;
+const PAGE_CONTEXT_READ_TIMEOUT_MS = 5000;
 const CONNECT_SUCCESS_TOAST_TIMER_SECONDS = 3;
 let started = false;
 let connecting = false;
@@ -36,13 +39,19 @@ let clientId = '';
 let transport: BridgeTransport | undefined;
 let reconnectTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 let contextSyncTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+let contextSyncInFlight = false;
 let configSubscription: ISYS_MessageBusTask | null = null;
 let taskChain: Promise<void> = Promise.resolve();
 const taskQuarantine = new BridgeTaskQuarantine();
+let runningMutationSettled: Promise<void> | undefined;
 let currentRole: BridgeRole = 'standby';
 let currentLeaseTerm = 0;
 let currentActiveClientId = '';
 let controlledRecoveryPending = false;
+let pendingUnknownWriteRequestId: string | undefined;
+let transportGeneration = 0;
+let connectionAttemptId = 0;
+const HOST_RESTART_REQUIRED_MESSAGE = 'PCB autoLayout or autoRouting may still commit. Restart the EDA host before controlled recovery readback.';
 // 每次建立新连接时递增，确保每次调用 eda.sys_WebSocket.register 使用唯一 socketId。
 let socketSequence = 0;
 
@@ -213,27 +222,87 @@ function getSocketId(): string {
 	return `jlc_mcp_bridge_socket_${getClientId()}_${socketSequence}`;
 }
 
+async function withPageContextTimeout<T>(read: Promise<T>, operation: string): Promise<T> {
+	let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			read,
+			new Promise<T>((_resolve, reject) => {
+				timeoutId = globalThis.setTimeout(() => {
+					reject(new Error(`${operation} timed out after ${String(PAGE_CONTEXT_READ_TIMEOUT_MS)}ms.`));
+				}, PAGE_CONTEXT_READ_TIMEOUT_MS);
+			}),
+		]);
+	}
+	finally {
+		if (timeoutId !== undefined)
+			globalThis.clearTimeout(timeoutId);
+	}
+}
+
 // 使用官方上下文 API 读取当前目标身份，避免多页面时仅按连接顺序选择。
-async function readBridgeClientContext(): Promise<BridgeClientContext | undefined> {
-	const [document, project, schematicPage, pcb] = await Promise.all([
+async function readBridgeClientContext(expectedPageKind?: BridgeClientContext['pageKind']): Promise<BridgeClientContext | undefined> {
+	const [document, project, schematicPage, pcb] = await withPageContextTimeout(Promise.all([
 		safeCall(() => eda.dmt_SelectControl.getCurrentDocumentInfo()),
 		safeCall(() => eda.dmt_Project.getCurrentProjectInfo()),
 		safeCall(() => eda.dmt_Schematic.getCurrentSchematicPageInfo()),
 		safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
-	]);
-	if (!document && !schematicPage && !pcb) {
+	]), 'EDA page context read');
+	if (!document && !project && !schematicPage && !pcb) {
+		if (expectedPageKind)
+			throw new Error(`Cannot verify the current ${expectedPageKind} page before writing; the operation was not started.`);
 		return undefined;
 	}
+	const documentTypes = (eda as unknown as { EDMT_EditorDocumentType?: Record<string, unknown> }).EDMT_EditorDocumentType;
+	const documentPageKind = document?.documentType !== undefined && document?.documentType === documentTypes?.SCHEMATIC_PAGE
+		? 'schematic'
+		: document?.documentType !== undefined && document?.documentType === documentTypes?.PCB ? 'pcb' : undefined;
+	if (expectedPageKind && documentPageKind && expectedPageKind !== documentPageKind)
+		throw new Error(`Current editor is ${documentPageKind}; ${expectedPageKind} write was not started.`);
+	if (expectedPageKind && document?.documentType !== undefined && documentTypes && !documentPageKind)
+		throw new Error(`Current editor is not a ${expectedPageKind} page; the write was not started.`);
+	if (expectedPageKind && schematicPage && pcb && !documentPageKind)
+		throw new Error(`Cannot distinguish the current ${expectedPageKind} page from cached EDA page information; the write was not started.`);
+	const pageKind = expectedPageKind ?? documentPageKind
+		?? (schematicPage && !pcb ? 'schematic' : pcb && !schematicPage ? 'pcb' : undefined);
+	const page = pageKind === 'schematic' ? schematicPage : pageKind === 'pcb' ? pcb : undefined;
+	if (expectedPageKind && !page?.uuid)
+		throw new Error(`Cannot verify the current ${expectedPageKind} page before writing; the operation was not started.`);
 	return {
 		documentType: document?.documentType,
 		documentUuid: document?.uuid,
 		tabId: document?.tabId,
 		projectUuid: document?.parentProjectUuid ?? project?.uuid,
 		projectName: project?.friendlyName,
-		pageKind: schematicPage ? 'schematic' : pcb ? 'pcb' : undefined,
-		pageUuid: schematicPage?.uuid ?? pcb?.uuid,
-		pageName: schematicPage?.name ?? pcb?.name,
+		pageKind,
+		pageUuid: page?.uuid,
+		pageName: page?.name,
 	};
+}
+
+function writeTaskPageKind(path: string, payload: unknown): BridgeClientContext['pageKind'] {
+	if (path === '/bridge/jlceda/api/invoke' && isPlainObjectRecord(payload) && typeof payload.apiFullName === 'string') {
+		const apiFullName = payload.apiFullName.trim().toLowerCase();
+		if (apiFullName.startsWith('eda.pcb_'))
+			return 'pcb';
+		if (apiFullName.startsWith('eda.sch_'))
+			return 'schematic';
+	}
+	if (path.startsWith('/bridge/jlceda/pcb/'))
+		return 'pcb';
+	if (path.startsWith('/bridge/jlceda/schematic/')
+		|| path.startsWith('/bridge/jlceda/component/')
+		|| path.startsWith('/bridge/jlceda/netlabel/')
+		|| path.startsWith('/bridge/jlceda/auto/')) {
+		return 'schematic';
+	}
+	return undefined;
+}
+
+function getUnknownWriteRejection(): string | undefined {
+	return pendingUnknownWriteRequestId
+		? `EDA write ${pendingUnknownWriteRequestId} has an unknown commit state. Complete controlled recovery before another write.`
+		: undefined;
 }
 
 // 清理重连定时器。
@@ -255,10 +324,26 @@ function clearContextSyncTimer(): void {
 // 断开当前连接。
 function stopTransport(): void {
 	connecting = false;
-	if (transport) {
-		transport.close();
-		transport = undefined;
+	transportGeneration += 1;
+	connectionAttemptId += 1;
+	const currentTransport = transport;
+	transport = undefined;
+	if (currentTransport) {
+		void cleanupAllComponentPlaceSessions();
+		currentTransport.close();
 	}
+}
+
+async function readPcbAutoLayoutTaskContext(): Promise<BridgeClientContext> {
+	const context = await readBridgeClientContext('pcb');
+	if (!context?.pageUuid)
+		throw new Error('Cannot verify the current PCB before autoLayout; the operation was not started.');
+	return {
+		pageKind: 'pcb',
+		pageUuid: context.pageUuid,
+		documentUuid: context.documentUuid,
+		projectUuid: context.projectUuid,
+	};
 }
 
 // 按角色更新页面状态。
@@ -270,39 +355,93 @@ function applyRole(message: BridgeServerRoleMessage): void {
 }
 
 // 调度任务执行并回传结果。
-function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
+export function enqueueTask(task: { requestId: string; path: string; payload: unknown; leaseTerm: number }, currentTransport: BridgeTransport): void {
 	debugLog('[DEBUG] enqueueTask called, path:', task.path, 'requestId:', task.requestId);
-	if (controlledRecoveryPending) {
-		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
+	const taskGeneration = transportGeneration;
+	const readOnly = isReadOnlyBridgeRequest(task.path, task.payload);
+	const importRejection = !readOnly && getPcbImportWriteRejection();
+	if (importRejection) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', importRejection, 'pcb-import-confirmation');
+		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message: importRejection });
+		return;
+	}
+	const unknownWriteRejection = !readOnly && getUnknownWriteRejection();
+	if (unknownWriteRejection) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', unknownWriteRejection, 'unknown-write');
+		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message: unknownWriteRejection });
+		return;
+	}
+	if (controlledRecoveryPending && !readOnly) {
+		const message = taskQuarantine.requiresHostRestart() ? HOST_RESTART_REQUIRED_MESSAGE : 'Bridge client is awaiting controlled recovery after a timed-out task settles.';
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'controlled-recovery');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-			message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
+			message,
 		});
 		return;
 	}
 	const activeQuarantine = taskQuarantine.getActive();
-	if (activeQuarantine) {
-		const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+	if (activeQuarantine && !readOnly) {
+		const message = activeQuarantine.requiresHostRestart
+			? HOST_RESTART_REQUIRED_MESSAGE
+			: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
 		writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 			message,
 		});
 		return;
 	}
+	const placementModeRejection = getPlacementModeWriteRejection(task.path, task.payload);
+	if (placementModeRejection) {
+		writeTaskRejectionLog(task, 'Bridge 任务被拒绝', placementModeRejection, 'placement-mode');
+		currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
+			message: placementModeRejection,
+		});
+		return;
+	}
 	taskChain = taskChain.then(async () => {
 		debugLog('[DEBUG] executing task, path:', task.path);
-		if (controlledRecoveryPending) {
-			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', 'Bridge client is awaiting controlled recovery after a timed-out task settles.', 'controlled-recovery');
+		if (taskGeneration !== transportGeneration) {
+			const message = 'Bridge connection was replaced before the queued task started.';
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'old-connection');
+			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message });
+			return;
+		}
+		const queuedImportRejection = !readOnly && getPcbImportWriteRejection();
+		if (queuedImportRejection) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', queuedImportRejection, 'pcb-import-confirmation');
+			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message: queuedImportRejection });
+			return;
+		}
+		const queuedUnknownWriteRejection = !readOnly && getUnknownWriteRejection();
+		if (queuedUnknownWriteRejection) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', queuedUnknownWriteRejection, 'unknown-write');
+			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, { message: queuedUnknownWriteRejection });
+			return;
+		}
+		if (controlledRecoveryPending && !readOnly) {
+			const message = taskQuarantine.requiresHostRestart() ? HOST_RESTART_REQUIRED_MESSAGE : 'Bridge client is awaiting controlled recovery after a timed-out task settles.';
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', message, 'controlled-recovery');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
-				message: 'Bridge client is awaiting controlled recovery after a timed-out task settles.',
+				message,
 			});
 			return;
 		}
 		const activeQuarantine = taskQuarantine.getActive();
-		if (activeQuarantine) {
-			const message = `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
+		if (activeQuarantine && !readOnly) {
+			const message = activeQuarantine.requiresHostRestart
+				? HOST_RESTART_REQUIRED_MESSAGE
+				: `Bridge client is quarantined while a timed-out task is still running: ${activeQuarantine.path}. Select a healthy EDA client or wait for the original task to finish.`;
 			writeTaskRejectionLog(task, 'Bridge 任务被隔离', message, 'quarantine');
 			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
 				message,
+			});
+			return;
+		}
+		const placementModeRejection = getPlacementModeWriteRejection(task.path, task.payload);
+		if (placementModeRejection) {
+			writeTaskRejectionLog(task, 'Bridge 任务被拒绝', placementModeRejection, 'placement-mode');
+			currentTransport.completeTask(task.requestId, task.leaseTerm, undefined, {
+				message: placementModeRejection,
 			});
 			return;
 		}
@@ -346,17 +485,56 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 		let handlerSettled: Promise<void> | undefined;
 		try {
 			debugLog('[DEBUG] calling handler for path:', task.path);
-			currentTransport.reportTaskStarted(task.requestId, task.leaseTerm);
+			const autoLayoutTask = task.path === '/bridge/jlceda/api/invoke'
+				&& isPlainObjectRecord(task.payload)
+				&& typeof task.payload.apiFullName === 'string'
+				&& task.payload.apiFullName.trim().toLowerCase() === 'eda.pcb_document.autolayout';
+			const executionContext = readOnly
+				? undefined
+				: autoLayoutTask
+					? await readPcbAutoLayoutTaskContext()
+					: await readBridgeClientContext(writeTaskPageKind(task.path, task.payload));
+			const handlerPayload = autoLayoutTask
+				? { ...(task.payload as Record<string, unknown>), expectedPcbUuid: executionContext!.pageUuid }
+				: task.payload;
+			if (taskGeneration !== transportGeneration || transport !== currentTransport)
+				throw new Error('Bridge connection changed before the EDA task started.');
+			if (currentRole !== 'active')
+				throw new Error(BRIDGE_STATUS_TEXT.runtime.taskRejectedStandby);
+			if (task.leaseTerm !== currentLeaseTerm)
+				throw new Error(BRIDGE_STATUS_TEXT.runtime.taskLeaseExpired);
+			currentTransport.reportTaskStarted(task.requestId, task.leaseTerm, executionContext);
 			writeTaskLog('info', 'bridge.task.started', 'Bridge 任务开始执行', task, 'handler');
 			// 任务执行前刷新服务端活动时间戳，避免空闲超时误判
 			currentTransport.refreshServerActivity();
 			const timeoutMs = resolveBridgeTaskTimeoutMs(task.path, task.payload);
 			const timedTask = startTimedTask(
-				(async () => toSerializableAsync(await handler(task.payload)))(),
+				(async () => {
+					const value = await toSerializableAsync(await handler(handlerPayload));
+					if (task.path === '/bridge/jlceda/pcb/document'
+						&& task.payload && typeof task.payload === 'object' && !Array.isArray(task.payload)
+						&& (task.payload as Record<string, unknown>).action === 'import_changes'
+						&& value && typeof value === 'object' && !Array.isArray(value)
+						&& (value as Record<string, unknown>).commitState === 'pending_confirmation') {
+						markPcbImportPending(task.requestId);
+					}
+					if (!readOnly && isPlainObjectRecord(value) && value.commitUnknown === true)
+						pendingUnknownWriteRequestId = task.requestId;
+					if (requiresHostRestartForResult(task.path, task.payload, value))
+						taskQuarantine.requireHostRestart(task.path);
+					return value;
+				})(),
 				task.path,
 				timeoutMs,
 			);
 			handlerSettled = timedTask.settled;
+			if (!readOnly) {
+				runningMutationSettled = timedTask.settled;
+				void timedTask.settled.then(() => {
+					if (runningMutationSettled === timedTask.settled)
+						runningMutationSettled = undefined;
+				});
+			}
 			result = await timedTask.result;
 			// 任务完成后再次刷新，确保结果回传前连接不被断开
 			currentTransport.refreshServerActivity();
@@ -392,7 +570,7 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 			if (error instanceof BridgeTaskTimeoutError) {
 				const backgroundSettled = error.backgroundSettled ?? handlerSettled;
 				if (backgroundSettled) {
-					taskQuarantine.enter(task.path, backgroundSettled);
+					taskQuarantine.enter(task.path, backgroundSettled, !readOnly);
 				}
 			}
 			debugLog('[DEBUG] handler threw error:', error);
@@ -424,6 +602,19 @@ function enqueueTask(task: { requestId: string; path: string; payload: unknown; 
 	});
 }
 
+// 探活经过同一串行队列，证明待命客户端能接收消息且任务链仍可推进。
+// 不访问 EDA 文档，也不修改当前租约或写入隔离状态。
+export function enqueueSelectionProbe(probeId: string, currentTransport: BridgeTransport): void {
+	const probeGeneration = transportGeneration;
+	taskChain = taskChain.then(() => {
+		if (probeGeneration === transportGeneration && transport === currentTransport)
+			currentTransport.reportSelectionProbeAck(probeId);
+	}).catch((error: unknown) => {
+		const message = toSafeErrorMessage(error);
+		writeRuntimeWarningLog('bridge.probe.failed', 'Bridge 探活失败', message, message, 'bridge_probe_failed');
+	});
+}
+
 // 建立桥接连接。
 async function ensureConnected(): Promise<void> {
 	if (!started || connecting || transport) {
@@ -432,25 +623,60 @@ async function ensureConnected(): Promise<void> {
 
 	connecting = true;
 	statusReporter.markConnecting();
+	const connectionGeneration = transportGeneration;
+	const attemptId = ++connectionAttemptId;
+	const ownsAttempt = () => connectionAttemptId === attemptId && transportGeneration === connectionGeneration;
 	const activeClientId = getClientId();
-	const initialContext = await readBridgeClientContext();
+	let initialContext: BridgeClientContext | undefined;
+	try {
+		initialContext = await readBridgeClientContext();
+	}
+	catch (error: unknown) {
+		if (ownsAttempt()) {
+			connecting = false;
+			if (started) {
+				statusReporter.markFailed(toSafeErrorMessage(error));
+				scheduleReconnect();
+			}
+		}
+		return;
+	}
+	if (!started || !ownsAttempt() || transport) {
+		if (ownsAttempt()) {
+			connecting = false;
+			if (started && !transport)
+				scheduleReconnect();
+		}
+		return;
+	}
 	const instance = new BridgeTransport(getConfiguredMcpUrl(), getSocketId(), activeClientId, String(extensionConfig.version), initialContext, {
 		onRoleChanged: (message) => {
-			applyRole(message);
+			if (ownsAttempt())
+				applyRole(message);
 		},
 		onDebugSwitchChanged: (debugSwitch) => {
-			applyDebugSwitch(debugSwitch);
+			if (ownsAttempt())
+				applyDebugSwitch(debugSwitch);
 		},
 		onTask: async (task) => {
 			enqueueTask(task, instance);
 		},
+		onProbeRequested: (probeId) => {
+			if (ownsAttempt())
+				enqueueSelectionProbe(probeId, instance);
+		},
 		onRecoveryRequested: (_recoveryId, _reason) => {
-			startControlledRecovery();
+			if (ownsAttempt())
+				startControlledRecovery();
 		},
 		onLost: (message) => {
-			if (transport === instance) {
-				transport = undefined;
+			if (transport !== instance || !ownsAttempt()) {
+				return;
 			}
+			void cleanupAllComponentPlaceSessions();
+			transportGeneration += 1;
+			connectionAttemptId += 1;
+			transport = undefined;
 			connecting = false;
 			if (!started) {
 				return;
@@ -465,8 +691,10 @@ async function ensureConnected(): Promise<void> {
 		bridgeLogDispatchPipeline.resetHandshakeState();
 		await instance.connect();
 		debugLog('[DEBUG] bridge-runtime connection established');
-		if (!started) {
+		if (!started || !ownsAttempt() || transport) {
 			instance.close();
+			if (ownsAttempt() && started && !transport)
+				scheduleReconnect();
 			return;
 		}
 
@@ -480,11 +708,14 @@ async function ensureConnected(): Promise<void> {
 	}
 	catch (error: unknown) {
 		instance.close();
-		statusReporter.markFailed(toSafeErrorMessage(error));
-		scheduleReconnect();
+		if (ownsAttempt()) {
+			statusReporter.markFailed(toSafeErrorMessage(error));
+			scheduleReconnect();
+		}
 	}
 	finally {
-		connecting = false;
+		if (ownsAttempt())
+			connecting = false;
 	}
 }
 
@@ -493,32 +724,42 @@ function startControlledRecovery(): void {
 		return;
 	}
 	controlledRecoveryPending = true;
+	if (hasPendingPcbImport()) {
+		statusReporter.markFailed('PCB import confirmation is pending. Restart the EDA host before controlled recovery readback.');
+		return;
+	}
+	if (taskQuarantine.requiresHostRestart()) {
+		statusReporter.markFailed(HOST_RESTART_REQUIRED_MESSAGE);
+		return;
+	}
 	statusReporter.markConnecting();
 
-	// An EDA API task cannot be cancelled. Keep the current generation isolated
-	// until it settles, then clean up any interactive state before reconnecting.
-	const settle = taskQuarantine.waitForSettlement() ?? Promise.resolve();
-	void settle.then(
-		() => cleanupAllComponentPlaceSessions(),
-		() => cleanupAllComponentPlaceSessions(),
-	).then(() => {
+	// A Server timeout may arrive before the Bridge timeout. Wait for the
+	// running handler too, so a later unknown result cannot race with reconnect.
+	const settle = taskQuarantine.waitForSettlement() ?? runningMutationSettled ?? Promise.resolve();
+	void (async () => {
+		await settle;
+		if (taskQuarantine.requiresHostRestart() || hasPendingPcbImport()) {
+			statusReporter.markFailed(HOST_RESTART_REQUIRED_MESSAGE);
+			return;
+		}
+		await cleanupAllComponentPlaceSessions();
 		clientId = '';
 		clearReconnectTimer();
 		stopTransport();
+		pendingUnknownWriteRequestId = undefined;
 		currentRole = 'standby';
 		currentLeaseTerm = 0;
 		currentActiveClientId = '';
-		return isEditablePage();
-	}).then((editable) => {
-		if (editable) {
-			return ensureConnected();
-		}
-		statusReporter.markNotOnEditablePage();
-		return undefined;
-	}).catch((error: unknown) => {
+		if (await isEditablePage())
+			await ensureConnected();
+		else
+			statusReporter.markNotOnEditablePage();
+	})().catch((error: unknown) => {
 		statusReporter.markFailed(toSafeErrorMessage(error));
 	}).finally(() => {
-		controlledRecoveryPending = false;
+		if (!taskQuarantine.requiresHostRestart() && !hasPendingPcbImport())
+			controlledRecoveryPending = false;
 	});
 }
 
@@ -564,10 +805,10 @@ function subscribeConfigChange(): void {
 
 // 检查当前页面是否为原理图或 PCB 可编辑页。
 async function isEditablePage(): Promise<boolean> {
-	const [schPageInfo, pcbInfo] = await Promise.all([
+	const [schPageInfo, pcbInfo] = await withPageContextTimeout(Promise.all([
 		safeCall(() => eda.dmt_Schematic.getCurrentSchematicPageInfo()),
 		safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
-	]);
+	]), 'EDA editable page detection');
 	return schPageInfo != null || pcbInfo != null;
 }
 
@@ -575,6 +816,9 @@ async function isEditablePage(): Promise<boolean> {
 function startContextSync(): void {
 	clearContextSyncTimer();
 	contextSyncTimer = globalThis.setInterval(() => {
+		if (contextSyncInFlight)
+			return;
+		contextSyncInFlight = true;
 		void isEditablePage().then(async (editable) => {
 			if (editable) {
 				transport?.updateContext(await readBridgeClientContext());
@@ -599,6 +843,8 @@ function startContextSync(): void {
 			}
 		}).catch(() => {
 			// 页面类型检测失败时不做处理，下次同步时再试。
+		}).finally(() => {
+			contextSyncInFlight = false;
 		});
 	}, CONTEXT_SYNC_INTERVAL_MS);
 }

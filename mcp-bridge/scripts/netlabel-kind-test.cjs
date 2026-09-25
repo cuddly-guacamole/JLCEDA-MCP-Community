@@ -14,7 +14,7 @@ const { handleNetLabelModifyTask } = require('../src/mcp/netlabel-modify-handler
 const { createNetLabelWithTimeout, detectNetLabelKind, findPin, handleNetLabelPlaceTask } = require('../src/mcp/netlabel-place-handler.ts');
 const { handlePcbDrcCheckTask } = require('../src/mcp/pcb-drc-handler.ts');
 const { shouldLogTransportMessage } = require('../src/runtime/bridge-transport.ts');
-const { BridgeTaskQuarantine, BridgeTaskTimeoutError, resolveBridgeTaskTimeoutMs, startTimedTask } = require('../src/runtime/task-timeout.ts');
+const { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForResult, resolveBridgeTaskTimeoutMs, startTimedTask } = require('../src/runtime/task-timeout.ts');
 const { startConnectionStatusMonitor } = require('../src/state/status-monitor.ts');
 const { readConnectionStatus, saveConnectionStatus } = require('../src/state/status-store.ts');
 
@@ -313,6 +313,46 @@ async function main() {
 	assert.equal(backgroundSettled, true);
 	await new Promise(resolve => setTimeout(resolve, 0));
 	assert.equal(quarantine.getActive(), undefined, 'the bridge client must recover after the original mutation settles');
+	const readOnlyQuarantine = new BridgeTaskQuarantine();
+	readOnlyQuarantine.enter('/bridge/jlceda/schematic/read', new Promise(() => {}), false);
+	assert.equal(readOnlyQuarantine.getActive(), undefined, 'timed-out read-only tasks must not block later EDA writes');
+	const layoutPath = '/bridge/jlceda/api/invoke';
+	const layoutPayload = { apiFullName: 'eda.pcb_Document.autoLayout', args: [] };
+	const unknownLayoutResult = { ok: false, commitState: 'unknown', retryBlocked: true };
+	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, unknownLayoutResult), true);
+	assert.equal(requiresHostRestartForResult(layoutPath, { apiFullName: 'eda.pcb_Document.autoRouting' }, unknownLayoutResult), true);
+	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, { ok: true, commitState: 'complete' }), false);
+	const connectivityPath = '/bridge/jlceda/pcb/connectivity';
+	const unsettledConnectivity = { ok: false, commitUnknown: true, nativeCallSettled: false };
+	assert.equal(requiresHostRestartForResult(connectivityPath, { action: 'line_create' }, unsettledConnectivity), true);
+	assert.equal(requiresHostRestartForResult(connectivityPath, { action: 'via_create' }, { ...unsettledConnectivity, nativeCallSettled: true }), false);
+	const connectivityQuarantine = new BridgeTaskQuarantine();
+	if (requiresHostRestartForResult(connectivityPath, { action: 'line_create' }, unsettledConnectivity))
+		connectivityQuarantine.requireHostRestart(connectivityPath);
+	assert.equal(connectivityQuarantine.requiresHostRestart(), true);
+	const placementCheckPath = '/bridge/jlceda/component/place/check';
+	assert.equal(requiresHostRestartForResult(placementCheckPath, { sessionId: 'placement' }, unsettledConnectivity), true);
+	assert.equal(requiresHostRestartForResult(placementCheckPath, { sessionId: 'placement' }, { ...unsettledConnectivity, nativeCallSettled: true }), false);
+	assert.equal(requiresHostRestartForResult('/bridge/jlceda/component/place-auto', { components: [] }, unsettledConnectivity), true);
+	const layoutQuarantine = new BridgeTaskQuarantine();
+	let resolveLateLayoutResult;
+	const lateLayoutResult = new Promise((resolve) => {
+		resolveLateLayoutResult = resolve;
+	}).then((result) => {
+		if (requiresHostRestartForResult(layoutPath, layoutPayload, result))
+			layoutQuarantine.requireHostRestart(layoutPath);
+		return result;
+	});
+	const timedLayoutTask = startTimedTask(lateLayoutResult, layoutPath, 10);
+	await assert.rejects(timedLayoutTask.result, BridgeTaskTimeoutError);
+	layoutQuarantine.enter(layoutPath, timedLayoutTask.settled);
+	resolveLateLayoutResult(unknownLayoutResult);
+	await timedLayoutTask.settled;
+	await new Promise(resolve => setTimeout(resolve, 0));
+	assert.equal(layoutQuarantine.requiresHostRestart(), true, 'a late unknown layout result must keep the host isolated after the timed task settles');
+	assert.equal(layoutQuarantine.getActive().requiresHostRestart, true);
+	layoutQuarantine.enter('/bridge/jlceda/component/place-auto', Promise.resolve());
+	assert.equal(layoutQuarantine.requiresHostRestart(), true, 'another task must not clear the host-restart requirement');
 
 	let resolveNetLabelCreate;
 	const pendingNetLabelCreate = new Promise((resolve) => {
@@ -394,6 +434,25 @@ async function main() {
 	});
 	assert.equal(placed.ok, true);
 	assert.deepEqual(createNetLabelCalls, [[320, 240, 'UART_TX']]);
+	globalThis.eda.sys_Environment = { getEditorCurrentVersion: () => '3.2.181' };
+	let unsupportedNetLabelCalls = 0;
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => {
+		unsupportedNetLabelCalls += 1;
+		throw new Error('EDA v3 must not call createNetLabel');
+	};
+	const v3Placement = await handleNetLabelPlaceTask({
+		placements: [
+			{ componentId: 'component-1', pinIdentifier: '1', netName: 'UART_TX' },
+			{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+		],
+	});
+	assert.equal(v3Placement.ok, false);
+	assert.equal(v3Placement.partial, true);
+	assert.equal(v3Placement.results[0].errorCode, 'EDA_VERSION_UNSUPPORTED');
+	assert.equal(v3Placement.results[0].commitStatus, 'not_started');
+	assert.equal(v3Placement.results[1].success, true);
+	assert.equal(unsupportedNetLabelCalls, 0, 'EDA v3 must fail ordinary labels before calling the API');
+	delete globalThis.eda.sys_Environment;
 
 	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => {
 		throw new BridgeTaskTimeoutError('/bridge/jlceda/netlabel/place', 5_000, Promise.resolve());
@@ -408,6 +467,60 @@ async function main() {
 		createNetLabelCalls.push(args);
 		return { primitiveId: 'label-1' };
 	};
+	const originalFlagCreate = globalThis.eda.sch_PrimitiveComponent.createNetFlag;
+	const originalLabelCreate = globalThis.eda.sch_PrimitiveAttribute.createNetLabel;
+	let flagCreateCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = async () => {
+		flagCreateCalls += 1;
+		if (flagCreateCalls === 2)
+			throw new Error('RPC Call createNetFlag Timed Out');
+		return { primitiveId: `flag-${flagCreateCalls}` };
+	};
+	const uncertainFlag = await handleNetLabelPlaceTask({ placements: [
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'VCC' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'AGND' },
+	] });
+	assert.equal(flagCreateCalls, 2);
+	assert.equal(uncertainFlag.successCount, 1);
+	assert.equal(uncertainFlag.failureCount, 1);
+	assert.equal(uncertainFlag.notAttemptedCount, 1);
+	assert.equal(uncertainFlag.commitUnknown, true);
+	assert.equal(uncertainFlag.readbackRequired, true);
+	assert.equal(uncertainFlag.nativeCallSettled, false);
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = originalFlagCreate;
+	let flagCalledAfterLabelDisconnect = false;
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = async () => {
+		flagCalledAfterLabelDisconnect = true;
+		return { primitiveId: 'unexpected-flag' };
+	};
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = async () => {
+		throw new Error('connection lost');
+	};
+	const uncertainLabel = await handleNetLabelPlaceTask({ placements: [
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'UART_TX' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+	] });
+	assert.equal(uncertainLabel.commitUnknown, true);
+	assert.equal(uncertainLabel.notAttemptedCount, 1);
+	assert.equal(flagCalledAfterLabelDisconnect, false);
+	let deterministicFlagCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = async () => {
+		deterministicFlagCalls += 1;
+		if (deterministicFlagCalls === 1)
+			throw new Error('Invalid net flag');
+		return { primitiveId: 'valid-flag' };
+	};
+	const rejectedFlag = await handleNetLabelPlaceTask({ placements: [
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'GND' },
+		{ componentId: 'component-1', pinIdentifier: '1', netName: 'VCC' },
+	] });
+	assert.equal(deterministicFlagCalls, 2);
+	assert.equal(rejectedFlag.commitUnknown, undefined);
+	assert.equal(rejectedFlag.successCount, 1);
+	assert.equal(rejectedFlag.failureCount, 1);
+	globalThis.eda.sch_PrimitiveComponent.createNetFlag = originalFlagCreate;
+	globalThis.eda.sch_PrimitiveAttribute.createNetLabel = originalLabelCreate;
 
 	const modified = await handleNetLabelModifyTask({
 		target: { type: 'pin', componentId: 'component-1', pinIdentifier: '1' },
@@ -462,10 +575,21 @@ async function main() {
 	assert.equal(failed.failureCount, 1);
 
 	const autoPlacementCalls = [];
+	const placedPrimitives = [];
+	globalThis.eda.dmt_Schematic = {
+		async getCurrentSchematicPageInfo() {
+			return { uuid: 'auto-placement-test-page' };
+		},
+	};
 	globalThis.eda.sch_PrimitiveComponent.create = async (...args) => {
 		autoPlacementCalls.push(args);
-		return { primitiveId: `auto-${autoPlacementCalls.length}` };
+		const primitiveId = `auto-${autoPlacementCalls.length}`;
+		const designator = `U${autoPlacementCalls.length}`;
+		const primitive = { getState_PrimitiveId: () => primitiveId, getState_Designator: () => designator };
+		placedPrimitives.push(primitive);
+		return primitive;
 	};
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => placedPrimitives;
 	const partialCoordinates = await handleComponentPlaceAutoTask({
 		components: [
 			{ uuid: 'x-only', libraryUuid: 'test-library', x: 111 },
@@ -485,6 +609,8 @@ async function main() {
 	assert.equal(autoPlacement.ok, false);
 	assert.equal(autoPlacement.placedCount, 0);
 	assert.equal(autoPlacement.failedCount, 1);
+	assert.equal(autoPlacement.commitUnknown, true);
+	assert.equal(autoPlacement.nativeCallSettled, true);
 }
 
 main().then(() => {

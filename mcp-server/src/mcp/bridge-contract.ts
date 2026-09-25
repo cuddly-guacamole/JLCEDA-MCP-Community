@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-type TimeoutPolicyName = 'default' | 'api' | 'standard-read' | 'extended-read';
+type TimeoutPolicyName = 'default' | 'api' | 'standard-read' | 'extended-read' | 'batch-write';
 
 interface TimeoutPolicy {
   defaultMs: number;
@@ -17,7 +17,10 @@ export interface BridgeOperation {
   owner: 'server' | 'bridge';
   timeoutPolicy?: TimeoutPolicyName;
   readOnly?: boolean;
+  readOnlyIf?: { field: string; equals: unknown; defaultValue?: unknown };
   readOnlyUnless?: { field: string; equals: unknown };
+  readOnlyIfNoArgsApiFullNames?: string[];
+  readOnlyIfCurrentPageArgsApiFullNames?: string[];
 }
 
 interface BridgeContract {
@@ -100,6 +103,20 @@ export function bridgeTimeoutForTool(toolName: string, payload: Record<string, u
 
 export function isReadOnlyBridgeRequest(path: string, payload: unknown): boolean {
   const operation = operationForPath(path);
+  if (operation?.readOnlyIfNoArgsApiFullNames || operation?.readOnlyIfCurrentPageArgsApiFullNames) {
+    if (!isRecord(payload)) return false;
+    const apiFullName = String(payload.apiFullName ?? '').trim().toLowerCase();
+    const args = payload.args;
+    const noArgs = !Array.isArray(args) || args.length === 0;
+    const currentPageArgs = Array.isArray(args) && args.length === 2 && args[0] === null && args[1] === false;
+    return (noArgs && (operation.readOnlyIfNoArgsApiFullNames?.some(name => name.toLowerCase() === apiFullName) ?? false))
+      || (currentPageArgs && (operation.readOnlyIfCurrentPageArgsApiFullNames?.some(name => name.toLowerCase() === apiFullName) ?? false));
+  }
+  if (operation?.readOnlyIf) {
+    const condition = operation.readOnlyIf;
+    const value = isRecord(payload) ? payload[condition.field] ?? condition.defaultValue : undefined;
+    return Array.isArray(condition.equals) ? condition.equals.includes(value) : value === condition.equals;
+  }
   if (!operation?.readOnly) {
     return false;
   }

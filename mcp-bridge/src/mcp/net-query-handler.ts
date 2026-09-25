@@ -78,6 +78,11 @@ export async function handlePcbNetQueryTask(payload: unknown): Promise<unknown> 
 	if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
 		throw new RangeError('limit must be an integer between 1 and 1000.');
 	}
+	const offset = input.offset === undefined ? 0 : Number(input.offset);
+	if (!Number.isInteger(offset) || offset < 0)
+		throw new RangeError('offset must be a non-negative integer.');
+	if (mode === 'exact' && offset !== 0)
+		throw new TypeError('offset is only supported for all or names PCB net queries.');
 	const analysis = normalizePcbNetAnalysis(input, mode as NetQueryMode);
 
 	const edaGlobal = getEdaRuntime();
@@ -95,8 +100,8 @@ export async function handlePcbNetQueryTask(payload: unknown): Promise<unknown> 
 		if (!Array.isArray(rawNames))
 			throw new TypeError(`EDA ${moduleName}.getAllNetsName returned an invalid result.`);
 		const matchingNames = rawNames.filter(name => !query || String(name).toLowerCase().includes(query));
-		const returnedNames = matchingNames.slice(0, limit);
-		return { ok: true, domain: 'pcb', mode: mode as NetQueryMode, query, total: matchingNames.length, returned: returnedNames.length, names: await serializeBoundedNetArray(returnedNames), truncated: matchingNames.length > returnedNames.length };
+		const returnedNames = matchingNames.slice(offset, offset + limit);
+		return { ok: true, domain: 'pcb', mode: mode as NetQueryMode, query, total: matchingNames.length, offset, returned: returnedNames.length, names: await serializeBoundedNetArray(returnedNames), truncated: matchingNames.length > offset + returnedNames.length };
 	}
 	if (mode === 'exact' && typeof api.getNet === 'function') {
 		const net = await toSerializableAsync(await (api.getNet as (name: string) => Promise<unknown>).call(api, queryText));
@@ -132,7 +137,15 @@ export async function handlePcbNetQueryTask(payload: unknown): Promise<unknown> 
 	if (!Array.isArray(rawNets)) {
 		throw new TypeError(`EDA ${moduleName}.getAllNets returned an invalid result.`);
 	}
+	if (mode === 'names') {
+		const names = rawNets.map(net => isPlainObjectRecord(net) ? (net.net ?? net.name) : net);
+		if (names.some(name => typeof name !== 'string'))
+			throw new TypeError(`EDA ${moduleName}.getAllNets omitted a network name.`);
+		const matchingNames = names.filter(name => !query || String(name).toLowerCase().includes(query));
+		const returnedNames = matchingNames.slice(offset, offset + limit);
+		return { ok: true, domain: 'pcb', mode, query, total: matchingNames.length, offset, returned: returnedNames.length, names: await serializeBoundedNetArray(returnedNames), truncated: matchingNames.length > offset + returnedNames.length };
+	}
 	const matchingNets = rawNets.filter(net => !query || JSON.stringify(net).toLowerCase().includes(query));
-	const returnedNets = matchingNets.slice(0, limit);
-	return { ok: true, domain: 'pcb', mode: mode as NetQueryMode, query, total: matchingNets.length, returned: returnedNets.length, nets: await serializeBoundedNetArray(returnedNets), truncated: matchingNets.length > returnedNets.length };
+	const returnedNets = matchingNets.slice(offset, offset + limit);
+	return { ok: true, domain: 'pcb', mode: mode as NetQueryMode, query, total: matchingNets.length, offset, returned: returnedNets.length, nets: await serializeBoundedNetArray(returnedNets), truncated: matchingNets.length > offset + returnedNets.length };
 }

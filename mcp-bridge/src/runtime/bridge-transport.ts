@@ -39,13 +39,14 @@ const BRIDGE_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 const BRIDGE_STATUS_TEXT = BridgeStateManager.text;
 
 export function shouldLogTransportMessage(messageType: BridgeClientMessage['type']): boolean {
-	return messageType !== 'bridge/heartbeat';
+	return messageType !== 'bridge/heartbeat' && messageType !== 'bridge/probe-ack';
 }
 
 interface BridgeTransportCallbacks {
 	onRoleChanged: (message: BridgeServerRoleMessage) => void;
 	onDebugSwitchChanged: (debugSwitch: BridgeDebugSwitch) => void;
 	onTask: (task: BridgeQueueTask) => void | Promise<void>;
+	onProbeRequested: (probeId: string) => void;
 	onRecoveryRequested: (recoveryId: string, reason: string) => void;
 	onLost: (message: string) => void;
 }
@@ -87,6 +88,7 @@ const VALID_SERVER_MESSAGE_TYPES = new Set([
 	'bridge/role',
 	'bridge/debug-switch',
 	'bridge/heartbeat-ack',
+	'bridge/probe',
 	'bridge/task',
 	'bridge/recover',
 	'bridge/error',
@@ -144,6 +146,10 @@ async function parseServerMessage(data: unknown): Promise<BridgeServerMessage> {
 			requiredString('path');
 			requiredFiniteNumber('createdAt');
 			requiredFiniteNumber('leaseTerm');
+			break;
+		case 'bridge/probe':
+			requiredString('clientId');
+			requiredString('probeId');
 			break;
 		case 'bridge/recover':
 			requiredString('recoveryId');
@@ -242,13 +248,14 @@ export class BridgeTransport {
 		this.lastServerActivityAt = Date.now();
 	}
 
-	public reportTaskStarted(requestId: string, leaseTerm: number): void {
+	public reportTaskStarted(requestId: string, leaseTerm: number, context?: BridgeClientContext): void {
 		this.sendMessage({
 			type: 'bridge/task-started',
 			clientId: this.clientId,
 			requestId,
 			leaseTerm,
 			startedAt: Date.now(),
+			...(context ? { context } : {}),
 		});
 	}
 
@@ -303,6 +310,10 @@ export class BridgeTransport {
 		debugLog('[DEBUG] bridge-transport ready message sent');
 	}
 
+	public reportSelectionProbeAck(probeId: string): void {
+		this.sendMessage({ type: 'bridge/probe-ack', clientId: this.clientId, probeId });
+	}
+
 	/**
 	 * 主动关闭桥接连接。
 	 */
@@ -334,6 +345,7 @@ export class BridgeTransport {
 			clientId: this.clientId,
 			bridgeVersion: this.bridgeVersion,
 			protocolVersion: BRIDGE_PROTOCOL_VERSION,
+			selectionProbeVersion: 1,
 			context: this.context,
 		});
 	}
@@ -394,6 +406,12 @@ export class BridgeTransport {
 					createdAt: message.createdAt,
 					leaseTerm: message.leaseTerm,
 				});
+				return;
+			}
+
+			if (message.type === 'bridge/probe') {
+				if (message.clientId === this.clientId && this.welcomed)
+					this.callbacks.onProbeRequested(message.probeId);
 				return;
 			}
 

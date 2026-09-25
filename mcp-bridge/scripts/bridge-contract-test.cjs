@@ -5,6 +5,7 @@ process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', modu
 require('ts-node/register/transpile-only');
 
 const {
+	isReadOnlyBridgeRequest,
 	resolveContractTimeoutMs,
 	validateBridgeServerMessage,
 } = require('../src/bridge/bridge-contract.ts');
@@ -12,6 +13,7 @@ const contract = require('../src/resources/bridge-contract.json');
 const {
 	registeredBridgeTaskPaths,
 } = require('../src/runtime/bridge-handler-registry.ts');
+const { requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
 
 const expectedPaths = new Set([
 	...contract.operations.filter(operation => operation.owner === 'bridge').map(operation => operation.path),
@@ -23,6 +25,43 @@ assert.equal(resolveContractTimeoutMs('/bridge/jlceda/api/invoke', { timeoutMs: 
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', {}), 30000);
 assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/canvas/snapshot', { timeoutMs: 4999 }), /5000/);
 assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/select', { timeoutMs: 1 }), 25000);
+assert.equal(resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', {}), 300000);
+assert.equal(resolveContractTimeoutMs('/bridge/jlceda/netlabel/place', { timeoutMs: 420000 }), 420000);
+assert.throws(() => resolveContractTimeoutMs('/bridge/jlceda/component/place-auto', { timeoutMs: 600001 }), /600000/);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/read', {}), true);
+for (const action of [undefined, 'status', 'selection', 'primitive_by_id', 'primitives_in_region', 'convert_canvas_to_data', 'navigate_to_coordinates', 'navigate_to_region', 'zoom_to_board_outline'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', action === undefined ? {} : { action }), true);
+for (const action of ['select_primitives', 'clear_selection', 'save', 'start_ratline', 'stop_ratline', 'clear_routing', 'import_changes', 'import_auto_route_json', 'import_auto_route_ses', 'import_auto_layout_json'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/document', { action }), false);
+for (const action of [undefined, 'status', 'filter_configuration', 'selection', 'mouse_position', 'primitive_at_point', 'primitives_in_region', 'primitive_type_by_id', 'primitive_by_id', 'primitives_by_id', 'primitives_bbox', 'navigate_to_coordinates', 'navigate_to_region'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/document', action === undefined ? {} : { action }), true);
+for (const action of ['select_primitives', 'clear_selection', 'save', 'import_changes'])
+	assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/document', { action }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'check' }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/layout-check', { mode: 'fix' }), false);
+const connectivityPath = '/bridge/jlceda/schematic/connectivity';
+assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action: 'wire_preview' }), true);
+for (const action of ['wire_create', 'netport_create', 'netport_move'])
+	assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);
+assert.equal(isReadOnlyBridgeRequest(connectivityPath, {}), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, false] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [1, false] }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [null, false] }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, true] }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [1, false] }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [null, false, 1] }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_primitivecomponent.getall', args: [] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: ' EDA.SCH_PRIMITIVECOMPONENT.GETALL ', args: [null, false] }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.GETALL', args: [null, true] }), false);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.CREATE', args: [] }), false);
+for (const path of ['/bridge/jlceda/schematic/connectivity', '/bridge/jlceda/netlabel/place', '/bridge/jlceda/component/place/start', '/bridge/jlceda/api/invoke'])
+	assert.equal(requiresHostRestartForResult(path, { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: false }), true);
+assert.equal(requiresHostRestartForResult('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: true }), false);
 
 assert.equal(validateBridgeServerMessage({
 	type: 'bridge/task',
