@@ -13,6 +13,7 @@ function deferred() {
 }
 
 let activeTransport;
+let nextConnectGate;
 const transportReady = deferred();
 class MockBridgeTransport {
 	constructor(_url, _socketId, clientId, _version, _context, callbacks) {
@@ -26,6 +27,12 @@ class MockBridgeTransport {
 	}
 
 	async connect() {
+		const gate = nextConnectGate;
+		nextConnectGate = undefined;
+		if (gate) {
+			gate.entered.resolve();
+			await gate.release.promise;
+		}
 		this.callbacks.onRoleChanged({
 			type: 'bridge/role',
 			clientId: this.clientId,
@@ -57,14 +64,14 @@ class MockBridgeTransport {
 	}
 
 	refreshServerActivity() {}
-	reportReady() {}
+	reportReady() { this.ready = true; }
 	updateContext() {}
 	close() {}
 }
 
 // Keep the real runtime, route registry, and API handler; replace only the socket transport.
 require('../src/runtime/bridge-transport.ts').BridgeTransport = MockBridgeTransport;
-const { enqueueTask, startBridgeRuntime, stopBridgeRuntime } = require('../src/runtime/bridge-runtime.ts');
+const { enqueueTask, restartBridgeServer, startBridgeRuntime, stopBridgeRuntime } = require('../src/runtime/bridge-runtime.ts');
 
 async function waitUntil(predicate, timeoutMs = 10_000) {
 	const deadline = Date.now() + timeoutMs;
@@ -279,6 +286,10 @@ async function main() {
 	const previousTransport = activeTransport;
 	hangingEditablePageReads = true;
 	startBridgeRuntime();
+	let oldConnectGate;
+	let newContextGate;
+	let oldContextGate;
+	let newConnectGate;
 	try {
 		await new Promise(resolve => setTimeout(resolve, 5400));
 		assert.equal(activeTransport, previousTransport, 'a hung editable-page getter must prevent a premature connection');
@@ -287,14 +298,42 @@ async function main() {
 		await waitUntil(() => activeTransport !== previousTransport, 5000);
 		const reconnectedTransport = activeTransport;
 		hangingDocumentReads = 1;
-		const restartBridgeServer = require('../src/runtime/bridge-runtime.ts').restartBridgeServer;
 		restartBridgeServer();
 		await waitUntil(() => activeTransport !== reconnectedTransport, 10_000);
 		assert.equal(hangingDocumentReads, 0, 'the first connection context read must have reached the hung getter');
 		assert.equal(activeTransport.started.length, 0);
+		oldConnectGate = { entered: deferred(), release: deferred() };
+		nextConnectGate = oldConnectGate;
+		restartBridgeServer();
+		await oldConnectGate.entered.promise;
+		const staleConnectingTransport = activeTransport;
+		newContextGate = holdNextDocumentRead();
+		restartBridgeServer();
+		await newContextGate.entered.promise;
+		oldConnectGate.release.resolve();
+		await new Promise(resolve => setTimeout(resolve, 1600));
+		assert.equal(activeTransport, staleConnectingTransport, 'an old connect completion must not clear the newer attempt or start a third connection');
+		newContextGate.release.resolve();
+		await waitUntil(() => activeTransport !== staleConnectingTransport && activeTransport.ready, 5000);
+		oldContextGate = holdNextDocumentRead();
+		restartBridgeServer();
+		await oldContextGate.entered.promise;
+		newConnectGate = { entered: deferred(), release: deferred() };
+		nextConnectGate = newConnectGate;
+		restartBridgeServer();
+		await newConnectGate.entered.promise;
+		const newerConnectingTransport = activeTransport;
+		await new Promise(resolve => setTimeout(resolve, 6600));
+		assert.equal(activeTransport, newerConnectingTransport, 'an old context timeout must not clear the newer attempt or start a third connection');
+		newConnectGate.release.resolve();
+		await waitUntil(() => newerConnectingTransport.ready, 2000);
 		process.stdout.write('Bridge context timeout and queue barrier tests passed\n');
 	}
 	finally {
+		oldConnectGate?.release.resolve();
+		newContextGate?.release.resolve();
+		oldContextGate?.release.resolve();
+		newConnectGate?.release.resolve();
 		hangingEditablePageReads = false;
 		stopBridgeRuntime();
 	}

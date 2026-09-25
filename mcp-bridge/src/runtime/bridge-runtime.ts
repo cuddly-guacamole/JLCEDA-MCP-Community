@@ -50,6 +50,7 @@ let currentActiveClientId = '';
 let controlledRecoveryPending = false;
 let pendingUnknownWriteRequestId: string | undefined;
 let transportGeneration = 0;
+let connectionAttemptId = 0;
 const HOST_RESTART_REQUIRED_MESSAGE = 'PCB autoLayout or autoRouting may still commit. Restart the EDA host before controlled recovery readback.';
 // 每次建立新连接时递增，确保每次调用 eda.sys_WebSocket.register 使用唯一 socketId。
 let socketSequence = 0;
@@ -324,6 +325,7 @@ function clearContextSyncTimer(): void {
 function stopTransport(): void {
 	connecting = false;
 	transportGeneration += 1;
+	connectionAttemptId += 1;
 	const currentTransport = transport;
 	transport = undefined;
 	if (currentTransport) {
@@ -609,44 +611,54 @@ async function ensureConnected(): Promise<void> {
 	connecting = true;
 	statusReporter.markConnecting();
 	const connectionGeneration = transportGeneration;
+	const attemptId = ++connectionAttemptId;
+	const ownsAttempt = () => connectionAttemptId === attemptId && transportGeneration === connectionGeneration;
 	const activeClientId = getClientId();
 	let initialContext: BridgeClientContext | undefined;
 	try {
 		initialContext = await readBridgeClientContext();
 	}
 	catch (error: unknown) {
-		connecting = false;
-		if (started) {
-			statusReporter.markFailed(toSafeErrorMessage(error));
-			scheduleReconnect();
+		if (ownsAttempt()) {
+			connecting = false;
+			if (started) {
+				statusReporter.markFailed(toSafeErrorMessage(error));
+				scheduleReconnect();
+			}
 		}
 		return;
 	}
-	if (!started || connectionGeneration !== transportGeneration || transport) {
-		connecting = false;
-		if (started && !transport)
-			scheduleReconnect();
+	if (!started || !ownsAttempt() || transport) {
+		if (ownsAttempt()) {
+			connecting = false;
+			if (started && !transport)
+				scheduleReconnect();
+		}
 		return;
 	}
 	const instance = new BridgeTransport(getConfiguredMcpUrl(), getSocketId(), activeClientId, String(extensionConfig.version), initialContext, {
 		onRoleChanged: (message) => {
-			applyRole(message);
+			if (ownsAttempt())
+				applyRole(message);
 		},
 		onDebugSwitchChanged: (debugSwitch) => {
-			applyDebugSwitch(debugSwitch);
+			if (ownsAttempt())
+				applyDebugSwitch(debugSwitch);
 		},
 		onTask: async (task) => {
 			enqueueTask(task, instance);
 		},
 		onRecoveryRequested: (_recoveryId, _reason) => {
-			startControlledRecovery();
+			if (ownsAttempt())
+				startControlledRecovery();
 		},
 		onLost: (message) => {
-			if (transport !== instance) {
+			if (transport !== instance || !ownsAttempt()) {
 				return;
 			}
 			void cleanupAllComponentPlaceSessions();
 			transportGeneration += 1;
+			connectionAttemptId += 1;
 			transport = undefined;
 			connecting = false;
 			if (!started) {
@@ -662,9 +674,9 @@ async function ensureConnected(): Promise<void> {
 		bridgeLogDispatchPipeline.resetHandshakeState();
 		await instance.connect();
 		debugLog('[DEBUG] bridge-runtime connection established');
-		if (!started || connectionGeneration !== transportGeneration || transport) {
+		if (!started || !ownsAttempt() || transport) {
 			instance.close();
-			if (started && !transport)
+			if (ownsAttempt() && started && !transport)
 				scheduleReconnect();
 			return;
 		}
@@ -679,11 +691,14 @@ async function ensureConnected(): Promise<void> {
 	}
 	catch (error: unknown) {
 		instance.close();
-		statusReporter.markFailed(toSafeErrorMessage(error));
-		scheduleReconnect();
+		if (ownsAttempt()) {
+			statusReporter.markFailed(toSafeErrorMessage(error));
+			scheduleReconnect();
+		}
 	}
 	finally {
-		connecting = false;
+		if (ownsAttempt())
+			connecting = false;
 	}
 }
 
