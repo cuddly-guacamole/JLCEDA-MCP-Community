@@ -623,6 +623,28 @@ async function main() {
 	const restoredBlank = await handleComponentPlaceAutoTask({ components: [{ uuid: 'new-r', libraryUuid: 'library' }] });
 	assert.equal(restoredBlank.ok, true);
 	assert.deepEqual(restoredBlank.restoredDesignators, [{ primitiveId: 'existing-u', before: '', after: 'U4' }]);
+	const noCustomProperty = (id, designator) => ({
+		...primitive(id, designator),
+		getState_OtherProperty: () => undefined,
+	});
+	const noCustomComponents = [noCustomProperty('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return noCustomComponents; },
+		async create() {
+			noCustomComponents[0] = noCustomProperty('existing-u', 'U15');
+			const created = primitive('new-r', 'R1');
+			noCustomComponents.push(created);
+			return created;
+		},
+		async modify(id, patch) {
+			assert.deepEqual(patch.otherProperty, {});
+			noCustomComponents[0] = noCustomProperty(id, patch.designator);
+			return noCustomComponents[0];
+		},
+	};
+	const restoredNoCustom = await handleComponentPlaceAutoTask({ components: [{ uuid: 'new-r', libraryUuid: 'library' }] });
+	assert.equal(restoredNoCustom.ok, true);
+	assert.deepEqual(restoredNoCustom.restoredDesignators, [{ primitiveId: 'existing-u', before: 'U15', after: 'U4' }]);
 
 	// A later create can renumber an earlier component from the same request.
 	// Stop before the third placement and return the first component's current designator.

@@ -66,6 +66,21 @@ function sameProperties(a: Record<string, unknown>, b: unknown): boolean {
 	return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && a[key] === b[key]);
 }
 
+function readOtherProperty(component: unknown): Record<string, string | number | boolean> | null {
+	const getter = (component as Record<string, unknown> | undefined)?.getState_OtherProperty;
+	if (typeof getter !== 'function')
+		return null;
+	try {
+		const value = getter.call(component) as unknown;
+		if (value === undefined)
+			return {};
+		return isPlainObjectRecord(value) ? { ...value } as Record<string, string | number | boolean> : null;
+	}
+	catch {
+		return null;
+	}
+}
+
 /** Read current-page designators before starting a placement. */
 export async function readSchematicDesignators(api: DesignatorApi): Promise<Map<string, string>> {
 	return new Map([...(await readSnapshot(api)).designators].filter(([, designator]) => designator));
@@ -93,15 +108,15 @@ export async function restoreChangedSchematicDesignators(
 	for (const change of changes) {
 		const state = snapshot.states.get(change.primitiveId)!;
 		const componentType = getSyncState<string>(state.primitive, 'getState_ComponentType', '');
-		const otherProperty = getSyncState<unknown>(state.primitive, 'getState_OtherProperty', undefined);
-		if (componentType !== 'part' || !isPlainObjectRecord(otherProperty)) {
+		const otherProperty = readOtherProperty(state.primitive);
+		if (componentType !== 'part' || !otherProperty) {
 			return { ...initial, annotationWarning: `器件 ${change.primitiveId} 的类型或 BOM 属性无法核实，未自动恢复位号。` };
 		}
 		const occupied = [...snapshot.states].some(([id, other]) => id !== change.primitiveId
 			&& other.designator === change.before && baseline.get(id) !== change.before);
 		if (occupied)
 			return { ...initial, annotationWarning: `原位号 ${change.before} 已被其它器件占用，未自动恢复位号。` };
-		preservedProperties.set(change.primitiveId, { ...otherProperty } as Record<string, string | number | boolean>);
+		preservedProperties.set(change.primitiveId, otherProperty);
 	}
 
 	let attempted = false;
@@ -126,7 +141,7 @@ export async function restoreChangedSchematicDesignators(
 			.map(change => ({ primitiveId: change.primitiveId, before: change.after, after: change.before }));
 		const propertiesChanged = changes.some(change => !sameProperties(
 			preservedProperties.get(change.primitiveId)!,
-			getSyncState<unknown>(verified.states.get(change.primitiveId)?.primitive, 'getState_OtherProperty', undefined),
+			readOtherProperty(verified.states.get(change.primitiveId)?.primitive),
 		));
 		return {
 			currentDesignators: verified.designators,
