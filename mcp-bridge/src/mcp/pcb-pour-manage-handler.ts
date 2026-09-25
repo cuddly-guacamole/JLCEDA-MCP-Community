@@ -380,6 +380,27 @@ export async function handlePcbPourManageTask(payload: unknown): Promise<unknown
 		if (!Array.isArray(nativeResult))
 			throw new TypeError('EDA rebuildCopperRegions did not return a poured array.');
 		const returnedPoured = nativeResult.map(readPoured);
+		const observedPoured = primitiveId
+			? after.poured.filter(item => item.pourPrimitiveId === primitiveId)
+			: after.poured;
+		const returnedIds = new Set(returnedPoured.map(item => item.primitiveId));
+		if (returnedIds.size !== returnedPoured.length || returnedPoured.length !== observedPoured.length
+			|| observedPoured.some(item => !returnedIds.has(item.primitiveId))) {
+			throw new Error('EDA rebuild returned an incomplete poured fill set.');
+		}
+		const returnedPourIds = new Set(returnedPoured.map(item => item.pourPrimitiveId));
+		const beforePourIds = new Set(before.pours.map(item => item.primitiveId));
+		const afterPourIds = new Set(after.pours.map(item => item.primitiveId));
+		if (beforePourIds.size !== afterPourIds.size || [...beforePourIds].some(id => !afterPourIds.has(id)))
+			throw new Error('EDA rebuild changed the pour boundaries.');
+		if (returnedPoured.some(item => !afterPourIds.has(item.pourPrimitiveId)))
+			throw new Error('EDA rebuild returned a fill for a missing pour.');
+		if (payload.all === true && after.pours.some(item => !returnedPourIds.has(item.primitiveId)))
+			throw new Error('EDA rebuild did not return a fill for every pour.');
+		if (primitiveId && before.poured.some(item => item.pourPrimitiveId === primitiveId
+			&& !returnedPourIds.has(item.pourPrimitiveId))) {
+			throw new Error('EDA rebuild removed a previously filled pour without a replacement.');
+		}
 		for (const returned of returnedPoured) {
 			if (primitiveId && returned.pourPrimitiveId !== primitiveId)
 				throw new Error('EDA rebuild returned a fill for a different pour.');
@@ -391,8 +412,6 @@ export async function handlePcbPourManageTask(payload: unknown): Promise<unknown
 				throw new Error('EDA rebuilt fill is missing or differs on current-page readback.');
 			}
 		}
-		if (primitiveId && returnedPoured.length === 0 && after.poured.some(item => item.pourPrimitiveId === primitiveId))
-			throw new Error('EDA rebuild returned no fill, but a fill remains for the target pour.');
 		return { ok: true, action, scope: SCOPE, pageUuid, ...context, verified: true, rebuildReturnedCount: nativeResult.length, ...after };
 	}
 	catch (error: unknown) {

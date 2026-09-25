@@ -101,13 +101,22 @@ async function main() {
 		async delete(id) {
 			writeCount += 1;
 			pours.delete(id);
+			for (const [fillId, state] of poured) {
+				if (state.pourPrimitiveId === id)
+					poured.delete(fillId);
+			}
 			return true;
 		},
 		async rebuildCopperRegions(ids) {
 			writeCount += 1;
 			const targets = ids ?? [...pours.keys()];
-			for (const id of targets)
+			for (const id of targets) {
+				for (const [fillId, state] of poured) {
+					if (state.pourPrimitiveId === id)
+						poured.delete(fillId);
+				}
 				poured.set(`filled-${id}`, { primitiveId: `filled-${id}`, pourPrimitiveId: id, fills: [fill(`fill-${id}`)] });
+			}
 			return targets.map(id => pouredPrimitive(poured.get(`filled-${id}`)));
 		},
 	};
@@ -182,14 +191,35 @@ async function main() {
 	const modified = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'new-1', property: { net: 'VCC', layer: 2, polygonSource: ['CIRCLE', 50, 60, 20], pourPriority: 3 } });
 	assert.deepEqual([modified.ok, modified.pour.net, modified.pour.layer, modified.pour.pourPriority], [true, 'VCC', 2, 3]);
 	assert.deepEqual(modified.pour.polygonSource, ['CIRCLE', 50, 60, 20]);
+	const nativeBeforeFreshRebuild = pourApi.rebuildCopperRegions;
+	pourApi.rebuildCopperRegions = async () => [pouredPrimitive(poured.get('filled-1'))];
+	const skippedNewPour = await handlePcbPourManageTask({ action: 'rebuild', all: true });
+	assert.deepEqual([skippedNewPour.commitUnknown, skippedNewPour.nativeCallSettled], [true, true], 'all-page rebuild must include a newly created pour with no prior fill');
+	pourApi.rebuildCopperRegions = nativeBeforeFreshRebuild;
 	const rebuilt = await handlePcbPourManageTask({ action: 'rebuild', primitiveId: 'new-1' });
 	assert.equal(rebuilt.ok, true);
 	assert.equal(rebuilt.all, false);
 	assert.equal(rebuilt.poured.find(item => item.pourPrimitiveId === 'new-1').fillCount, 1);
 	const rebuiltAll = await handlePcbPourManageTask({ action: 'rebuild', all: true });
 	assert.equal(rebuiltAll.all, true);
-	assert.equal(rebuiltAll.pouredCount, 3);
+	assert.equal(rebuiltAll.pouredCount, 2);
 	assert.match(rebuiltAll.poured.find(item => item.pourPrimitiveId === 'new-1').fillGeometryDigest, /^fnv1a64:[0-9a-f]{16}$/);
+	const nativeAllRebuild = pourApi.rebuildCopperRegions;
+	pourApi.rebuildCopperRegions = async () => [];
+	const emptyAllWithExistingFills = await handlePcbPourManageTask({ action: 'rebuild', all: true });
+	assert.deepEqual([emptyAllWithExistingFills.commitUnknown, emptyAllWithExistingFills.nativeCallSettled], [true, true], 'all-page rebuild must reject an empty result while fills remain');
+	pourApi.rebuildCopperRegions = async () => [pouredPrimitive(poured.get('filled-pour-1'))];
+	const partialAllWithExistingFills = await handlePcbPourManageTask({ action: 'rebuild', all: true });
+	assert.deepEqual([partialAllWithExistingFills.commitUnknown, partialAllWithExistingFills.nativeCallSettled], [true, true], 'all-page rebuild must reject a partial returned fill set');
+	const secondFill = poured.get('filled-new-1');
+	pourApi.rebuildCopperRegions = async () => {
+		poured.delete('filled-new-1');
+		return [pouredPrimitive(poured.get('filled-pour-1'))];
+	};
+	const partialAllWithMissingReadback = await handlePcbPourManageTask({ action: 'rebuild', all: true });
+	assert.deepEqual([partialAllWithMissingReadback.commitUnknown, partialAllWithMissingReadback.nativeCallSettled], [true, true], 'all-page rebuild must reject a lost previously filled pour even when return and readback match');
+	poured.set('filled-new-1', secondFill);
+	pourApi.rebuildCopperRegions = nativeAllRebuild;
 	await assert.rejects(handlePcbPourManageTask({ action: 'rebuild', all: true, primitiveId: 'new-1' }), /either/);
 	const deleted = await handlePcbPourManageTask({ action: 'delete', primitiveId: 'new-1' });
 	assert.deepEqual([deleted.ok, deleted.deleted, deleted.verified], [true, true, true]);
