@@ -2529,6 +2529,69 @@ try {
     schematicTextServer.close();
   }
 
+  const layerPort = await reservePort();
+  const layerServer = new EdaBridgeServer(layerPort);
+  let oldLayerClient;
+  let freshLayerClient;
+  try {
+    await layerServer.start();
+    const layerUrl = `ws://127.0.0.1:${layerPort}/bridge/ws${tokenQuery}`;
+    const pageContext = { documentUuid: 'layer-document', projectUuid: 'layer-project',
+      pageKind: 'pcb', pageUuid: 'layer-page' };
+    oldLayerClient = await registerEda(layerUrl, 'layer-old', pageContext);
+    oldLayerClient.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      oldLayerClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'layer-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+      oldLayerClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'layer-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { ok: false, action: 'set', commitUnknown: true, nativeCallSettled: false } }));
+    });
+    assert.equal((await layerServer.request('/bridge/jlceda/pcb/layer-manage',
+      { action: 'set', copperLayerCount: 4 }, 2000)).commitUnknown, true);
+    const diagnostic = (await layerServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(diagnostic.requiredReadback, 'pcb_layer_state');
+    assert.equal(diagnostic.hostRestartRequired, true);
+    const recovery = await layerServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: diagnostic.requestId,
+    }, 2000);
+    oldLayerClient.socket.close();
+    await waitUntil(async () => (await layerServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'layer-old')?.ready === false);
+    freshLayerClient = await registerEda(layerUrl, 'layer-fresh', pageContext);
+    const layers = [{ id: 1, type: 'SIGNAL' }, { id: 2, type: 'SIGNAL' },
+      { id: 15, type: 'SIGNAL' }, { id: 16, type: 'SIGNAL' }];
+    const snapshot = { ok: true, action: 'read', scope: 'current_pcb_page', complete: true,
+      pageUuid: 'layer-page', copperLayerCount: 4, layerCount: 4, layers };
+    let readback = snapshot;
+    attachTaskResponder(freshLayerClient.socket, 'layer-fresh', message => {
+      if (message.path === '/bridge/jlceda/context')
+        return { currentDocumentInfo: { uuid: 'layer-document', parentProjectUuid: 'layer-project' },
+          currentProjectInfo: { uuid: 'layer-project' }, currentPcbInfo: { uuid: 'layer-page' } };
+      assert.equal(message.path, '/bridge/jlceda/pcb/layer-manage');
+      assert.deepEqual(message.payload, { action: 'read' });
+      return readback;
+    });
+    const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+      clientId: 'layer-fresh', hostRestartConfirmed: true,
+      readbackPath: '/bridge/jlceda/pcb/layer-manage', readbackPayload: { action: 'read' } };
+    await assert.rejects(layerServer.request('/bridge/admin/recover-client', {
+      ...recoveryReadback, readbackPayload: { action: 'set', copperLayerCount: 4 },
+    }, 2000), /read-only operation/);
+    readback = { ...snapshot, layerCount: 2 };
+    await assert.rejects(layerServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /copper-layer state readback was incomplete/);
+    readback = snapshot;
+    const verified = await layerServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+    assert.equal(verified.readbackVerified, true);
+    assert.equal(verified.readback.copperLayerCount, 4);
+    assert.equal(verified.writesRemainBlocked, false);
+  } finally {
+    oldLayerClient?.socket.close();
+    freshLayerClient?.socket.close();
+    layerServer.close();
+  }
+
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
   const pcbInventory = { ok: true, operation: 'list', complete: true, projectUuid: 'target-project', pcbCount: 2,

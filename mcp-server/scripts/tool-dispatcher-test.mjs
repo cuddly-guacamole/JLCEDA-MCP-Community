@@ -175,6 +175,10 @@ assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_text_manage', { a
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/text-manage', { action: 'read' }), true);
 for (const action of ['create', 'modify', 'delete'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/text-manage', { action }), false);
+await dispatcher.dispatch({ name: 'pcb_layer_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/layer-manage');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/layer-manage', { action: 'read' }), true);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/layer-manage', { action: 'set', copperLayerCount: 4 }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {

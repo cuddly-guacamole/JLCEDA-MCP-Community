@@ -30,6 +30,7 @@ function createToolInputSchema(
         '/bridge/jlceda/pcb/pour-manage',
         '/bridge/jlceda/pcb/region-manage',
         '/bridge/jlceda/pcb/text-manage',
+        '/bridge/jlceda/pcb/layer-manage',
         '/bridge/jlceda/schematic/review',
         '/bridge/jlceda/schematic/layout-check',
         '/bridge/jlceda/pcb/drc-check',
@@ -51,6 +52,12 @@ function createToolInputSchema(
       resolution: z.enum(['applied', 'cancelled']),
     }).strict();
     return z.union([recover, readback, resolveImport]);
+  }
+  if (name === 'pcb_layer_manage') {
+    return z.discriminatedUnion('action', [
+      z.object({ action: z.literal('read') }).strict(),
+      z.object({ action: z.literal('set'), copperLayerCount: z.number().int().min(2).max(32).multipleOf(2) }).strict(),
+    ]);
   }
   const schema = z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
   if (name === 'pcb_component_edit' || name === 'schematic_component_edit' || name === 'schematic_wire_manage' || name === 'schematic_text_manage' || name === 'pcb_pour_manage' || name === 'pcb_routing_edit' || name === 'pcb_board_outline_manage' || name === 'pcb_region_manage' || name === 'pcb_text_manage') {

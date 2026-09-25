@@ -103,6 +103,8 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(textTool?.inputSchema, 'pcb_text_manage must be advertised');
     const schematicTextTool = toolsResponse.result.tools.find((tool) => tool.name === 'schematic_text_manage');
     assert.ok(schematicTextTool?.inputSchema, 'schematic_text_manage must be advertised');
+    const layerTool = toolsResponse.result.tools.find((tool) => tool.name === 'pcb_layer_manage');
+    assert.ok(layerTool?.inputSchema, 'pcb_layer_manage must be advertised');
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -116,6 +118,7 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/pour-manage')), 'bridge_recover_client must publish PCB pour state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/region-manage')), 'bridge_recover_client must publish PCB region state readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/text-manage')), 'bridge_recover_client must publish PCB text state readback');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/layer-manage')), 'bridge_recover_client must publish PCB copper-layer state readback');
     const expectedPageSchemas = findPropertySchemas(recoverTool.inputSchema, 'expectedPageUuid');
     assert.ok(expectedPageSchemas.some((schema) => schema.type === 'string'), 'bridge_recover_client must publish the optional page UUID');
     const actionSchemas = findPropertySchemas(recoverTool.inputSchema, 'action');

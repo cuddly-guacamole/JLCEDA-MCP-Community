@@ -35,7 +35,7 @@ import { handlePcbConstraintsManageTask } from '../mcp/pcb-constraints-manage-ha
 import { handlePcbDocumentTask } from '../mcp/pcb-document-handler.ts';
 import { handlePcbDocumentsManageTask } from '../mcp/pcb-documents-manage-handler.ts';
 import { handlePcbDrcCheckTask } from '../mcp/pcb-drc-handler.ts';
-import { handlePcbLayerQueryTask } from '../mcp/pcb-layer-handler.ts';
+import { handlePcbLayerManageTask, handlePcbLayerQueryTask } from '../mcp/pcb-layer-handler.ts';
 import { handlePcbPourManageTask } from '../mcp/pcb-pour-manage-handler.ts';
 import { handlePcbReadTask } from '../mcp/pcb-read-handler.ts';
 import { handlePcbRealtimeDrcTask } from '../mcp/pcb-realtime-drc-handler.ts';
@@ -93,6 +93,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/pcb/text-manage': handlePcbTextManageTask,
 	'/bridge/jlceda/netlist/compare': handleNetlistCompareTask,
 	'/bridge/jlceda/pcb/layer-query': handlePcbLayerQueryTask,
+	'/bridge/jlceda/pcb/layer-manage': handlePcbLayerManageTask,
 	'/bridge/jlceda/pcb/realtime-drc': handlePcbRealtimeDrcTask,
 	'/bridge/jlceda/design/compare': handleDesignCompareTask,
 	'/bridge/jlceda/design/archive-export': handleDesignArchiveExportTask,
