@@ -330,6 +330,16 @@
 			}
 		},
 		{
+			"toolName": "pcb_board_outline_manage",
+			"path": "/bridge/jlceda/pcb/board-outline-manage",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "pcb_drc_check",
 			"path": "/bridge/jlceda/pcb/drc-check",
 			"owner": "bridge",

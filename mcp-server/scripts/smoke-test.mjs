@@ -95,6 +95,8 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'pcb_pour_manage'));
     const routingTool = toolsResponse.result.tools.find((tool) => tool.name === 'pcb_routing_edit');
     assert.ok(routingTool?.inputSchema, 'pcb_routing_edit must be advertised');
+    const boardOutlineTool = toolsResponse.result.tools.find((tool) => tool.name === 'pcb_board_outline_manage');
+    assert.ok(boardOutlineTool?.inputSchema, 'pcb_board_outline_manage must be advertised');
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -212,6 +214,16 @@ async function testProtocolVersion(protocolVersion) {
     const routingReadResponse = JSON.parse(routingReadLine);
     assert.equal(routingReadResponse.id, 9);
     assert.match(JSON.stringify(routingReadResponse), /No ready EDA client connected/);
+
+    const boardOutlineReadLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 10, method: 'tools/call',
+      params: { ...(modern ? params : {}), name: 'pcb_board_outline_manage', arguments: { action: 'read' } },
+    }) + '\n');
+    const [boardOutlineReadLine] = await Promise.race([boardOutlineReadLinePromise, lineTimeout]);
+    const boardOutlineReadResponse = JSON.parse(boardOutlineReadLine);
+    assert.equal(boardOutlineReadResponse.id, 10);
+    assert.match(JSON.stringify(boardOutlineReadResponse), /No ready EDA client connected/);
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {
