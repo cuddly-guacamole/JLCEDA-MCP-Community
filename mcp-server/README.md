@@ -24,7 +24,7 @@ PCB `import_changes` 返回 `pending_confirmation` 后，Server 将其列为全�
 
 原理图当前页器件 ID 回读建议使用 `readbackPath: "/bridge/jlceda/api/invoke"` 和 `readbackPayload: {"apiFullName":"eda.sch_PrimitiveComponent.getAllPrimitiveId","args":[null,false]}`。`getAllPrimitiveId` 和 `getAll` 的 `args:[null,false]` 被严格识别为当前页只读查询；无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。`allSchematicPages: true` 不适合当前页恢复判断。`bridge_clients` 的 `ready` 依据最近心跳判定，`lastHeartbeatMsAgo` 可用于识别仅有其他消息但心跳已停的客户端。
 
-PCB 器件位置回读可将 `readbackPath` 设为 `/bridge/jlceda/api/invoke`，`readbackPayload` 设为 `{"apiFullName":"eda.pcb_PrimitiveComponent.getAll","args":[]}`；Server 会自动请求不截断的 `componentPositions`。布局前也可直接调用 `api_invoke` 并传入 `includeCompletePositions:true` 取得全量位置，同时保留通用 `result` 字段。若原操作是 `eda.pcb_Document.autoLayout` 且提交状态未知，先以 `action=recover` 建立会话，再关闭并重启原 EDA 宿主，保持 MCP Server 运行；旧 Bridge 连接断开、恢复请求后的新客户端连接同一 PCB 后，才执行这一完整位置回读。仅查 `/context` 不会解除写入阻断。恢复期仅放行此 PCB 方法的无参数形式；带图层或锁定筛选参数的调用仍被隔离。若任务启动时未取得实际 PCB UUID，不能用过期的心跳图页或自行填写的 UUID 解除自动布局隔离。
+PCB 器件位置回读可将 `readbackPath` 设为 `/bridge/jlceda/api/invoke`，`readbackPayload` 设为 `{"apiFullName":"eda.pcb_PrimitiveComponent.getAll","args":[]}`；Server 会自动请求不截断的 `componentPositions`。布局前也可直接调用 `api_invoke` 并传入 `includeCompletePositions:true` 取得全量位置，同时保留通用 `result` 字段。若原操作是 `eda.pcb_Document.autoLayout` 且提交状态未知，先以 `action=recover` 建立会话，再关闭并重启原 EDA 宿主，保持 MCP Server 运行；旧 Bridge 连接断开、恢复请求后的新客户端连接同一 PCB 后，传 `hostRestartConfirmed:true` 执行完整位置回读。仅查 `/context` 不会解除写入阻断。恢复期仅放行此 PCB 方法的无参数形式；带图层或锁定筛选参数的调用仍被隔离。若任务启动时未取得实际 PCB UUID，不能用过期的心跳图页或自行填写的 UUID 解除自动布局隔离。
 
 PCB `autoRouting` 原生 RPC 超时也会留下写入隔离诊断。先执行 `action=recover`，再关闭并重启原 EDA 宿主；全新 Bridge 客户端打开任务执行时的同一 PCB 后，调用 `action=readback`，设置 `hostRestartConfirmed:true`、`readbackPath:"/bridge/jlceda/api/invoke"`、`readbackPayload:{"apiFullName":"eda.pcb_PrimitiveLine.getAll","args":[]}`。Server 会在分段读取前后核对 PCB 身份，自动完整读回直线、圆弧、折线、过孔的图元 ID、网络、层与几何，以及全部网络长度。任何一段失败都继续阻断写入。直接调用四类无参数 `getAll` 时可传 `includeCompleteRouting:true` 获取相同的不截断图元快照。
 
@@ -32,7 +32,7 @@ PCB `autoRouting` 原生 RPC 超时也会留下写入隔离诊断。先执行 `a
 
 Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Server 会将该结果纳入同一受控恢复诊断流程，不要求必须等 Server 自身的备用计时器触发。
 
-`schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。读回失败继续隔离，只查 `/context` 不会解除。
+`schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生调用超时以及写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。诊断包含 `hostRestartRequired:true` 时先重启原宿主并传 `hostRestartConfirmed:true`；读回失败继续隔离，只查 `/context` 不会解除。
 
 ## 工具说明
 
@@ -42,7 +42,9 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 
-`component_place` 检查或 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID 与位号）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。
+`component_place` 启动或检查，以及 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID、位号及 BOM 属性）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。
+
+可写 `api_invoke` 的原生 RPC 超时或断线会阻止后续写入；诊断要求宿主重启时，使用新 Bridge 核对目标文档和受影响图元，再恢复写入。只读 `api_invoke` 的失败不进入写入恢复。
 
 Server 提供 `schematic_document_action`，用于受限地检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置，并执行视图导航、图元选择、属性读取、保存和变更导入。
 

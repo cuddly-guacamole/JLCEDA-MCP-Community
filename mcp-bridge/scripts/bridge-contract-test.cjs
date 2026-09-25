@@ -13,6 +13,7 @@ const contract = require('../src/resources/bridge-contract.json');
 const {
 	registeredBridgeTaskPaths,
 } = require('../src/runtime/bridge-handler-registry.ts');
+const { requiresHostRestartForResult } = require('../src/runtime/task-timeout.ts');
 
 const expectedPaths = new Set([
 	...contract.operations.filter(operation => operation.owner === 'bridge').map(operation => operation.path),
@@ -55,6 +56,9 @@ assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName:
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: ' EDA.SCH_PRIMITIVECOMPONENT.GETALL ', args: [null, false] }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.GETALL', args: [null, true] }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', { apiFullName: 'EDA.SCH_PRIMITIVECOMPONENT.CREATE', args: [] }), false);
+for (const path of ['/bridge/jlceda/schematic/connectivity', '/bridge/jlceda/component/place/start', '/bridge/jlceda/api/invoke'])
+	assert.equal(requiresHostRestartForResult(path, { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: false }), true);
+assert.equal(requiresHostRestartForResult('/bridge/jlceda/api/invoke', { apiFullName: 'eda.sch_PrimitiveComponent.create' }, { ok: false, commitUnknown: true, nativeCallSettled: true }), false);
 
 assert.equal(validateBridgeServerMessage({
 	type: 'bridge/task',

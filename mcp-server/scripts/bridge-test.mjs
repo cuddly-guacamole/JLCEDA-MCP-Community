@@ -805,6 +805,7 @@ try {
     confirm: true,
     recoveryId: disconnectedStart.recoveryId,
     clientId: 'disconnected-recovery-target',
+    hostRestartConfirmed: true,
     expectedDocumentUuid: 'disconnected-document',
     expectedProjectUuid: 'disconnected-project',
     readbackPath: '/bridge/jlceda/api/invoke',
@@ -822,7 +823,7 @@ try {
   );
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
     action: 'readback', confirm: true, recoveryId: disconnectedStart.recoveryId,
-    clientId: 'disconnected-recovery-target', readbackPath: '/bridge/jlceda/api/invoke',
+    clientId: 'disconnected-recovery-target', hostRestartConfirmed: true, readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
   }, 2000), /not a fresh Bridge generation/);
   disconnectedRecoveryTarget.socket.close();
@@ -834,7 +835,7 @@ try {
   );
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/admin/recover-client', {
     action: 'readback', confirm: true, recoveryId: disconnectedStart.recoveryId,
-    clientId: 'disconnected-recovery-old', readbackPath: '/bridge/jlceda/api/invoke',
+    clientId: 'disconnected-recovery-old', hostRestartConfirmed: true, readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
   }, 2000), /not a fresh Bridge generation/);
   await assert.rejects(disconnectedRecoveryServer.request('/bridge/test/write-after-old-runtime-reconnect', {}, 2000), /writes are blocked pending recovery readback/);
@@ -872,6 +873,7 @@ try {
     confirm: true,
     recoveryId: disconnectedStart.recoveryId,
     clientId: 'disconnected-recovery-fresh',
+    hostRestartConfirmed: true,
     expectedDocumentUuid: 'disconnected-document',
     expectedProjectUuid: 'disconnected-project',
     readbackPath: '/bridge/jlceda/api/invoke',
@@ -947,6 +949,7 @@ try {
   }, 2000), /autoLayout requires eda.pcb_PrimitiveComponent.getAll/);
   const nativeLayoutReadbackRequest = {
     action: 'readback', confirm: true, recoveryId: nativeLayoutRecovery.recoveryId, clientId: 'native-layout-new',
+    hostRestartConfirmed: true,
     readbackPath: '/bridge/jlceda/api/invoke',
     readbackPayload: { apiFullName: 'eda.pcb_PrimitiveComponent.getAll', args: [] },
   };
@@ -1411,7 +1414,7 @@ try {
   unverifiedWriteServer.close();
   unverifiedWriteServer = undefined;
 
-  for (const action of ['wire_create', 'netport_create', 'netport_move']) {
+  for (const [action, nativeCallSettled] of [['wire_create', true], ['netport_create', true], ['netport_move', true], ['wire_create', false]]) {
     const connectivityRecoveryPort = await reservePort();
     const connectivityRecoveryServer = new EdaBridgeServer(connectivityRecoveryPort);
     let oldClient;
@@ -1433,7 +1436,7 @@ try {
         oldClient.socket.send(JSON.stringify({
           type: 'bridge/result', clientId: `connectivity-${action}-old`,
           requestId: message.requestId, leaseTerm: message.leaseTerm,
-          result: { ok: false, action, commitUnknown: true },
+          result: { ok: false, action, commitUnknown: true, nativeCallSettled },
         }));
       });
       const writePayload = action === 'wire_create'
@@ -1445,6 +1448,7 @@ try {
       const diagnostic = (await connectivityRecoveryServer.request('/bridge/admin/clients', {}, 2000)).clients
         .find(client => client.clientId === `connectivity-${action}-old`).quarantine.diagnostics[0];
       assert.equal(diagnostic.requiredReadback, 'schematic_connectivity_primitives', `${action} needs primitive readback`);
+      assert.equal(diagnostic.hostRestartRequired, !nativeCallSettled);
       assert.equal(diagnostic.context.pageUuid, 'connectivity-page');
       const recovery = await connectivityRecoveryServer.request('/bridge/admin/recover-client', {
         action: 'recover', confirm: true, requestId: diagnostic.requestId,
@@ -1475,9 +1479,14 @@ try {
       const readbackRequest = {
         action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
         clientId: `connectivity-${action}-fresh`,
+        ...(nativeCallSettled ? {} : { hostRestartConfirmed: true }),
         readbackPath: '/bridge/jlceda/schematic/read',
         readbackPayload: { includeConnectivityPrimitives: true },
       };
+      if (!nativeCallSettled)
+        await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', {
+          ...readbackRequest, hostRestartConfirmed: undefined,
+        }, 2000), /original EDA host was restarted/);
       await assert.rejects(connectivityRecoveryServer.request('/bridge/admin/recover-client', {
         ...readbackRequest, readbackPath: '/bridge/jlceda/context', readbackPayload: {},
       }, 2000), /requires schematic_read with includeConnectivityPrimitives=true/);
@@ -1528,6 +1537,7 @@ try {
     const timeoutDiagnostic = (await connectivityTimeoutServer.request('/bridge/admin/clients', {}, 2000)).clients
       .find(client => client.clientId === 'connectivity-timeout').quarantine.diagnostics[0];
     assert.equal(timeoutDiagnostic.requiredReadback, 'schematic_connectivity_primitives', 'execution timeout needs the same complete readback');
+    assert.equal(timeoutDiagnostic.hostRestartRequired, true);
   } finally {
     connectivityTimeoutClient?.socket.close();
     connectivityTimeoutServer.close();
@@ -1554,7 +1564,7 @@ try {
       projectWriteOld.socket.send(JSON.stringify({
         type: 'bridge/result', clientId: 'project-write-old',
         requestId: message.requestId, leaseTerm: message.leaseTerm,
-        result: { commitUnknown: true },
+        result: { commitUnknown: true, nativeCallSettled: true },
       }));
     });
     const projectWriteResult = await projectWriteServer.request('/bridge/jlceda/api/invoke', {
@@ -1620,6 +1630,7 @@ try {
     await assert.rejects(legacyWriteServer.request('/bridge/admin/recover-client', {
       action: 'readback', confirm: true, recoveryId: legacyRecovery.recoveryId,
       clientId: 'legacy-write-fresh', expectedDocumentUuid: 'legacy-document', expectedPageUuid: 'legacy-page',
+      hostRestartConfirmed: true,
       readbackPath: '/bridge/jlceda/schematic/read', readbackPayload: { includeConnectivityPrimitives: true },
     }, 2000), /no verified execution-time page identity/);
   } finally {
@@ -1649,7 +1660,7 @@ try {
       crossPageDeleteOld.socket.send(JSON.stringify({
         type: 'bridge/result', clientId: 'cross-page-delete-old',
         requestId: message.requestId, leaseTerm: message.leaseTerm,
-        result: { commitUnknown: true, uncertainIds: ['component-on-page-b'] },
+        result: { commitUnknown: true, nativeCallSettled: false, uncertainIds: ['component-on-page-b'] },
       }));
     });
     await crossPageDeleteServer.request('/bridge/jlceda/api/invoke', {
@@ -1658,6 +1669,7 @@ try {
     const crossPageDiagnostic = (await crossPageDeleteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
     assert.equal(crossPageDiagnostic.pageBound, false);
     assert.equal(crossPageDiagnostic.requiredReadback, 'schematic_project_review');
+    assert.equal(crossPageDiagnostic.hostRestartRequired, true);
     const crossPageRecovery = await crossPageDeleteServer.request('/bridge/admin/recover-client', {
       action: 'recover', confirm: true, requestId: crossPageDiagnostic.requestId,
     }, 2000);
@@ -1672,7 +1684,7 @@ try {
       : { currentDocumentInfo: { uuid: 'page-b-document', parentProjectUuid: 'cross-page-project' }, currentProjectInfo: { uuid: 'cross-page-project' }, currentSchematicPageInfo: { uuid: 'page-b' } });
     const crossPageReadback = {
       action: 'readback', confirm: true, recoveryId: crossPageRecovery.recoveryId,
-      clientId: 'cross-page-delete-fresh', readbackPath: '/bridge/jlceda/schematic/review',
+      clientId: 'cross-page-delete-fresh', hostRestartConfirmed: true, readbackPath: '/bridge/jlceda/schematic/review',
     };
     await assert.rejects(crossPageDeleteServer.request('/bridge/admin/recover-client', {
       ...crossPageReadback, readbackPath: '/bridge/jlceda/context',
@@ -1832,6 +1844,27 @@ try {
       placementTimeoutOld?.socket.close();
       placementTimeoutServer.close();
     }
+  }
+
+  const placementStartPort = await reservePort();
+  const placementStartServer = new EdaBridgeServer(placementStartPort);
+  let placementStartClient;
+  try {
+    await placementStartServer.start();
+    placementStartClient = await registerEda(`ws://127.0.0.1:${placementStartPort}/bridge/ws${tokenQuery}`,
+      'placement-start-unknown', { documentUuid: 'placement-document', projectUuid: 'placement-project',
+        pageKind: 'schematic', pageUuid: 'placement-page' });
+    attachTaskResponder(placementStartClient.socket, 'placement-start-unknown', () => ({
+      ok: false, commitUnknown: true, nativeCallSettled: false,
+    }));
+    const startResult = await placementStartServer.request('/bridge/jlceda/component/place/start', { component: {} }, 2000);
+    assert.equal(startResult.commitUnknown, true);
+    const startDiagnostic = (await placementStartServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(startDiagnostic.requiredReadback, 'schematic_component_ids');
+    assert.equal(startDiagnostic.hostRestartRequired, true);
+  } finally {
+    placementStartClient?.socket.close();
+    placementStartServer.close();
   }
 
   const pageMutationPort = await reservePort();

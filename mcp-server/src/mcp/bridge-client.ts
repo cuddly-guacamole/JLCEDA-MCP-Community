@@ -217,7 +217,8 @@ function isSchematicConnectivityMutation(path: string, payload: unknown): boolea
 }
 
 function isSchematicPlacementWrite(path: string): boolean {
-  return path === '/bridge/jlceda/component/place/check'
+  return path === '/bridge/jlceda/component/place/start'
+    || path === '/bridge/jlceda/component/place/check'
     || path === '/bridge/jlceda/component/place-auto';
 }
 
@@ -861,7 +862,8 @@ export class EdaBridgeServer {
           && diagnostic.path === '/bridge/jlceda/pcb/connectivity'
           && (message.result.nativeCallSettled === true
             || (message.result.ok === true && message.result.verified === true)))
-          || (diagnostic.requiredReadback === 'schematic_component_ids'
+          || ((diagnostic.requiredReadback === 'schematic_component_ids'
+            || diagnostic.requiredReadback === 'schematic_connectivity_primitives')
             && message.result.nativeCallSettled === true)))
         diagnostic.hostRestartRequired = false;
       const pendingImport = diagnostic?.clientId === peer.clientId
@@ -1258,6 +1260,8 @@ export class EdaBridgeServer {
       timedOutAtMs: Date.now(),
       mutating,
       pageBound: mutating && isPageBoundWrite(pending.path ?? '', pending.payload),
+      ...(mutating && pending.path === '/bridge/jlceda/api/invoke'
+        ? { hostRestartRequired: !nativeCallSettled } : {}),
       ...(targetProjectUuid ? { targetProjectUuid } : {}),
       ...(isPcbAutoLayoutRequest(pending.path ?? '', pending.payload) ? { requiredReadback: 'pcb_component_positions' as const } : {}),
       ...((isPcbAutoRoutingRequest(pending.path ?? '', pending.payload)
@@ -1270,7 +1274,7 @@ export class EdaBridgeServer {
         ? { requiredReadback: 'schematic_component_ids' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
       ...(mutating && isSchematicConnectivityMutation(pending.path ?? '', pending.payload)
-        ? { requiredReadback: 'schematic_connectivity_primitives' as const } : {}),
+        ? { requiredReadback: 'schematic_connectivity_primitives' as const, hostRestartRequired: !nativeCallSettled } : {}),
       ...(mutating && isTargetedSchematicPageMutation(pending.path ?? '', pending.payload)
         ? { requiredReadback: 'schematic_page_inventory' as const, ...schematicPageMutationTarget(pending.path ?? '', pending.payload) } : {}),
       uncertaintyReason,
@@ -1423,7 +1427,14 @@ export class EdaBridgeServer {
     }
     if (session.diagnostic.hostRestartRequired && payload.hostRestartConfirmed !== true) {
       const writeLabel = session.diagnostic.requiredReadback === 'schematic_component_ids'
-        ? 'Unverified schematic placement cleanup' : pcbRoutingWriteLabel;
+        ? 'Unverified schematic placement'
+        : session.diagnostic.requiredReadback === 'schematic_connectivity_primitives'
+          ? 'Unverified schematic connectivity write'
+          : session.diagnostic.requiredReadback === 'pcb_routing_state'
+            ? pcbRoutingWriteLabel
+            : session.diagnostic.requiredReadback === 'pcb_component_positions'
+              ? 'Unverified PCB autoLayout'
+              : 'Unverified EDA API write';
       throw new Error(`${writeLabel} requires confirmation that the original EDA host was restarted; writes remain blocked.`);
     }
     if (session.diagnostic.pendingNativeConfirmation

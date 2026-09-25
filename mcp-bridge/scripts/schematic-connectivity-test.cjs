@@ -33,6 +33,8 @@ function port(state) {
 			return this;
 		},
 		async done() {
+			if (state.doneError)
+				throw new Error(state.doneError);
 			state.x = state.pendingX;
 			state.y = state.pendingY;
 			return this;
@@ -398,6 +400,7 @@ async function main() {
 	assert.match(uncertainWire.error, /wire readback failed/);
 	assert.equal(uncertainWire.commitUnknown, true);
 	assert.equal(uncertainWire.readbackRequired, true);
+	assert.equal(uncertainWire.nativeCallSettled, true);
 	wireApi.getAll = async () => {
 		throw new Error('wire pre-write read failed');
 	};
@@ -422,6 +425,7 @@ async function main() {
 	assert.equal(uncertainMove.reason, 'post_write_readback_failed');
 	assert.match(uncertainMove.error, /port move readback failed/);
 	assert.equal(uncertainMove.commitUnknown, true);
+	assert.equal(uncertainMove.nativeCallSettled, true);
 	componentApi.getAll = async () => {
 		throw new Error('port move pre-write read failed');
 	};
@@ -443,6 +447,7 @@ async function main() {
 	assert.equal(uncertainPort.reason, 'post_write_readback_failed');
 	assert.match(uncertainPort.error, /port create readback failed/);
 	assert.equal(uncertainPort.commitUnknown, true);
+	assert.equal(uncertainPort.nativeCallSettled, true);
 	assert.equal(uncertainPort.primitiveId, ports[0].id);
 	componentApi.getAll = async () => {
 		throw new Error('port create pre-write read failed');
@@ -450,6 +455,46 @@ async function main() {
 	await assert.rejects(route({ action: 'netport_create', net: 'NET_A', x: 30, y: 30 }), /port create pre-write read failed/);
 	assert.equal(portCreates, portWritesBeforeReadbackFailure + 1);
 	componentApi.getAll = originalComponentGetAll;
+
+	// A native RPC timeout may still commit after its Promise rejects. Keep the
+	// host in recovery until a fresh EDA instance supplies complete readback.
+	wires.splice(0, wires.length);
+	ports.splice(0, ports.length);
+	wireApi.create = async () => {
+		throw new Error('RPC Call Timed Out');
+	};
+	const timedOutWire = await route({ action: 'wire_create', line: [0, 0, 10, 0] });
+	assert.equal(timedOutWire.commitUnknown, true);
+	assert.equal(timedOutWire.nativeCallSettled, false);
+	assert.equal(timedOutWire.reason, 'native_call_result_unknown');
+	wireApi.create = async () => {
+		throw new Error('invalid wire geometry');
+	};
+	await assert.rejects(route({ action: 'wire_create', line: [0, 0, 10, 0] }), /invalid wire geometry/);
+	wireApi.create = originalCreate;
+
+	const moving = { id: 'move-native-timeout', net: 'NET_A', x: 0, y: 0, doneError: 'RPC Call Timed Out' };
+	ports.push(moving);
+	const timedOutMove = await route({ action: 'netport_move', id: moving.id, x: 10, y: 0 });
+	assert.equal(timedOutMove.commitUnknown, true);
+	assert.equal(timedOutMove.nativeCallSettled, false);
+	assert.equal(moving.x, 0);
+	moving.doneError = 'invalid port move';
+	await assert.rejects(route({ action: 'netport_move', id: moving.id, x: 10, y: 0 }), /invalid port move/);
+	ports.splice(0, ports.length);
+
+	const originalCreateNetPort = componentApi.createNetPort;
+	componentApi.createNetPort = async () => {
+		throw new Error('RPC Call Timed Out');
+	};
+	const timedOutPort = await route({ action: 'netport_create', net: 'NET_A', x: 10, y: 10 });
+	assert.equal(timedOutPort.commitUnknown, true);
+	assert.equal(timedOutPort.nativeCallSettled, false);
+	componentApi.createNetPort = async () => {
+		throw new Error('invalid netport');
+	};
+	await assert.rejects(route({ action: 'netport_create', net: 'NET_A', x: 10, y: 10 }), /invalid netport/);
+	componentApi.createNetPort = originalCreateNetPort;
 }
 
 main().catch((error) => {

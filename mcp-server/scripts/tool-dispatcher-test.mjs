@@ -120,6 +120,21 @@ assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].restoredDes
 assert.equal(uncertainCleanupResult.structuredContent.results[0].annotationWarning, 'Designators need review');
 assert.match(uncertainCleanupResult.structuredContent.results[0].error, /cleanup readback failed/);
 
+const uncertainStartBridge = {
+  async request(path) {
+    if (path === '/bridge/jlceda/component/place')
+      return { placement: { components: [{ uuid: 'one' }], timeoutSeconds: 30 } };
+    if (path.endsWith('/start'))
+      return { ok: false, commitUnknown: true, readbackRequired: true, nativeCallSettled: false, error: 'RPC Call Timed Out' };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const uncertainStartResult = await new ToolDispatcher(uncertainStartBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(uncertainStartResult.structuredContent.ok, false);
+assert.equal(uncertainStartResult.structuredContent.results[0].commitUnknown, true);
+assert.equal(uncertainStartResult.structuredContent.results[0].readbackRequired, true);
+assert.equal(uncertainStartResult.structuredContent.results[0].nativeCallSettled, false);
+
 const batchCalls = [];
 let startedCount = 0;
 let firstCheckCount = 0;

@@ -23,7 +23,7 @@
 		"test:pcb-connectivity": "node scripts/pcb-connectivity-test.cjs",
 		"test:2.1": "node scripts/2.1-tools-test.cjs",
 		"test:schematic-read": "node scripts/schematic-read-test.cjs",
-		"test:schematic-components": "node scripts/schematic-component-issue-test.cjs",
+		"test:schematic-components": "node scripts/schematic-component-issue-test.cjs && node scripts/component-place-start-recovery-test.cjs",
 		"test:pcb-import": "node scripts/pcb-import-confirm-test.cjs",
 		"test:queue-barrier": "node scripts/bridge-commit-unknown-queue-test.cjs"
 	},

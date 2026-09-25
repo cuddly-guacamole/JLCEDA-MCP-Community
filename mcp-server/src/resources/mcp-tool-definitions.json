@@ -45,7 +45,7 @@
         "expectedProjectUuid": { "type": "string", "minLength": 1 },
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "原始诊断未记录图页 UUID 时可补充；已记录时以诊断中的 pageUuid 为准。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
-        "hostRestartConfirmed": { "const": true, "description": "PCB 导入、autoRouting 超时或 PCB 直线/过孔原生创建未确认，且诊断要求重启时，确认原 EDA 宿主已重启。" },
+        "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
         "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID、位号和 BOM 扩展属性；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
       },

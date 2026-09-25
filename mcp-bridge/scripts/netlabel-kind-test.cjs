@@ -521,11 +521,21 @@ async function main() {
 	assert.equal(failed.failureCount, 1);
 
 	const autoPlacementCalls = [];
+	const placedPrimitives = [];
+	globalThis.eda.dmt_Schematic = {
+		async getCurrentSchematicPageInfo() {
+			return { uuid: 'auto-placement-test-page' };
+		},
+	};
 	globalThis.eda.sch_PrimitiveComponent.create = async (...args) => {
 		autoPlacementCalls.push(args);
-		return { primitiveId: `auto-${autoPlacementCalls.length}` };
+		const primitiveId = `auto-${autoPlacementCalls.length}`;
+		const designator = `U${autoPlacementCalls.length}`;
+		const primitive = { getState_PrimitiveId: () => primitiveId, getState_Designator: () => designator };
+		placedPrimitives.push(primitive);
+		return primitive;
 	};
-	globalThis.eda.sch_PrimitiveComponent.getAll = async () => [];
+	globalThis.eda.sch_PrimitiveComponent.getAll = async () => placedPrimitives;
 	const partialCoordinates = await handleComponentPlaceAutoTask({
 		components: [
 			{ uuid: 'x-only', libraryUuid: 'test-library', x: 111 },
@@ -545,6 +555,8 @@ async function main() {
 	assert.equal(autoPlacement.ok, false);
 	assert.equal(autoPlacement.placedCount, 0);
 	assert.equal(autoPlacement.failedCount, 1);
+	assert.equal(autoPlacement.commitUnknown, true);
+	assert.equal(autoPlacement.nativeCallSettled, true);
 }
 
 main().then(() => {

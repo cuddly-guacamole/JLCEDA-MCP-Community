@@ -264,6 +264,11 @@ export class ToolDispatcher {
           timeoutSeconds,
         });
         if (!isPlainObjectRecord(startResult) || startResult.ok !== true) {
+          if (isPlainObjectRecord(startResult) && startResult.commitUnknown === true) {
+            commitUnknown = true;
+            readbackRequired = startResult.readbackRequired === true;
+            nativeCallSettled = typeof startResult.nativeCallSettled === 'boolean' ? startResult.nativeCallSettled : undefined;
+          }
           throw new Error(String(isPlainObjectRecord(startResult) ? startResult.error ?? 'placement start failed' : 'placement start returned invalid data'));
         }
 

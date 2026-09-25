@@ -4,10 +4,10 @@
 
 ## 1. 安装 Server
 
-需要 Node.js 20 或更高版本。从对应的 GitHub Release 下载 jlceda-mcp-server-2.3.1.tgz，然后执行：
+需要 Node.js 20 或更高版本。从对应的 GitHub Release 下载 jlceda-mcp-server-2.3.2.tgz，然后执行：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.1.tgz
+npm install --global .\jlceda-mcp-server-2.3.2.tgz
 Get-Command jlceda-mcp
 ```
 

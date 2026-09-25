@@ -79,7 +79,13 @@ async function main() {
 	}
 	assert.equal(unsafeModifyCalls, 0, 'unreadable BOM metadata must block native modify');
 	globalThis.eda.sch_PrimitiveComponent = {
-		async get() { return { getState_OtherProperty() { return undefined; } }; },
+		async get() {
+			return {
+				getState_OtherProperty() {
+					return undefined;
+				},
+			};
+		},
 		async modify(_id, patch) {
 			assert.deepEqual(patch.otherProperty, unsafeModifyCalls === 0 ? {} : { Value: '22k' });
 			unsafeModifyCalls += 1;
@@ -91,7 +97,9 @@ async function main() {
 		args: ['r1', { designator: 'R2' }],
 	});
 	assert.deepEqual(noCustomProperties.result.otherProperty, {});
-	globalThis.eda.sch_PrimitiveComponent.get = async () => { throw new Error('explicit property must skip original-state read'); };
+	globalThis.eda.sch_PrimitiveComponent.get = async () => {
+		throw new Error('explicit property must skip original-state read');
+	};
 	const explicitProperty = await handleApiInvokeTask({
 		apiFullName: 'eda.sch_PrimitiveComponent.modify',
 		args: ['r1', { otherProperty: { Value: '22k' } }],
@@ -914,7 +922,10 @@ async function main() {
 	let undefinedCreateCalls = 0;
 	globalThis.eda.sch_PrimitiveComponent = {
 		async getAll() { return [primitive('existing-u', 'U4')]; },
-		async create() { undefinedCreateCalls += 1; return undefined; },
+		async create() {
+			undefinedCreateCalls += 1;
+			return undefined;
+		},
 	};
 	const undefinedCreate = await handleComponentPlaceAutoTask({ components: [
 		{ uuid: 'first', libraryUuid: 'library' },

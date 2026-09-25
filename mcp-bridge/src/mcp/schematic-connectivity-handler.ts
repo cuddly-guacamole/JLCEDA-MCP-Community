@@ -17,6 +17,23 @@ function unknownCommitAfterReadback(action: Exclude<ConnectivityAction, 'wire_pr
 		error: error instanceof Error ? error.message : String(error),
 		commitUnknown: true,
 		readbackRequired: true,
+		nativeCallSettled: true,
+	};
+}
+
+function unknownNativeWrite(action: Exclude<ConnectivityAction, 'wire_preview'>, error: unknown, context: Record<string, unknown>): Record<string, unknown> {
+	const message = error instanceof Error ? error.message : String(error);
+	if (!/timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i.test(message))
+		throw error;
+	return {
+		ok: false,
+		action,
+		...context,
+		reason: 'native_call_result_unknown',
+		error: message,
+		commitUnknown: true,
+		readbackRequired: true,
+		nativeCallSettled: false,
 	};
 }
 
@@ -321,7 +338,13 @@ async function handleWireAction(action: 'wire_preview' | 'wire_create', payload:
 		return { ok: canCreate, action, canCreate, touches, portTouches, labelTouches, conflictingNetWireIds: conflictingNets.map(wire => wire.id), conflictingNetPortIds: conflictingPorts.map(component => component.id), conflictingNetLabelIds: conflictingLabels.map(label => label.id), mixedNamedNets: touchedNetNames.size > 1, unapprovedWireIds: unapproved.map(wire => wire.id) };
 	if (typeof api.create !== 'function')
 		throw new TypeError('EDA sch_PrimitiveWire.create API is unavailable.');
-	const result = await (api.create as (line: number[], net?: string) => Promise<unknown>).call(api, normalizedLine, net);
+	let result: unknown;
+	try {
+		result = await (api.create as (line: number[], net?: string) => Promise<unknown>).call(api, normalizedLine, net);
+	}
+	catch (error: unknown) {
+		return unknownNativeWrite('wire_create', error, { net: net ?? null });
+	}
 	try {
 		const after = await readWires(api);
 		const afterIds = new Set(after.map(wire => wire.id));
@@ -383,7 +406,12 @@ async function handleNetPortMove(payload: Record<string, unknown>, eda: Record<s
 		throw new TypeError('EDA NetPort state setters or done API are unavailable.');
 	(primitive.setState_X as (value: number) => unknown).call(primitive, x);
 	(primitive.setState_Y as (value: number) => unknown).call(primitive, y);
-	await Promise.resolve((primitive.done as () => unknown).call(primitive));
+	try {
+		await Promise.resolve((primitive.done as () => unknown).call(primitive));
+	}
+	catch (error: unknown) {
+		return unknownNativeWrite('netport_move', error, { id, net: current.net, from: { x: current.x, y: current.y }, to: target });
+	}
 	try {
 		const observed = (await readComponents(api)).find(component => component.id === id);
 		const verified = Boolean(observed && samePoint(observed, target) && observed.net === current.net && observed.type === 'netport');
@@ -451,7 +479,13 @@ async function handleNetPortCreate(payload: Record<string, unknown>, eda: Record
 	// The documented component API has no NetPort direction getter; position and net cannot prove a match.
 	if (existingPort)
 		return { ok: false, action: 'netport_create', reason: 'existing_port_direction_unverified', net, requestedDirection: direction, target: { x, y }, conflictingPrimitiveIds: [existingPort.id] };
-	const created = await (api.createNetPort as (direction: 'IN' | 'OUT' | 'BI', net: string, x: number, y: number) => Promise<unknown>).call(api, direction, net, x, y);
+	let created: unknown;
+	try {
+		created = await (api.createNetPort as (direction: 'IN' | 'OUT' | 'BI', net: string, x: number, y: number) => Promise<unknown>).call(api, direction, net, x, y);
+	}
+	catch (error: unknown) {
+		return unknownNativeWrite('netport_create', error, { direction, net, position: target });
+	}
 	const returnedId = String(getSyncState(created, 'getState_PrimitiveId', ''));
 	try {
 		const beforeIds = new Set(before.map(component => component.id));

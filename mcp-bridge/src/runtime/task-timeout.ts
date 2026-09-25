@@ -52,6 +52,8 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 	}
 	const response = result as Record<string, unknown>;
 	if (path === '/bridge/jlceda/pcb/connectivity'
+		|| path === '/bridge/jlceda/schematic/connectivity'
+		|| path === '/bridge/jlceda/component/place/start'
 		|| path === '/bridge/jlceda/component/place/check'
 		|| path === '/bridge/jlceda/component/place-auto') {
 		return response.ok === false
@@ -62,6 +64,8 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 		|| !payload || typeof payload !== 'object' || Array.isArray(payload)) {
 		return false;
 	}
+	if (response.commitUnknown === true && response.nativeCallSettled === false)
+		return true;
 	const apiFullName = (payload as Record<string, unknown>).apiFullName;
 	return typeof apiFullName === 'string'
 		&& ['eda.pcb_document.autolayout', 'eda.pcb_document.autorouting'].includes(apiFullName.trim().toLowerCase())

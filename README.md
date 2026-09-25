@@ -4,7 +4,7 @@
 
 多页面连接时，首个页面未就绪会自动改选已就绪页面；显式选择或正在执行任务时不会自动切换。当前页写入使用执行时的实际图页身份进行恢复核对，提交状态不明时本机也立即阻止后续写入；跨图页的页面管理操作不能用当前图页回读解除隔离。完整安全恢复要求 Bridge 和 Server 均升级到 2.3.2。调用 `eda.pcb_PrimitiveComponent.getAll` 时可指定 `includeCompletePositions:true` 额外获取不截断的 `componentPositions`，通用 `result` 保持原有字段。
 
-交互放置若清理完全重叠的重复器件后无法核对结果，恢复时必须读取原图页不截断的器件 ID 列表；`api_invoke` 的当前页 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 可传 `args:[null,false]` 与 `includeCompleteSchematicComponentIds:true` 获取该列表。
+交互放置启动、重复器件清理或坐标放置若无法核对结果，恢复时必须读取原图页不截断的器件 ID 列表；`api_invoke` 的当前页 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 可传 `args:[null,false]` 与 `includeCompleteSchematicComponentIds:true` 获取该列表。原生调用尚未确认结束时，先重启原 EDA 宿主。
 
 PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔离写入。受控恢复需先重启原 EDA 宿主，再对任务执行时的同一 PCB 完整读回直线、圆弧、折线、过孔的网络与几何及全部网络长度；`api_invoke` 的这些图元 `getAll` 可用 `includeCompleteRouting:true` 获取不截断的快照。即使原生 API 返回 `success:true`，仍需检查失败网络与实际布线结果。
 
@@ -43,7 +43,7 @@ PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔�
 
 当前版本会拒绝空的自动布局/自动布线 UUID；EDA 修改超时后允许当前客户端执行只读查询，但读回结果在原调用仍挂起时只能视为暂时快照，写操作继续隔离。EDA 3.x 尚不支持普通网络标签的 `createNetLabel` API；电源/地标识仍可用。
 
-PCB `import_changes` 返回 `pending_confirmation` 后，全局写入暂停，只读工具仍可用。从 `bridge_clients` 取得待确认 `requestId`；用户在 EDA 原生对话框点击“应用修改”或取消并确认对话框关闭后，调用 `bridge_recover_client`，传入 `action:"resolve_import"`、`confirm:true`、`requestId` 和 `resolution:"applied"` 或 `"cancelled"`。Server 会核对原 PCB 身份并完整读回器件和网络，Bridge 收到解除确认后才恢复写入。EDA API 无法报告对话框关闭，因此这一步依赖用户对原生操作的确认；若无法确认，应以 `action:"recover"` 建立会话，重启原 EDA 宿主，再用新 Bridge 客户端和 `hostRestartConfirmed:true` 执行完整 PCB 回读。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求先读回全部器件坐标再重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
+PCB `import_changes` 返回 `pending_confirmation` 后，全局写入暂停，只读工具仍可用。从 `bridge_clients` 取得待确认 `requestId`；用户在 EDA 原生对话框点击“应用修改”或取消并确认对话框关闭后，调用 `bridge_recover_client`，传入 `action:"resolve_import"`、`confirm:true`、`requestId` 和 `resolution:"applied"` 或 `"cancelled"`。Server 会核对原 PCB 身份并完整读回器件和网络，Bridge 收到解除确认后才恢复写入。EDA API 无法报告对话框关闭，因此这一步依赖用户对原生操作的确认；若无法确认，应以 `action:"recover"` 建立会话，重启原 EDA 宿主，再用新 Bridge 客户端和 `hostRestartConfirmed:true` 执行完整 PCB 回读。EDA 3.2.181 的 BETA `pcb_Document.autoLayout` 可能超时后仍提交位置；Bridge 会标记结果未定，要求重启原宿主并读回全部器件坐标后再决定是否重试。`pcb_Document.autoRouting` 若立即返回失败，需以导线、过孔和 DRC 读回判断实际结果，不能把 API 调用完成当作已布线。
 
 交互放置等待用户退出当前放置模式，只把退出后仍存在的图元作为已放置结果；重复图元、连接失联或未知提交状态会停止后续放置。坐标放置发现已有器件或本批次已放置器件位号变化、或无法核对时会停止，并返回当前位号和已放置明细。`api_invoke` 的器件属性修改保留省略的 BOM 扩展属性，批量删除逐项执行并核对结果。
 
