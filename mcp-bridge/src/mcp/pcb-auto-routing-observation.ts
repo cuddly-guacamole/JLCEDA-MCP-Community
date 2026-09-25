@@ -11,6 +11,8 @@ export interface AutoRoutingSnapshot {
 	nets: NetSnapshot[];
 }
 
+export class AutoRoutingPageChangedError extends Error {}
+
 const ROUTING_TYPES = new Set(['Track', 'Line', 'Arc', 'Polyline', 'Via']);
 const REPORTED_ID_LIMIT = 20;
 
@@ -47,7 +49,7 @@ export async function readAutoRoutingSnapshot(nets: string[], expectedPageUuid?:
 		throw new TypeError('EDA runtime is unavailable.');
 	const pageUuid = await currentPageUuid(runtime);
 	if (expectedPageUuid && expectedPageUuid !== pageUuid)
-		throw new Error('The active PCB changed before autoRouting readback.');
+		throw new AutoRoutingPageChangedError('The active PCB changed before autoRouting readback.');
 	const netApi = api(runtime, 'pcb_Net', ['getAllPrimitivesByNet', 'getNetLength']);
 	const snapshots: NetSnapshot[] = [];
 	for (const net of nets) {
@@ -62,7 +64,7 @@ export async function readAutoRoutingSnapshot(nets: string[], expectedPageUuid?:
 		snapshots.push({ net, length, routingPrimitiveIds: ids });
 	}
 	if (await currentPageUuid(runtime) !== pageUuid)
-		throw new Error('The active PCB changed during autoRouting readback.');
+		throw new AutoRoutingPageChangedError('The active PCB changed during autoRouting readback.');
 	return { pageUuid, nets: snapshots };
 }
 

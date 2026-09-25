@@ -12,7 +12,7 @@
 import type { AutoRoutingSnapshot } from './pcb-auto-routing-observation';
 import { isReadOnlyBridgeRequest } from '../bridge/bridge-contract';
 import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils';
-import { compareAutoRoutingSnapshots, readAutoRoutingSnapshot, unavailableAutoRoutingObservation } from './pcb-auto-routing-observation';
+import { AutoRoutingPageChangedError, compareAutoRoutingSnapshots, readAutoRoutingSnapshot, unavailableAutoRoutingObservation } from './pcb-auto-routing-observation';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
@@ -374,15 +374,22 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		&& new Set(requestedRoutingNets).size === requestedRoutingNets.length
 		? requestedRoutingNets
 		: undefined;
+	const routingPcbUuid = normalizedPath === PCB_AUTO_ROUTING && observedRoutingNets ? await currentPcbUuid() : undefined;
+	if (normalizedPath === PCB_AUTO_ROUTING && observedRoutingNets && !routingPcbUuid)
+		throw new Error('无法确认当前 PCB 身份，未启动自动布线。');
 	let routingBefore: AutoRoutingSnapshot | undefined;
 	let routingBeforeError: unknown;
 	if (normalizedPath === PCB_AUTO_ROUTING && observedRoutingNets) {
 		try {
-			routingBefore = await readAutoRoutingSnapshot(observedRoutingNets);
+			routingBefore = await readAutoRoutingSnapshot(observedRoutingNets, routingPcbUuid);
 		}
 		catch (error: unknown) {
+			if (error instanceof AutoRoutingPageChangedError)
+				throw error;
 			routingBeforeError = error;
 		}
+		if (await currentPcbUuid() !== routingPcbUuid)
+			throw new Error('The active PCB changed before autoRouting invocation; the operation was not started.');
 	}
 	let invokeResult: unknown;
 	try {
