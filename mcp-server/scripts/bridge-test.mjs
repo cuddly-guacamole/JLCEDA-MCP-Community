@@ -2367,6 +2367,75 @@ try {
     regionServer.close();
   }
 
+  const textPort = await reservePort();
+  const textServer = new EdaBridgeServer(textPort);
+  let oldTextClient;
+  let freshTextClient;
+  try {
+    await textServer.start();
+    const textUrl = `ws://127.0.0.1:${textPort}/bridge/ws${tokenQuery}`;
+    const pageContext = { documentUuid: 'text-document', projectUuid: 'text-project',
+      pageKind: 'pcb', pageUuid: 'text-page' };
+    oldTextClient = await registerEda(textUrl, 'text-old', pageContext);
+    oldTextClient.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      oldTextClient.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'text-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(), context: pageContext }));
+      oldTextClient.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'text-old',
+        requestId: message.requestId, leaseTerm: message.leaseTerm,
+        result: { ok: false, action: 'create', commitUnknown: true, nativeCallSettled: false } }));
+    });
+    assert.equal((await textServer.request('/bridge/jlceda/pcb/text-manage',
+      { action: 'create', kind: 'string', layer: 3, x: 1, y: 2, text: 'Rev A' }, 2000)).commitUnknown, true);
+    const diagnostic = (await textServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(diagnostic.requiredReadback, 'pcb_text_state');
+    assert.equal(diagnostic.hostRestartRequired, true);
+    const recovery = await textServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: diagnostic.requestId,
+    }, 2000);
+    oldTextClient.socket.close();
+    await waitUntil(async () => (await textServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'text-old')?.ready === false);
+    freshTextClient = await registerEda(textUrl, 'text-fresh', pageContext);
+    const common = { layer: 3, x: 1, y: 2, fontFamily: 'default', fontSize: 45, lineWidth: 6,
+      alignMode: 3, rotation: 0, reverse: false, expansion: 0, mirror: false, primitiveLock: false };
+    const string = { primitiveId: 's1', ...common, text: 'Rev A' };
+    const attribute = { primitiveId: 'a1', ...common, parentPrimitiveId: 'c1', key: 'Designator',
+      value: 'U1', keyVisible: false, valueVisible: true };
+    const snapshot = { ok: true, action: 'read', scope: 'current_pcb_page', complete: true,
+      pageUuid: 'text-page', stringCount: 1, strings: [string], attributeCount: 1, attributes: [attribute] };
+    let readback = snapshot;
+    attachTaskResponder(freshTextClient.socket, 'text-fresh', message => {
+      if (message.path === '/bridge/jlceda/context')
+        return { currentDocumentInfo: { uuid: 'text-document', parentProjectUuid: 'text-project' },
+          currentProjectInfo: { uuid: 'text-project' }, currentPcbInfo: { uuid: 'text-page' } };
+      assert.equal(message.path, '/bridge/jlceda/pcb/text-manage');
+      assert.deepEqual(message.payload, { action: 'read' });
+      return readback;
+    });
+    const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+      clientId: 'text-fresh', hostRestartConfirmed: true,
+      readbackPath: '/bridge/jlceda/pcb/text-manage', readbackPayload: { action: 'read' } };
+    await assert.rejects(textServer.request('/bridge/admin/recover-client', {
+      ...recoveryReadback, readbackPayload: { action: 'read', kind: 'string' },
+    }, 2000), /without filters/);
+    readback = { ...snapshot, stringCount: 2 };
+    await assert.rejects(textServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /text state readback was incomplete/);
+    readback = { ...snapshot, attributes: [{ ...attribute, parentPrimitiveId: '' }] };
+    await assert.rejects(textServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /attribute readback was incomplete/);
+    readback = snapshot;
+    const verified = await textServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+    assert.equal(verified.readbackVerified, true);
+    assert.deepEqual(verified.readback.strings, [string]);
+    assert.deepEqual(verified.readback.attributes, [attribute]);
+    assert.equal(verified.writesRemainBlocked, false);
+  } finally {
+    oldTextClient?.socket.close();
+    freshTextClient?.socket.close();
+    textServer.close();
+  }
+
   const pageMutationPort = await reservePort();
   const pageMutationServer = new EdaBridgeServer(pageMutationPort);
   assert.equal(pageMutationServer.validateCompleteSchematicPages({

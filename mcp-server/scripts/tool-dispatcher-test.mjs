@@ -161,6 +161,13 @@ assert.equal(bridgePathForTool('pcb_region_manage'), '/bridge/jlceda/pcb/region-
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/region-manage', { action: 'read' }), true);
 for (const action of ['create', 'modify', 'delete'])
   assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/region-manage', { action }), false);
+await dispatcher.dispatch({ name: 'pcb_text_manage', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/text-manage');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_text_manage', { action: 'read' }) + 2000);
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/text-manage', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/text-manage', { action }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -618,6 +625,30 @@ for (const input of [
   { action: 'delete' },
 ]) {
   assert.equal(regionSchema.safeParse(input).success, false, `pcb_region_manage should reject ${JSON.stringify(input)}`);
+}
+const textDefinition = definitions.find(definition => definition.name === 'pcb_text_manage');
+assert.ok(textDefinition);
+const textSchema = z.fromJSONSchema(textDefinition.inputSchema);
+for (const input of [
+  { action: 'read' },
+  { action: 'read', kind: 'string' },
+  { action: 'read', kind: 'attribute', parentPrimitiveId: 'comp-1' },
+  { action: 'read', kind: 'attribute', primitiveId: 'attr-1' },
+  { action: 'create', kind: 'string', layer: 3, x: 10, y: 20, text: 'Rev B' },
+  { action: 'modify', kind: 'string', primitiveId: 's-1', property: { text: 'Rev C' } },
+  { action: 'modify', kind: 'attribute', primitiveId: 'a-1', parentPrimitiveId: 'comp-1', property: { valueVisible: false } },
+  { action: 'delete', kind: 'string', primitiveId: 's-1' },
+]) {
+  assert.equal(textSchema.safeParse(input).success, true, `pcb_text_manage should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'create', kind: 'attribute', layer: 3, x: 10, y: 20, text: 'bad' },
+  { action: 'delete', kind: 'attribute', primitiveId: 'a-1' },
+  { action: 'modify', kind: 'attribute', primitiveId: 'a-1', property: { value: 'U2' } },
+  { action: 'modify', kind: 'string', primitiveId: 's-1', property: { net: 'GND' } },
+  { action: 'create', kind: 'string', layer: 7, x: 10, y: 20, text: 'bad' },
+]) {
+  assert.equal(textSchema.safeParse(input).success, false, `pcb_text_manage should reject ${JSON.stringify(input)}`);
 }
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);
