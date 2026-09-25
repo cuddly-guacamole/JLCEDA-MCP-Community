@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
-import { BRIDGE_PROTOCOL_VERSION, isReadOnlyBridgeRequest, operationForPath, validateBridgeClientMessage } from './bridge-contract.js';
+import { BRIDGE_CONTRACT, BRIDGE_PROTOCOL_VERSION, isReadOnlyBridgeRequest, operationForPath, validateBridgeClientMessage } from './bridge-contract.js';
 import { BRIDGE_MAX_PAYLOAD_BYTES, decodeBridgeMessage, sendBridgeJson, tokensMatch } from './bridge-wire.js';
 
 export function formatInternalClientEndpoint(port: number): string {
@@ -1691,14 +1691,19 @@ export class EdaBridgeServer {
     }
     const requiresPcbPositions = session.diagnostic.requiredReadback === 'pcb_component_positions'
       || session.diagnostic.pendingNativeConfirmation;
-    const effectiveReadbackPayload = requiresPcbPositions
+    let effectiveReadbackPayload = requiresPcbPositions
       ? { ...readbackPayload, includeCompletePositions: true }
       : session.diagnostic.requiredReadback === 'pcb_routing_state'
         ? { ...readbackPayload, includeCompleteRouting: true }
         : session.diagnostic.requiredReadback === 'schematic_component_ids'
           ? { ...readbackPayload, includeCompleteSchematicComponentIds: true }
         : readbackPayload;
-    const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, Math.min(timeoutMs, RECOVERY_READBACK_TIMEOUT_MS), undefined, true, targetClientId);
+    const readbackPolicy = BRIDGE_CONTRACT.timeoutPolicies[operationForPath(readbackPath)?.timeoutPolicy ?? 'default'];
+    // The main readback may scan a whole page. Leave one second for the Bridge result to reach the server.
+    const bridgeReadbackBudget = Math.min(readbackPolicy.maxMs, timeoutMs - 1_000);
+    if (readbackPolicy.allowOverride && bridgeReadbackBudget > readbackPolicy.defaultMs)
+      effectiveReadbackPayload = { ...effectiveReadbackPayload, timeoutMs: bridgeReadbackBudget };
+    const readback = await this.dispatchToEda(readbackPath, effectiveReadbackPayload, timeoutMs, undefined, true, targetClientId);
     if (isRecord(readback) && readback.ok === false) {
       const expectedNegative = readbackPath === '/bridge/jlceda/pcb/drc-check'
         || readbackPath === '/bridge/jlceda/schematic/drc-check';

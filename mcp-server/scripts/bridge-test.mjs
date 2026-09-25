@@ -2105,12 +2105,13 @@ try {
       const snapshot = { ok: true, action: 'read', scope: 'current_schematic_page', complete: true,
         pageUuid: 'component-page', componentCount: 1, components: [component] };
       let readback = snapshot;
+      let expectedLongReadback = false;
       attachTaskResponder(freshClient.socket, `component-edit-${editAction}-fresh`, message => {
         if (message.path === '/bridge/jlceda/context')
           return { currentDocumentInfo: { uuid: 'component-document', parentProjectUuid: 'component-project' },
             currentProjectInfo: { uuid: 'component-project' }, currentSchematicPageInfo: { uuid: 'component-page' } };
         assert.equal(message.path, '/bridge/jlceda/schematic/component-edit');
-        assert.deepEqual(message.payload, { action: 'read' });
+        assert.deepEqual(message.payload, expectedLongReadback ? { action: 'read', timeoutMs: 39000 } : { action: 'read' });
         return readback;
       });
       const recoveryReadback = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
@@ -2129,7 +2130,8 @@ try {
       readback = { ...snapshot, components: [{ ...component, x: null }] };
       await assert.rejects(editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000), /component state readback was incomplete/);
       readback = snapshot;
-      const verified = await editServer.request('/bridge/admin/recover-client', recoveryReadback, 2000);
+      expectedLongReadback = true;
+      const verified = await editServer.request('/bridge/admin/recover-client', recoveryReadback, 40000);
       assert.equal(verified.readbackVerified, true);
       assert.deepEqual(verified.readback.components, [component]);
       assert.equal(verified.writesRemainBlocked, false);

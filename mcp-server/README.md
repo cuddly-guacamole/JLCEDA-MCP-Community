@@ -2,6 +2,8 @@
 
 ## 2.3.2
 
+`bridge_recover_client` 的完整回读不再被固定 15 秒截断；可设置 `timeoutMs`，大原理图最多 120 秒。`schematic_read` 同样支持最长 120 秒的读取预算。
+
 本版本使用共享 Bridge 路由清单，增加内部请求超时、重复 `requestId` 检查、消息大小限制和有限挂起请求队列。`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
 
 工具分发异常和 Bridge 上报的结构化诊断日志会输出到 Server 的 stderr。分发异常记录工具、Bridge 路由、可用的错误码与异常堆栈，并附带版本及构建日期水印；构建日期在打包时固定。

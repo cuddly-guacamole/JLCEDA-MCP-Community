@@ -27,11 +27,16 @@ interface ComponentState {
 interface PinNetwork {
 	pinNumber: string;
 	connectedNetworkName: string;
+	unnamedWireGroups: string[];
 }
+
+interface Point { x: number; y: number }
+interface Segment { start: Point; end: Point }
 
 interface ComponentApi extends Record<string, unknown> {
 	getAll: (type: string, allPages: boolean) => Promise<unknown>;
 	getAllPrimitiveId?: (type: string, allPages: boolean) => Promise<unknown>;
+	getAllPinsByPrimitiveId?: (id: string) => Promise<unknown>;
 	modify?: (id: string, property: Record<string, unknown>) => Promise<unknown>;
 	delete?: (component: unknown) => Promise<unknown>;
 }
@@ -42,6 +47,7 @@ const BOOLEAN_FIELDS = ['mirror', 'addIntoBom', 'addIntoPcb'] as const;
 const TEXT_FIELDS = ['designator', 'name', 'uniqueId', 'manufacturer', 'manufacturerId', 'supplier', 'supplierId'] as const;
 const EDITABLE_FIELDS = new Set<string>([...NUMERIC_FIELDS, ...BOOLEAN_FIELDS, ...TEXT_FIELDS, 'otherProperty']);
 const NATIVE_RESULT_UNKNOWN = /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i;
+const COORDINATE_EPSILON = 1e-6;
 
 function requiredId(value: unknown): string {
 	if (typeof value !== 'string' || !value.trim())
@@ -212,7 +218,96 @@ function requestedValuesMatch(after: ComponentState, requested: Record<string, u
 	return Object.entries(fullOtherProperty).every(([key, value]) => Object.hasOwn(after.otherProperty, key) && after.otherProperty[key] === value);
 }
 
-async function readPinNetworks(primitiveId: string, pageUuid: string): Promise<PinNetwork[]> {
+function wireSegments(line: unknown): Segment[] {
+	if (!Array.isArray(line))
+		throw new TypeError('EDA wire geometry is unavailable.');
+	let paths: unknown[][];
+	if (Array.isArray(line[0])) {
+		paths = (line as unknown[][]).every(part => Array.isArray(part) && part.length === 2)
+			? [line.flat()]
+			: line as unknown[][];
+	}
+	else {
+		paths = [line];
+	}
+	const segments: Segment[] = [];
+	for (const path of paths) {
+		if (!Array.isArray(path) || path.length < 4 || path.length % 2 !== 0
+			|| path.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
+			throw new TypeError('EDA wire geometry is incomplete.');
+		}
+		for (let index = 0; index + 3 < path.length; index += 2) {
+			const start = { x: path[index] as number, y: path[index + 1] as number };
+			const end = { x: path[index + 2] as number, y: path[index + 3] as number };
+			if (start.x !== end.x || start.y !== end.y)
+				segments.push({ start, end });
+		}
+	}
+	return segments;
+}
+
+function pointOnSegment(point: Point, segment: Segment): boolean {
+	const { start, end } = segment;
+	const cross = (end.x - start.x) * (point.y - start.y) - (end.y - start.y) * (point.x - start.x);
+	return Math.abs(cross) <= COORDINATE_EPSILON * Math.hypot(end.x - start.x, end.y - start.y)
+		&& point.x >= Math.min(start.x, end.x) - COORDINATE_EPSILON
+		&& point.x <= Math.max(start.x, end.x) + COORDINATE_EPSILON
+		&& point.y >= Math.min(start.y, end.y) - COORDINATE_EPSILON
+		&& point.y <= Math.max(start.y, end.y) + COORDINATE_EPSILON;
+}
+
+function segmentsConnect(first: Segment, second: Segment): boolean {
+	return pointOnSegment(first.start, second) || pointOnSegment(first.end, second)
+		|| pointOnSegment(second.start, first) || pointOnSegment(second.end, first);
+}
+
+async function readUnnamedWireGroups(runtime: Record<string, unknown>, primitiveId: string, pinNumbers: string[]): Promise<string[][]> {
+	const components = componentApi(runtime);
+	const wireApi = runtime.sch_PrimitiveWire;
+	if (typeof components.getAllPinsByPrimitiveId !== 'function' || !isPlainObjectRecord(wireApi) || typeof wireApi.getAll !== 'function')
+		throw new TypeError('EDA pin or wire readback API is unavailable.');
+	const [rawPins, rawWires] = await Promise.all([
+		components.getAllPinsByPrimitiveId(primitiveId),
+		wireApi.getAll(),
+	]);
+	if (!Array.isArray(rawPins) || !Array.isArray(rawWires))
+		throw new TypeError('EDA pin or wire readback did not return an array.');
+	if (rawPins.length !== pinNumbers.length || rawPins.some((pin, index) => readState(pin, 'getState_PinNumber') !== pinNumbers[index]))
+		throw new Error('EDA pin list changed during the connectivity readback.');
+	const pinPoints: Point[] = rawPins.map(pin => ({
+		x: requiredFinite(readState(pin, 'getState_X'), 'pin x'),
+		y: requiredFinite(readState(pin, 'getState_Y'), 'pin y'),
+	}));
+	const wires = rawWires.filter(wire => !readState(wire, 'getState_Net')).map(wire => ({
+		id: requiredId(readState(wire, 'getState_PrimitiveId')),
+		segments: wireSegments(readState(wire, 'getState_Line')),
+	}));
+	const groupByWire = new Map<number, string>();
+	const connectedGroupId = (first: number): string => {
+		const cached = groupByWire.get(first);
+		if (cached)
+			return cached;
+		const visited = new Set<number>([first]);
+		const queue = [first];
+		for (let head = 0; head < queue.length; head += 1) {
+			const current = wires[queue[head]];
+			for (let index = 0; index < wires.length; index += 1) {
+				if (!visited.has(index) && current.segments.some(a => wires[index].segments.some(b => segmentsConnect(a, b)))) {
+					visited.add(index);
+					queue.push(index);
+				}
+			}
+		}
+		const id = queue.map(index => wires[index].id).sort()[0];
+		for (const index of queue)
+			groupByWire.set(index, id);
+		return id;
+	};
+	return pinPoints.map(point => [...new Set(wires.flatMap((wire, index) =>
+		wire.segments.some(segment => pointOnSegment(point, segment)) ? [connectedGroupId(index)] : []))].sort());
+}
+
+async function readPinNetworks(runtime: Record<string, unknown>, primitiveId: string, pageUuid: string): Promise<PinNetwork[]> {
 	const response = await handleSchematicReadTask({});
 	if (!isPlainObjectRecord(response) || response.ok !== true || response.pageUuid !== pageUuid || typeof response.schematicCircuitSnapshot !== 'string')
 		throw new Error(`Cannot verify component pin networks: ${isPlainObjectRecord(response) ? String(response.error ?? 'schematic_read failed') : 'schematic_read failed'}`);
@@ -221,20 +316,30 @@ async function readPinNetworks(primitiveId: string, pageUuid: string): Promise<P
 	const component = Array.isArray(components) ? components.find(item => isPlainObjectRecord(item) && item.componentInstanceId === primitiveId) : undefined;
 	if (!isPlainObjectRecord(component) || !Array.isArray(component.pins))
 		throw new Error(`Cannot verify component ${primitiveId} pin networks from schematic_read.`);
-	const pins = component.pins.map((pin: unknown) => {
+	const pins: PinNetwork[] = component.pins.map((pin: unknown) => {
 		if (!isPlainObjectRecord(pin) || typeof pin.pinNumber !== 'string' || typeof pin.connectedNetworkName !== 'string')
 			throw new Error(`Cannot verify component ${primitiveId} pin network state.`);
-		return { pinNumber: pin.pinNumber, connectedNetworkName: pin.connectedNetworkName };
+		return { pinNumber: pin.pinNumber, connectedNetworkName: pin.connectedNetworkName, unnamedWireGroups: [] };
 	});
+	if (pins.some(pin => pin.connectedNetworkName === '')) {
+		const groups = await readUnnamedWireGroups(runtime, primitiveId, pins.map(pin => pin.pinNumber));
+		for (let index = 0; index < pins.length; index += 1)
+			pins[index].unnamedWireGroups = groups[index];
+	}
 	return pins.sort((a, b) => a.pinNumber.localeCompare(b.pinNumber));
 }
 
-function pinNetworkChanges(before: PinNetwork[], after: PinNetwork[]): Array<{ pinNumber: string; before: string; after: string }> {
+function pinNetworkChanges(before: PinNetwork[], after: PinNetwork[]): Array<{ pinNumber: string; before: string; after: string; beforeWireGroups?: string[]; afterWireGroups?: string[] }> {
 	if (before.length !== after.length || before.some((pin, index) => pin.pinNumber !== after[index].pinNumber))
 		throw new Error('Component pin list changed during the move.');
-	return before.flatMap((pin, index) => pin.connectedNetworkName === after[index].connectedNetworkName
-		? []
-		: [{ pinNumber: pin.pinNumber, before: pin.connectedNetworkName, after: after[index].connectedNetworkName }]);
+	return before.flatMap((pin, index) => {
+		const next = after[index];
+		if (pin.connectedNetworkName !== next.connectedNetworkName)
+			return [{ pinNumber: pin.pinNumber, before: pin.connectedNetworkName, after: next.connectedNetworkName }];
+		if (pin.connectedNetworkName === '' && JSON.stringify(pin.unnamedWireGroups) !== JSON.stringify(next.unnamedWireGroups))
+			return [{ pinNumber: pin.pinNumber, before: '', after: '', beforeWireGroups: pin.unnamedWireGroups, afterWireGroups: next.unnamedWireGroups }];
+		return [];
+	});
 }
 
 function unknownAfterWrite(action: 'modify' | 'delete', primitiveId: string, error: unknown, before: ComponentState): Record<string, unknown> {
@@ -312,7 +417,7 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 		const update = { ...property!, otherProperty: fullOtherProperty };
 		const changesGeometry = ['x', 'y', 'rotation', 'mirror'].some(field => Object.hasOwn(property!, field)
 			&& property![field] !== before[field as keyof ComponentState]);
-		const beforePinNetworks = changesGeometry ? await readPinNetworks(primitiveId!, pageUuid) : undefined;
+		const beforePinNetworks = changesGeometry ? await readPinNetworks(runtime, primitiveId!, pageUuid) : undefined;
 		await assertSamePage(runtime, pageUuid);
 		try {
 			await api.modify!.call(api, primitiveId!, update);
@@ -330,7 +435,7 @@ export async function handleSchematicComponentEditTask(payload: unknown): Promis
 			if (!after || after.primitiveId !== primitiveId || !requestedValuesMatch(after, property!, fullOtherProperty))
 				throw new Error('EDA component state differs from the requested modification.');
 			if (beforePinNetworks) {
-				const afterPinNetworks = await readPinNetworks(primitiveId!, pageUuid);
+				const afterPinNetworks = await readPinNetworks(runtime, primitiveId!, pageUuid);
 				await assertSamePage(runtime, pageUuid);
 				const changes = pinNetworkChanges(beforePinNetworks, afterPinNetworks);
 				if (changes.length > 0)

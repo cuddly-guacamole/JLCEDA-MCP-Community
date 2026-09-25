@@ -34,7 +34,12 @@ function primitive(state) {
 
 async function main() {
 	let pageUuid = 'page-1';
-	const wires = [{ getState_Line: () => [400, 500, 410, 500], getState_Net: () => 'FOREIGN' }];
+	const wires = [
+		{ getState_PrimitiveId: () => 'foreign', getState_Line: () => [400, 500, 410, 500], getState_Net: () => 'FOREIGN' },
+		{ getState_PrimitiveId: () => 'unnamed-a', getState_Line: () => [300, 400, 310, 400], getState_Net: () => null },
+		{ getState_PrimitiveId: () => 'unnamed-b', getState_Line: () => [500, 400, 510, 400], getState_Net: () => '' },
+		{ getState_PrimitiveId: () => 'unnamed-b-extension', getState_Line: () => [510, 400, 520, 400], getState_Net: () => '' },
+	];
 	const parts = new Map([
 		['r1', {
 			primitiveId: 'r1',
@@ -107,7 +112,7 @@ async function main() {
 			},
 			async modify(id, property) {
 				callCount += 1;
-				assert.equal(id, 'r1');
+				assert.ok(parts.has(id));
 				const current = parts.get(id);
 				Object.assign(current, property);
 				return primitive(current);
@@ -170,6 +175,14 @@ async function main() {
 	assert.equal(unintendedNet.committed, true);
 	assert.equal(unintendedNet.commitUnknown, true);
 	assert.deepEqual(unintendedNet.pinNetworkChanges, [{ pinNumber: '1', before: '', after: 'FOREIGN' }]);
+	const differentUnnamedWire = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 505 } });
+	assert.equal(differentUnnamedWire.reason, 'pin_network_changed');
+	assert.deepEqual(differentUnnamedWire.pinNetworkChanges, [{ pinNumber: '1', before: '', after: '', beforeWireGroups: ['unnamed-a'], afterWireGroups: ['unnamed-b'] }]);
+	const sameUnnamedGroup = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 515 } });
+	assert.equal(sameUnnamedGroup.ok, true, 'moving between touching unnamed wires keeps the same network');
+	const detachedUnnamedWire = await handleSchematicComponentEditTask({ action: 'modify', primitiveId: 'c1', property: { x: 550 } });
+	assert.equal(detachedUnnamedWire.reason, 'pin_network_changed');
+	assert.deepEqual(detachedUnnamedWire.pinNetworkChanges, [{ pinNumber: '1', before: '', after: '', beforeWireGroups: ['unnamed-b'], afterWireGroups: [] }]);
 	const deleted = await handleSchematicComponentEditTask({ action: 'delete', primitiveId: 'r1' });
 	assert.equal(deleted.ok, true);
 	assert.equal(deleted.deleted, true);

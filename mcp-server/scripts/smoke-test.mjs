@@ -115,6 +115,8 @@ async function testProtocolVersion(protocolVersion) {
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
     assert.ok(confirmSchemas.some((schema) => schema.const === true), 'bridge_recover_client must require confirm=true');
+    const recoveryTimeoutSchemas = findPropertySchemas(recoverTool.inputSchema, 'timeoutMs');
+    assert.ok(recoveryTimeoutSchemas.some((schema) => schema.minimum === 5000 && schema.maximum === 120000), 'bridge_recover_client must advertise its extended readback budget');
     const readbackPayloadSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPayload');
     assert.ok(readbackPayloadSchemas.some((schema) => JSON.stringify(schema.default) === '{}'), 'bridge_recover_client must publish the empty readbackPayload default');
     const readbackPathSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPath');
@@ -141,7 +143,7 @@ async function testProtocolVersion(protocolVersion) {
       params: {
         ...(modern ? params : {}),
         name: 'bridge_recover_client',
-        arguments: { action: 'readback', confirm: true, recoveryId: 'smoke-recovery', clientId: 'smoke-client',
+        arguments: { action: 'readback', confirm: true, timeoutMs: 120000, recoveryId: 'smoke-recovery', clientId: 'smoke-client',
           readbackPath: '/bridge/jlceda/schematic/component-edit', readbackPayload: { action: 'read' } },
       },
     }) + '\n');

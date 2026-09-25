@@ -37,6 +37,7 @@
       "type": "object",
       "properties": {
         "action": { "type": "string", "enum": ["recover", "readback", "resolve_import"], "default": "recover" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000, "description": "恢复读取执行预算；大原理图可提高至 120000 毫秒。" },
         "confirm": { "const": true, "description": "必须显式确认恢复和可能已完成的修改。" },
         "requestId": { "type": "string", "minLength": 1, "description": "bridge_clients 返回的具体超时、失联或提交未确认写操作 requestId。" },
         "recoveryId": { "type": "string", "minLength": 1 },
@@ -211,14 +212,15 @@
     "inputSchema": {
       "type": "object",
       "properties": {
-        "includeConnectivityPrimitives": { "type": "boolean", "default": false, "description": "仅在连接图元写入结果未知后的受控恢复中使用；返回完整的当前页连接图元 JSON 快照。" }
+        "includeConnectivityPrimitives": { "type": "boolean", "default": false, "description": "仅在连接图元写入结果未知后的受控恢复中使用；返回完整的当前页连接图元 JSON 快照。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 60000, "description": "大原理图的完整语义读取执行预算。" }
       },
       "additionalProperties": false
     }
   },
   {
     "name": "schematic_component_edit",
-    "description": "读取当前原理图页面的完整普通器件状态，或按图元 ID 修改、删除当前页普通器件。几何修改会核对引脚网络；修改保留未指定的 BOM 属性。结果不明时按诊断要求回读当前页。",
+    "description": "读取当前原理图页面的完整普通器件状态，或按图元 ID 修改、删除当前页普通器件。几何修改会核对引脚有名网络和匿名导线连通组；修改保留未指定的 BOM 属性。结果不明时按诊断要求回读当前页。",
     "inputSchema": {
       "type": "object",
       "properties": {

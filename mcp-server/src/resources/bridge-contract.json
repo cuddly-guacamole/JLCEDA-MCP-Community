@@ -173,7 +173,8 @@
 		{
 			"toolName": "bridge_recover_client",
 			"path": "/bridge/admin/recover-client",
-			"owner": "server"
+			"owner": "server",
+			"timeoutPolicy": "extended-read"
 		},
 		{
 			"toolName": "api_index",
@@ -227,7 +228,7 @@
 			"toolName": "schematic_read",
 			"path": "/bridge/jlceda/schematic/read",
 			"owner": "bridge",
-			"timeoutPolicy": "default",
+			"timeoutPolicy": "extended-read",
 			"readOnly": true
 		},
 		{
