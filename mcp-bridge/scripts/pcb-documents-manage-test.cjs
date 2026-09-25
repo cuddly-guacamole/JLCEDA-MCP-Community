@@ -81,6 +81,19 @@ async function main() {
 	assert.equal(renamed.verified, true);
 	assert.equal(renamed.pcb.name, 'test_pcb');
 	assert.equal(writes, beforeRejected + 3);
+	const copyWithInheritedBoard = globalThis.eda.dmt_Pcb.copyPcb;
+	globalThis.eda.dmt_Pcb.copyPcb = async (sourceUuid) => {
+		writes += 1;
+		const uuid = `copied-${sequence++}`;
+		documents.set(uuid, { ...documents.get(sourceUuid), uuid });
+		return uuid;
+	};
+	const unexpectedBoard = await handlePcbDocumentsManageTask({ operation: 'copy', projectUuid, pcbUuid: copied.pcbUuid, confirm: true });
+	assert.equal(unexpectedBoard.verified, undefined);
+	assert.equal(unexpectedBoard.commitUnknown, true);
+	assert.equal(unexpectedBoard.nativeCallSettled, true);
+	assert.equal(documents.get(unexpectedBoard.resultingPcbUuid).parentBoardName, 'Board1');
+	globalThis.eda.dmt_Pcb.copyPcb = copyWithInheritedBoard;
 
 	const originalCopy = globalThis.eda.dmt_Pcb.copyPcb;
 	globalThis.eda.dmt_Pcb.copyPcb = async () => undefined;

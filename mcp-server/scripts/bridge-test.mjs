@@ -2601,7 +2601,9 @@ try {
     pageMutationFresh = await registerEda(`ws://127.0.0.1:${pageMutationPort}/bridge/ws${tokenQuery}`, 'page-mutation-fresh', {
       documentUuid: 'another-page-document', projectUuid: 'target-project', pageKind: 'schematic', pageUuid: 'another-page',
     });
-    attachTaskResponder(pageMutationFresh.socket, 'page-mutation-fresh', message => message.path === '/bridge/jlceda/api/invoke'
+    attachTaskResponder(pageMutationFresh.socket, 'page-mutation-fresh', message => message.path === '/bridge/jlceda/pcb/documents-manage'
+      ? { ok: false, commitUnknown: true, nativeCallSettled: true, resultingPcbUuid: 'copy-pcb' }
+      : message.path === '/bridge/jlceda/api/invoke'
       ? {
           apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo',
           schematicPages: includeTargetPage
@@ -2633,6 +2635,15 @@ try {
     const verifiedInventory = await pageMutationServer.request('/bridge/admin/recover-client', pageReadback, 2000);
     assert.equal(verifiedInventory.readbackVerified, true);
     assert.equal(verifiedInventory.readback.pageCount, 2);
+    const uncertainPcbCopy = await pageMutationServer.request('/bridge/jlceda/pcb/documents-manage', {
+      operation: 'copy', projectUuid: 'target-project', pcbUuid: 'source-pcb', confirm: true,
+    }, 2000);
+    assert.equal(uncertainPcbCopy.commitUnknown, true);
+    const pcbCopyDiagnostic = (await pageMutationServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'page-mutation-fresh').quarantine.diagnostics[0];
+    assert.equal(pcbCopyDiagnostic.targetPcbUuid, 'copy-pcb');
+    assert.throws(() => pageMutationServer.validateCompletePcbDocuments({ ...pcbInventory, pcbCount: 1, pcbs: pcbInventory.pcbs.slice(0, 1) },
+      pcbCopyDiagnostic), /Target PCB is absent/);
   } finally {
     pageMutationOld?.socket.close();
     pageMutationFresh?.socket.close();

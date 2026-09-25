@@ -161,8 +161,11 @@ export async function handlePcbDocumentsManageTask(payload: unknown): Promise<un
 			throw new Error('EDA returned an existing PCB UUID instead of a new document.');
 		if (operation === 'rename' && pcb.name.toLowerCase() !== (newName as string).toLowerCase())
 			throw new Error('PCB name does not match the requested name after the write.');
-		if (boardName && pcb.parentBoardName?.toLowerCase() !== boardName.toLowerCase())
+		if (operation !== 'rename' && (boardName
+			? pcb.parentBoardName?.toLowerCase() !== boardName.toLowerCase()
+			: pcb.parentBoardName !== null)) {
 			throw new Error('PCB board association does not match the requested board name.');
+		}
 		await assertProject(runtime, projectUuid);
 		return { ok: true, operation, projectUuid, pcbUuid: resultingPcbUuid, pcb, pcbCount: pcbs.length, verified: true };
 	}

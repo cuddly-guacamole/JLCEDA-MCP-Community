@@ -901,6 +901,7 @@ export class EdaBridgeServer {
       // underlying EDA Promise settled. Keep the write quarantine in that case.
       const diagnostic = this.recoveryDiagnostics.get(requestId);
       this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
+      this.updatePcbDocumentDiagnostic(requestId, message.result, peer.clientId);
       const bridgeTimedOut = getBridgeTaskTimeoutMs(message.error) !== undefined
         || (isRecord(message.error) && message.error.code === 'BRIDGE_TASK_TIMEOUT');
       const commitUnknown = isRecord(message.result)
@@ -983,6 +984,7 @@ export class EdaBridgeServer {
       this.pendingImportSockets.set(requestId, peer.socket);
     }
     this.updateAutoLayoutDiagnostic(requestId, message.result, peer.clientId);
+    this.updatePcbDocumentDiagnostic(requestId, message.result, peer.clientId);
     if (isRecord(message.error) && typeof message.error.message === 'string') {
       const code = typeof message.error.code === 'string' ? message.error.code : undefined;
       const timeoutMs = Number(message.error.timeoutMs);
@@ -1390,6 +1392,15 @@ export class EdaBridgeServer {
       documentUuid: layoutContext?.documentUuid,
       projectUuid: layoutContext?.projectUuid,
     };
+  }
+
+  private updatePcbDocumentDiagnostic(requestId: string, result: unknown, clientId: string): void {
+    const diagnostic = this.recoveryDiagnostics.get(requestId);
+    if (diagnostic?.clientId !== clientId || diagnostic.requiredReadback !== 'pcb_document_inventory' || !isRecord(result))
+      return;
+    const resultingPcbUuid = optionalString(result.resultingPcbUuid);
+    if (resultingPcbUuid)
+      diagnostic.targetPcbUuid = resultingPcbUuid;
   }
 
   private async recoverClient(payload: unknown, timeoutMs: number): Promise<Record<string, unknown>> {
