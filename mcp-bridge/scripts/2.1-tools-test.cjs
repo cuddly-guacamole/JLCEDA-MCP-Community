@@ -127,7 +127,7 @@ async function main() {
 			},
 		},
 		dmt_Pcb: {
-			async getCurrentPcbInfo() { return { uuid: 'pcb-1' }; },
+			async getCurrentPcbInfo() { return { uuid: 'pcb-1', parentBoardName: 'Board1_1' }; },
 			async getAllPcbsInfo() { return [{ uuid: 'pcb-1', name: 'Main PCB' }, { uuid: 'pcb-2', name: 'Auxiliary PCB' }]; },
 		},
 		pcb_Net: {
@@ -1078,6 +1078,19 @@ async function main() {
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing' }), /routingType is required/);
 	await assert.rejects(() => handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection' }), /confirm must be true/);
 	assert.equal((await handlePcbDocumentTask({ action: 'clear_routing', routingType: 'connection', confirm: true })).cleared, true);
+	const linkedPcbInfo = globalThis.eda.dmt_Pcb.getCurrentPcbInfo;
+	const nativeImportChanges = globalThis.eda.pcb_Document.importChanges;
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => ({ uuid: 'pcb-1' });
+	globalThis.eda.pcb_Document.importChanges = async () => {
+		throw new Error('Native import must not run for an unlinked PCB.');
+	};
+	const unlinkedPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(unlinkedPcbImport.ok, false);
+	assert.equal(unlinkedPcbImport.reason, 'pcb_not_associated_with_board');
+	assert.equal(unlinkedPcbImport.commitState, 'not_started');
+	assert.equal(unlinkedPcbImport.requiresNativeConfirmation, false);
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = linkedPcbInfo;
+	globalThis.eda.pcb_Document.importChanges = nativeImportChanges;
 	const pendingPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
 	assert.equal(pendingPcbImport.imported, true);
 	assert.equal(pendingPcbImport.commitState, 'pending_confirmation');

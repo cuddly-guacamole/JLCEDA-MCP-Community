@@ -331,6 +331,17 @@ export async function handlePcbDocumentTask(payload: unknown): Promise<unknown> 
 			documentUuid: documentInfo?.uuid,
 			projectUuid: documentInfo?.parentProjectUuid ?? projectInfo?.uuid,
 		};
+		if (pcbInfo && (typeof pcbInfo.parentBoardName !== 'string' || !pcbInfo.parentBoardName.trim())) {
+			return {
+				ok: false,
+				action,
+				importContext,
+				reason: 'pcb_not_associated_with_board',
+				commitState: 'not_started',
+				requiresNativeConfirmation: false,
+				message: 'The current PCB is not under a board. Open or create a PCB under the same board as the schematic before importing changes.',
+			};
+		}
 		const imported = await api.importChanges(uuid);
 		// EDA returns true when it opens the native import preview. The user must
 		// still apply that dialog before the PCB actually changes.
