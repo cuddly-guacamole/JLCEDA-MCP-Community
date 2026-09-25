@@ -110,7 +110,7 @@
   },
   {
     "name": "api_invoke",
-    "description": "调用指定的 EDA API 接口。",
+    "description": "调用指定的 EDA API 接口。PCB autoRouting 显式指定最多 3 个 RoutingNets 且原生 RPC 超时时，返回同页网络图元与长度的暂时回读 routingObservation；仍须按提交状态未知执行受控恢复。",
     "inputSchema": {
       "type": "object",
       "properties": {
