@@ -789,7 +789,7 @@
   },
   {
     "name": "pcb_pour_manage",
-    "description": "读取当前 PCB 的全部覆铜边框和填充摘要，或创建、修改、删除覆铜边框及显式重建填充。创建或修改不会自动重建；写入结果不明时先恢复并以 action=read 回读全部边框和填充摘要，避免重复操作。",
+    "description": "读取当前 PCB 的全部覆铜边框和填充摘要，或创建、修改、删除覆铜边框及显式重建填充。原生 modify 可能自动重排优先级，未请求字段变化会返回 applied:true、verified:false 和 before/after/sideEffects；创建或修改不会自动重建。写入结果不明时先恢复并以 action=read 回读全部边框和填充摘要，避免重复操作。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -804,7 +804,7 @@
         "lineWidth": { "type": "number", "exclusiveMinimum": 0 },
         "primitiveLock": { "type": "boolean" },
         "primitiveId": { "type": "string", "minLength": 1, "description": "modify/delete/单个 rebuild 的当前 PCB 覆铜边框 ID。" },
-        "property": { "$ref": "#/$defs/pourProperty", "description": "modify 时仅更新所列属性；polygonSource 替换边框几何。" },
+        "property": { "$ref": "#/$defs/pourProperty", "description": "modify 请求更新所列属性；polygonSource 替换边框几何。EDA 可能连带重排优先级，工具会回读并报告未请求的变化。" },
         "all": { "const": true, "description": "rebuild 时显式重建当前 PCB 全部覆铜。" },
         "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
       },

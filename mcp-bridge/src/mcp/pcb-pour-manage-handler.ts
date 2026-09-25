@@ -368,8 +368,53 @@ export async function handlePcbPourManageTask(payload: unknown): Promise<unknown
 		}
 		if (action === 'modify') {
 			const modified = after.pours.find(pour => pour.primitiveId === primitiveId);
-			if (!modified || !matchesRequested(modified, requested!))
-				throw new Error('EDA pour readback differs from the requested properties.');
+			const original = before.pours.find(pour => pour.primitiveId === primitiveId);
+			if (!modified || !original)
+				throw new Error('EDA modified pour was not readable on the current page.');
+			const requestedMismatches = Object.entries(requested!).filter(([field, expected]) =>
+				!matchesRequested(modified, { [field]: expected })).map(([field, expected]) => ({
+				field,
+				expected,
+				actual: modified[field as keyof PourState],
+			}));
+			const sideEffects: Array<{ primitiveId: string; field: string; before: unknown; after: unknown }> = [];
+			for (const oldPour of before.pours) {
+				const newPour = after.pours.find(pour => pour.primitiveId === oldPour.primitiveId);
+				if (!newPour) {
+					sideEffects.push({ primitiveId: oldPour.primitiveId, field: 'primitiveId', before: oldPour.primitiveId, after: null });
+					continue;
+				}
+				for (const field of EDITABLE_FIELDS) {
+					if (oldPour.primitiveId === primitiveId && Object.hasOwn(requested!, field))
+						continue;
+					const previous = oldPour[field as keyof PourState];
+					if (!matchesRequested(newPour, { [field]: previous })) {
+						sideEffects.push({ primitiveId: oldPour.primitiveId, field, before: previous, after: newPour[field as keyof PourState] });
+					}
+				}
+			}
+			for (const newPour of after.pours) {
+				if (!before.pours.some(pour => pour.primitiveId === newPour.primitiveId))
+					sideEffects.push({ primitiveId: newPour.primitiveId, field: 'primitiveId', before: null, after: newPour.primitiveId });
+			}
+			if (requestedMismatches.length || sideEffects.length) {
+				const targetChanged = [...EDITABLE_FIELDS].some(field =>
+					!matchesRequested(modified, { [field]: original[field as keyof PourState] }));
+				return {
+					ok: false,
+					action,
+					scope: SCOPE,
+					pageUuid,
+					primitiveId,
+					reason: 'modify_readback_mismatch',
+					applied: nativeResult != null || targetChanged || sideEffects.length > 0,
+					verified: false,
+					before: original,
+					after: modified,
+					requestedMismatches,
+					sideEffects,
+				};
+			}
 			return { ok: true, action, scope: SCOPE, pageUuid, primitiveId, pour: modified, verified: true };
 		}
 		if (action === 'delete') {

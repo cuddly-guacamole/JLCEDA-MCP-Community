@@ -191,6 +191,21 @@ async function main() {
 	const modified = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'new-1', property: { net: 'VCC', layer: 2, polygonSource: ['CIRCLE', 50, 60, 20], pourPriority: 3 } });
 	assert.deepEqual([modified.ok, modified.pour.net, modified.pour.layer, modified.pour.pourPriority], [true, 'VCC', 2, 3]);
 	assert.deepEqual(modified.pour.polygonSource, ['CIRCLE', 50, 60, 20]);
+	const nativePriorityModify = pourApi.modify;
+	pourApi.modify = async (id, patch) => {
+		const result = await nativePriorityModify(id, patch);
+		pours.get(id).pourPriority += 1;
+		return result;
+	};
+	const reorderedByName = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'new-1', property: { pourName: 'Renamed' } });
+	assert.deepEqual([reorderedByName.ok, reorderedByName.applied, reorderedByName.verified, reorderedByName.commitUnknown], [false, true, false, undefined]);
+	assert.deepEqual([reorderedByName.before.pourPriority, reorderedByName.after.pourPriority], [3, 4]);
+	assert.deepEqual(reorderedByName.sideEffects.map(item => item.field), ['pourPriority']);
+	const reorderedExplicitly = await handlePcbPourManageTask({ action: 'modify', primitiveId: 'new-1', property: { pourPriority: 4 } });
+	assert.deepEqual([reorderedExplicitly.ok, reorderedExplicitly.applied, reorderedExplicitly.verified, reorderedExplicitly.commitUnknown], [false, true, false, undefined]);
+	assert.deepEqual(reorderedExplicitly.requestedMismatches.map(item => item.field), ['pourPriority']);
+	pourApi.modify = nativePriorityModify;
+	pours.get('new-1').pourPriority = 3;
 	const nativeBeforeFreshRebuild = pourApi.rebuildCopperRegions;
 	pourApi.rebuildCopperRegions = async () => [pouredPrimitive(poured.get('filled-1'))];
 	const skippedNewPour = await handlePcbPourManageTask({ action: 'rebuild', all: true });
