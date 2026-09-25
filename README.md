@@ -12,7 +12,7 @@ PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔�
 
 ## 功能与工具
 
-- `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由；它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
+- `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由；显式选择待命页前会先验证双向通信和任务队列，失败时保持原活动页，旧扩展需升级后才能显式选中。它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 - `bridge_recover_client`：不可取消 EDA 修改超时时，先从 `bridge_clients` 取得超时诊断的 `requestId`，再调用 `action=recover` 建立恢复会话。底层调用若持续挂起或 PCB 自动布局的提交状态未知，此后须重启原 EDA 宿主以终止旧调用；待新 Bridge 连接和全新 `clientId` 建立，按写入目标身份选择新客户端，再执行只读 `action=readback`。普通掉线重连保留旧 `clientId`，不能用于恢复回读。当前页绑定写入缺少执行时图页 UUID 时不能以旧心跳或手填 UUID 解除隔离；跨页器件删除需读回全工程 `schematic_review`。导线创建及 NetPort 创建、移动需以 `schematic_read`、`readbackPayload:{"includeConnectivityPrimitives":true}` 完整读回当前页导线几何、NetPort 和网络属性；只查 `/context` 无法解除隔离。一般原理图当前页器件回读使用 `api_invoke` 调用 `getAllPrimitiveId` 或 `getAll`，传入 `args:[null,false]`；PCB 器件回读使用无参数的 `eda.pcb_PrimitiveComponent.getAll`。回读前始终阻止写操作，超时修改可能已经完成。
 - `schematic_document_action`：检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置；执行视图导航、图元选择、图元属性/BBox 读取、保存和变更导入。
 - `schematic_layout_check`：基于结构化 EDA 几何估算原理图符号、引脚、属性文本、网络标签和导线重叠，报告密集区域与可选页面越界；`mode: "fix"` 仅在 `confirm: true` 时移动属性文本。

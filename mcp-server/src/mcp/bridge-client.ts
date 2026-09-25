@@ -10,12 +10,21 @@ export function formatInternalClientEndpoint(port: number): string {
 interface BridgePeer {
   clientId: string;
   bridgeVersion: string;
+  selectionProbeVersion?: number;
   connectedAt: number;
   context?: BridgeClientContext;
   isReady: boolean;
   lastSeenAt: number;
   lastHeartbeatAt: number;
   socket: WebSocket;
+}
+
+interface PendingSelectionProbe {
+  clientId: string;
+  socket: WebSocket;
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
 }
 
 interface BridgeClientContext {
@@ -116,6 +125,7 @@ export class BridgeTaskError extends Error {
 const BRIDGE_QUEUE_TIMEOUT_MS = 15 * 60 * 1000;
 const INTERNAL_QUEUE_RESPONSE_GRACE_MS = 5_000;
 const BRIDGE_MAX_PENDING_REQUESTS = 64;
+const SELECTION_PROBE_TIMEOUT_MS = 1_500;
 const RECOVERY_READBACK_TIMEOUT_MS = 15_000;
 const RECOVERY_DIAGNOSTIC_TTL_MS = 15 * 60 * 1000;
 const TARGETED_SCHEMATIC_PAGE_APIS = new Set([
@@ -439,6 +449,7 @@ export class EdaBridgeServer {
   private readonly clientIdBySocket = new Map<WebSocket, string>();
   private readonly mcpClients = new Set<WebSocket>();
   private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly pendingSelectionProbes = new Map<string, PendingSelectionProbe>();
   private readonly reconnectBarriers = new Map<string, { path: string; until: number }>();
   private readonly recoveryDiagnostics = new Map<string, RecoveryDiagnostic>();
   private readonly pendingImportSockets = new Map<string, WebSocket>();
@@ -674,6 +685,7 @@ export class EdaBridgeServer {
         socket,
         optionalString(rawMessage.bridgeVersion) ?? 'unknown',
         parseClientContext(rawMessage.context),
+        rawMessage.selectionProbeVersion === 1 ? 1 : undefined,
       );
 		this.trySend(socket, {
 			type: 'bridge/welcome',
@@ -709,6 +721,16 @@ export class EdaBridgeServer {
       this.promoteReadyPeerIfNeeded(peer);
       return;
     }
+    if (type === 'bridge/probe-ack') {
+      const probeId = String(rawMessage.probeId ?? '');
+      const pendingProbe = this.pendingSelectionProbes.get(probeId);
+      if (pendingProbe?.clientId === peer.clientId && pendingProbe.socket === socket) {
+        clearTimeout(pendingProbe.timeout);
+        this.pendingSelectionProbes.delete(probeId);
+        pendingProbe.resolve();
+      }
+      return;
+    }
     if (type === 'bridge/task-started') {
       this.markPendingRequestStarted(peer, rawMessage);
       return;
@@ -730,9 +752,11 @@ export class EdaBridgeServer {
     socket: WebSocket,
     bridgeVersion: string,
     context: BridgeClientContext | undefined,
+    selectionProbeVersion: number | undefined,
   ): BridgePeer {
     const previous = this.peers.get(clientId);
     if (previous && previous.socket !== socket) {
+      this.rejectSelectionProbesForSocket(previous.socket, 'EDA client connection was replaced during selection probe');
       if (this.recoverySession?.targetClientId === clientId) {
         this.recoverySession.targetClientId = undefined;
         this.recoverySession.targetSocket = undefined;
@@ -746,6 +770,7 @@ export class EdaBridgeServer {
     const peer: BridgePeer = {
       clientId,
       bridgeVersion,
+      selectionProbeVersion,
       connectedAt: previous?.socket === socket ? previous.connectedAt : now,
       context,
       isReady: previous?.socket === socket ? previous.isReady : false,
@@ -777,6 +802,7 @@ export class EdaBridgeServer {
   }
 
   private removeEdaSocket(socket: WebSocket): void {
+    this.rejectSelectionProbesForSocket(socket, 'EDA client disconnected during selection probe');
     const clientId = this.clientIdBySocket.get(socket);
     if (!clientId) {
       return;
@@ -829,9 +855,13 @@ export class EdaBridgeServer {
       const commitUnknown = isRecord(message.result)
         && (message.result.commitState === 'unknown' || message.result.commitUnknown === true);
       if (diagnostic?.clientId === peer.clientId
-        && diagnostic.requiredReadback === 'pcb_routing_state'
-        && diagnostic.path === '/bridge/jlceda/pcb/connectivity'
-        && isRecord(message.result) && message.result.nativeCallSettled === true)
+        && isRecord(message.result)
+        && ((diagnostic.requiredReadback === 'pcb_routing_state'
+          && diagnostic.path === '/bridge/jlceda/pcb/connectivity'
+          && (message.result.nativeCallSettled === true
+            || (message.result.ok === true && message.result.verified === true)))
+          || (diagnostic.requiredReadback === 'schematic_component_ids'
+            && message.result.nativeCallSettled === true)))
         diagnostic.hostRestartRequired = false;
       const pendingImport = diagnostic?.clientId === peer.clientId
         && isPendingPcbImportResult(diagnostic.path, { action: 'import_changes' }, message.result);
@@ -1060,7 +1090,7 @@ export class EdaBridgeServer {
     if (path === '/bridge/admin/select-client') {
       const clientId = isRecord(payload) ? String(payload.clientId ?? '').trim() : '';
       const force = isRecord(payload) && payload.force === true;
-      return this.selectClient(clientId, force);
+      return this.selectClientWithProbe(clientId, force);
     }
     if (path === '/bridge/admin/recover-client') {
       return this.recoverClient(payload, timeoutMs);
@@ -1099,6 +1129,7 @@ export class EdaBridgeServer {
         active: peer.clientId === this.activeClientId,
         ready: this.isPeerReady(peer, now),
         bridgeVersion: peer.bridgeVersion,
+        selectionProbeSupported: peer.selectionProbeVersion === 1,
         connectedAt: new Date(peer.connectedAt).toISOString(),
         lastSeenMsAgo: Math.max(0, now - peer.lastSeenAt),
         lastHeartbeatMsAgo: peer.lastHeartbeatAt ? Math.max(0, now - peer.lastHeartbeatAt) : null,
@@ -1127,6 +1158,7 @@ export class EdaBridgeServer {
         active: false,
         ready: false,
         bridgeVersion: 'unknown',
+        selectionProbeSupported: false,
         connectedAt: diagnostics[0].startedAt,
         lastSeenMsAgo: Math.max(0, now - diagnostics.reduce((earliest, diagnostic) => Math.min(earliest, diagnostic.timedOutAtMs), now)),
         lastHeartbeatMsAgo: null,
@@ -1135,6 +1167,49 @@ export class EdaBridgeServer {
       });
     }
     return { activeClientId: this.activeClientId || null, leaseTerm: this.leaseTerm, clients };
+  }
+
+  private async selectClientWithProbe(clientId: string, force: boolean): Promise<Record<string, unknown>> {
+    if (!clientId)
+      throw new Error('clientId is required');
+    const peer = this.peers.get(clientId);
+    if (!peer || !this.isPeerReady(peer))
+      throw new Error(`EDA client is not connected and ready: ${clientId}`);
+    if (this.activeClientId === clientId)
+      return this.selectClient(clientId, force);
+    if (this.recoverySession)
+      throw new Error(`Cannot switch EDA client while recovery ${this.recoverySession.recoveryId} is awaiting readback.`);
+    if (!force && [...this.pendingRequests.values()].some(pending => pending.clientId === this.activeClientId))
+      throw new Error('Cannot switch EDA client while the active client has a pending task');
+    if (peer.selectionProbeVersion !== 1)
+      throw new Error(`EDA client ${clientId} does not support selection probe; upgrade its Bridge extension before selecting it.`);
+    await this.probeClient(peer);
+    if (this.peers.get(clientId) !== peer || !this.isPeerReady(peer))
+      throw new Error(`EDA client disconnected before selection completed: ${clientId}`);
+    return this.selectClient(clientId, force);
+  }
+
+  private probeClient(peer: BridgePeer): Promise<void> {
+    const probeId = this.createRequestId();
+    return new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingSelectionProbes.delete(probeId);
+        reject(new Error(`EDA client selection probe timed out: ${peer.clientId}`));
+      }, SELECTION_PROBE_TIMEOUT_MS);
+      this.pendingSelectionProbes.set(probeId, { clientId: peer.clientId, socket: peer.socket, resolve, reject, timeout });
+      if (!this.trySend(peer.socket, { type: 'bridge/probe', clientId: peer.clientId, probeId }))
+        this.rejectSelectionProbesForSocket(peer.socket, `Could not send selection probe to EDA client: ${peer.clientId}`);
+    });
+  }
+
+  private rejectSelectionProbesForSocket(socket: WebSocket, reason: string): void {
+    for (const [probeId, pending] of this.pendingSelectionProbes) {
+      if (pending.socket !== socket)
+        continue;
+      clearTimeout(pending.timeout);
+      this.pendingSelectionProbes.delete(probeId);
+      pending.reject(new Error(reason));
+    }
   }
 
   private selectClient(clientId: string, force: boolean, allowRecoverySessionSwitch = false): Record<string, unknown> {
@@ -1190,7 +1265,9 @@ export class EdaBridgeServer {
             hostRestartRequired: !nativeCallSettled || isPcbAutoRoutingRequest(pending.path ?? '', pending.payload) }
         : {}),
       ...(mutating && isCrossPageComponentDelete(pending.path ?? '', pending.payload) ? { requiredReadback: 'schematic_project_review' as const } : {}),
-      ...(mutating && isSchematicPlacementCheck(pending.path ?? '') ? { requiredReadback: 'schematic_component_ids' as const } : {}),
+      ...(mutating && isSchematicPlacementCheck(pending.path ?? '')
+        ? { requiredReadback: 'schematic_component_ids' as const, hostRestartRequired: !nativeCallSettled }
+        : {}),
       ...(mutating && isSchematicConnectivityMutation(pending.path ?? '', pending.payload)
         ? { requiredReadback: 'schematic_connectivity_primitives' as const } : {}),
       ...(mutating && isTargetedSchematicPageMutation(pending.path ?? '', pending.payload)
@@ -1343,8 +1420,11 @@ export class EdaBridgeServer {
       && (session.diagnostic.context?.pageKind !== 'pcb' || !session.diagnostic.context.pageUuid)) {
       throw new Error(`${pcbRoutingWriteLabel} has no verified execution-time PCB page identity; writes remain blocked.`);
     }
-    if (session.diagnostic.hostRestartRequired && payload.hostRestartConfirmed !== true)
-      throw new Error(`${pcbRoutingWriteLabel} requires confirmation that the original EDA host was restarted; writes remain blocked.`);
+    if (session.diagnostic.hostRestartRequired && payload.hostRestartConfirmed !== true) {
+      const writeLabel = session.diagnostic.requiredReadback === 'schematic_component_ids'
+        ? 'Unverified schematic placement cleanup' : pcbRoutingWriteLabel;
+      throw new Error(`${writeLabel} requires confirmation that the original EDA host was restarted; writes remain blocked.`);
+    }
     if (session.diagnostic.pendingNativeConfirmation
       && (payload.hostRestartConfirmed !== true || !isPcbComponentReadbackRequest(readbackPath, readbackPayload))) {
       throw new Error('Pending PCB import recovery requires confirmation that the original EDA host was restarted and a complete PCB component readback.');
@@ -1963,6 +2043,8 @@ export class EdaBridgeServer {
       this.peerSweepTimer = null;
     }
     this.rejectAllPending('Bridge server closed');
+    for (const peer of this.peers.values())
+      this.rejectSelectionProbesForSocket(peer.socket, 'Bridge server closed');
     this.internalClient?.close();
     this.internalClient = null;
     for (const peer of this.peers.values()) {

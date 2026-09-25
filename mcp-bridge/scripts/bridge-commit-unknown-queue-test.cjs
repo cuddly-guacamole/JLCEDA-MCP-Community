@@ -22,6 +22,7 @@ class MockBridgeTransport {
 		this.results = new Map();
 		this.resultWaiters = new Map();
 		this.started = [];
+		this.probeAcks = [];
 		this.startedContexts = new Map();
 		activeTransport = this;
 	}
@@ -65,6 +66,7 @@ class MockBridgeTransport {
 
 	refreshServerActivity() {}
 	reportReady() { this.ready = true; }
+	reportSelectionProbeAck(probeId) { this.probeAcks.push(probeId); }
 	updateContext() {}
 	close() {}
 }
@@ -247,10 +249,14 @@ async function main() {
 		readCalls = 0;
 		submit('uncertain-delete', { apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['to-delete'] });
 		await deleteEntered.promise;
+		transport.callbacks.onProbeRequested('queued-probe');
+		await new Promise(resolve => setTimeout(resolve, 20));
+		assert.deepEqual(transport.probeAcks, [], 'selection probe must wait for the running EDA task');
 		// Both following tasks enter taskChain before the first handler returns.
 		submit('queued-write', { apiFullName: 'eda.sch_PrimitiveComponent.create', args: [] });
 		submit('queued-read', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] });
 		finishDelete.resolve();
+		await waitUntil(() => transport.probeAcks.includes('queued-probe'));
 		let timeoutId;
 		const responses = await Promise.race([
 			Promise.all([

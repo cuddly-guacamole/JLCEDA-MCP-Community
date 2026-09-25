@@ -12,7 +12,7 @@
 
 `component_place_auto` 按坐标逐件创建；若 EDA 改变已有器件或本批次此前放置器件的位号，则停止后续放置，返回变化记录及已放置器件的当前位号。
 
-`bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由，不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
+`bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页。如需在进程内切换标签页，请通过 `api_invoke` 调用 `eda.dmt_EditorControl.activateDocument(tabId)`。
 
 `bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。跨页器件删除需以全工程 `schematic_review` 回读；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。完整安全恢复要求 Bridge 与 Server 均升级到 2.3.2；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 

@@ -10,6 +10,7 @@
 				},
 				"optional": {
 					"protocolVersion": "positive-integer",
+					"selectionProbeVersion": "positive-integer",
 					"context": "context"
 				}
 			},
@@ -55,6 +56,12 @@
 					"clientId": "non-empty-string",
 					"log": "record"
 				}
+			},
+			"bridge/probe-ack": {
+				"required": {
+					"clientId": "non-empty-string",
+					"probeId": "non-empty-string"
+				}
 			}
 		},
 		"serverMessages": {
@@ -87,6 +94,12 @@
 					"clientId": "non-empty-string",
 					"sentAt": "finite-number",
 					"receivedAt": "non-empty-string"
+				}
+			},
+			"bridge/probe": {
+				"required": {
+					"clientId": "non-empty-string",
+					"probeId": "non-empty-string"
 				}
 			},
 			"bridge/task": {

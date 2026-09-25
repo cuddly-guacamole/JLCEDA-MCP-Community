@@ -602,6 +602,19 @@ export function enqueueTask(task: { requestId: string; path: string; payload: un
 	});
 }
 
+// 探活经过同一串行队列，证明待命客户端能接收消息且任务链仍可推进。
+// 不访问 EDA 文档，也不修改当前租约或写入隔离状态。
+export function enqueueSelectionProbe(probeId: string, currentTransport: BridgeTransport): void {
+	const probeGeneration = transportGeneration;
+	taskChain = taskChain.then(() => {
+		if (probeGeneration === transportGeneration && transport === currentTransport)
+			currentTransport.reportSelectionProbeAck(probeId);
+	}).catch((error: unknown) => {
+		const message = toSafeErrorMessage(error);
+		writeRuntimeWarningLog('bridge.probe.failed', 'Bridge 探活失败', message, message, 'bridge_probe_failed');
+	});
+}
+
 // 建立桥接连接。
 async function ensureConnected(): Promise<void> {
 	if (!started || connecting || transport) {
@@ -647,6 +660,10 @@ async function ensureConnected(): Promise<void> {
 		},
 		onTask: async (task) => {
 			enqueueTask(task, instance);
+		},
+		onProbeRequested: (probeId) => {
+			if (ownsAttempt())
+				enqueueSelectionProbe(probeId, instance);
 		},
 		onRecoveryRequested: (_recoveryId, _reason) => {
 			if (ownsAttempt())

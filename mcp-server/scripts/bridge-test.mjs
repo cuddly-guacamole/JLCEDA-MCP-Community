@@ -95,11 +95,19 @@ function attachTaskResponder(socket, clientId, transform) {
   });
 }
 
-async function registerEda(url, clientId, context = undefined, sendInitialHeartbeat = true) {
+async function registerEda(url, clientId, context = undefined, sendInitialHeartbeat = true, probeMode = 'ack') {
   const socket = await connect(url);
+  if (probeMode === 'ack') {
+    socket.on('message', (data) => {
+      const message = JSON.parse(data.toString());
+      if (message.type === 'bridge/probe' && message.clientId === clientId)
+        socket.send(JSON.stringify({ type: 'bridge/probe-ack', clientId, probeId: message.probeId }));
+    });
+  }
   const welcome = waitForMessage(socket, (message) => message.type === 'bridge/welcome');
   const role = waitForMessage(socket, (message) => message.type === 'bridge/role');
-  socket.send(JSON.stringify({ type: 'bridge/hello', clientId, bridgeVersion: '2.1.0', context }));
+  socket.send(JSON.stringify({ type: 'bridge/hello', clientId, bridgeVersion: '2.1.0', context,
+    ...(probeMode === 'legacy' ? {} : { selectionProbeVersion: 1 }) }));
   const welcomeMessage = await welcome;
   assert.equal(welcomeMessage.clientId, clientId);
   assert.equal(welcomeMessage.protocolVersion, 1);
@@ -1173,6 +1181,42 @@ try {
     lateRoutingServer.close();
   }
 
+  const latePcbWritePort = await reservePort();
+  const latePcbWriteServer = new EdaBridgeServer(latePcbWritePort);
+  let latePcbWritePeer;
+  try {
+    await latePcbWriteServer.start();
+    latePcbWritePeer = await registerEda(`ws://127.0.0.1:${latePcbWritePort}/bridge/ws${tokenQuery}`,
+      'late-pcb-write', { documentUuid: 'pcb-document', projectUuid: 'pcb-project', pageKind: 'pcb', pageUuid: 'pcb-page' });
+    let heldTask;
+    latePcbWritePeer.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      heldTask = message;
+      latePcbWritePeer.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: 'late-pcb-write',
+        requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'pcb-document', projectUuid: 'pcb-project', pageKind: 'pcb', pageUuid: 'pcb-page' } }));
+    });
+    await assert.rejects(latePcbWriteServer.request('/bridge/jlceda/pcb/connectivity', {
+      action: 'line_create', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 1,
+    }, 100), /Request execution timeout/);
+    assert.ok(heldTask);
+    const before = (await latePcbWriteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(before.hostRestartRequired, true);
+    const processed = waitForMessage(latePcbWritePeer.socket, message => message.type === 'bridge/heartbeat-ack');
+    latePcbWritePeer.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'late-pcb-write',
+      requestId: heldTask.requestId, leaseTerm: heldTask.leaseTerm,
+      result: { ok: true, verified: true, primitiveId: 'new-line' } }));
+    latePcbWritePeer.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'late-pcb-write', sentAt: Date.now() }));
+    await processed;
+    const after = (await latePcbWriteServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(after.hostRestartRequired, false, 'verified late create result proves the native call settled');
+    assert.equal(after.requiredReadback, 'pcb_routing_state', 'late success still requires complete PCB readback');
+  } finally {
+    latePcbWritePeer?.socket.close();
+    latePcbWriteServer.close();
+  }
+
   const lateUnknownPort = await reservePort();
   lateUnknownServer = new EdaBridgeServer(lateUnknownPort);
   await lateUnknownServer.start();
@@ -1661,12 +1705,13 @@ try {
       placementCheckOld.socket.send(JSON.stringify({
         type: 'bridge/result', clientId: 'placement-check-old', requestId: message.requestId,
         leaseTerm: message.leaseTerm,
-        result: { ok: false, commitUnknown: true, primitiveIds: ['kept', 'extra'] },
+        result: { ok: false, commitUnknown: true, nativeCallSettled: true, primitiveIds: ['kept', 'extra'] },
       }));
     });
     assert.equal((await placementCheckServer.request('/bridge/jlceda/component/place/check', { sessionId: 'placement-1' }, 2000)).commitUnknown, true);
     const placementDiagnostic = (await placementCheckServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
     assert.equal(placementDiagnostic.requiredReadback, 'schematic_component_ids');
+    assert.equal(placementDiagnostic.hostRestartRequired, false);
     assert.equal(placementDiagnostic.pageBound, true);
     const placementRecovery = await placementCheckServer.request('/bridge/admin/recover-client', {
       action: 'recover', confirm: true, requestId: placementDiagnostic.requestId,
@@ -1715,6 +1760,64 @@ try {
     placementCheckOld?.socket.close();
     placementCheckFresh?.socket.close();
     placementCheckServer.close();
+  }
+
+  for (const lateResult of [false, true]) {
+    const placementTimeoutPort = await reservePort();
+    const placementTimeoutServer = new EdaBridgeServer(placementTimeoutPort);
+    let placementTimeoutOld;
+    try {
+      await placementTimeoutServer.start();
+      placementTimeoutOld = await registerEda(`ws://127.0.0.1:${placementTimeoutPort}/bridge/ws${tokenQuery}`,
+        `placement-timeout-${lateResult}`, { documentUuid: 'placement-document', projectUuid: 'placement-project',
+          pageKind: 'schematic', pageUuid: 'placement-page' });
+      let heldTask;
+      placementTimeoutOld.socket.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        heldTask = message;
+        placementTimeoutOld.socket.send(JSON.stringify({ type: 'bridge/task-started', clientId: `placement-timeout-${lateResult}`,
+          requestId: message.requestId, leaseTerm: message.leaseTerm, startedAt: Date.now(),
+          context: { documentUuid: 'placement-document', projectUuid: 'placement-project',
+            pageKind: 'schematic', pageUuid: 'placement-page' } }));
+        if (!lateResult) {
+          placementTimeoutOld.socket.send(JSON.stringify({ type: 'bridge/result', clientId: `placement-timeout-${lateResult}`,
+            requestId: message.requestId, leaseTerm: message.leaseTerm,
+            result: { ok: false, commitUnknown: true, nativeCallSettled: false } }));
+        }
+      });
+      if (lateResult)
+        await assert.rejects(placementTimeoutServer.request('/bridge/jlceda/component/place/check', { sessionId: 'timeout' }, 100), /Request execution timeout/);
+      else
+        assert.equal((await placementTimeoutServer.request('/bridge/jlceda/component/place/check', { sessionId: 'timeout' }, 2000)).commitUnknown, true);
+      assert.ok(heldTask);
+      const before = (await placementTimeoutServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+      assert.equal(before.requiredReadback, 'schematic_component_ids');
+      assert.equal(before.hostRestartRequired, true);
+      if (lateResult) {
+        const processed = waitForMessage(placementTimeoutOld.socket, message => message.type === 'bridge/heartbeat-ack');
+        placementTimeoutOld.socket.send(JSON.stringify({ type: 'bridge/result', clientId: 'placement-timeout-true',
+          requestId: heldTask.requestId, leaseTerm: heldTask.leaseTerm,
+          result: { ok: false, commitUnknown: true, nativeCallSettled: true } }));
+        placementTimeoutOld.socket.send(JSON.stringify({ type: 'bridge/heartbeat', clientId: 'placement-timeout-true', sentAt: Date.now() }));
+        await processed;
+        const after = (await placementTimeoutServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+        assert.equal(after.hostRestartRequired, false);
+        assert.equal(after.requiredReadback, 'schematic_component_ids');
+      } else {
+        const recovery = await placementTimeoutServer.request('/bridge/admin/recover-client', {
+          action: 'recover', confirm: true, requestId: before.requestId,
+        }, 2000);
+        await assert.rejects(placementTimeoutServer.request('/bridge/admin/recover-client', {
+          action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+          clientId: 'future-fresh-client', readbackPath: '/bridge/jlceda/api/invoke',
+          readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] },
+        }, 2000), /original EDA host was restarted/);
+      }
+    } finally {
+      placementTimeoutOld?.socket.close();
+      placementTimeoutServer.close();
+    }
   }
 
   const pageMutationPort = await reservePort();
@@ -2144,7 +2247,12 @@ try {
     unreadyPeer = await connect(readyPromotionUrl);
     const firstWelcome = waitForMessage(unreadyPeer, message => message.type === 'bridge/welcome');
     const firstRole = waitForMessage(unreadyPeer, message => message.type === 'bridge/role');
-    unreadyPeer.send(JSON.stringify({ type: 'bridge/hello', clientId: 'unready-first', bridgeVersion: '2.3.2' }));
+    unreadyPeer.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type === 'bridge/probe')
+        unreadyPeer.send(JSON.stringify({ type: 'bridge/probe-ack', clientId: 'unready-first', probeId: message.probeId }));
+    });
+    unreadyPeer.send(JSON.stringify({ type: 'bridge/hello', clientId: 'unready-first', bridgeVersion: '2.3.2', selectionProbeVersion: 1 }));
     await firstWelcome;
     assert.equal((await firstRole).role, 'active');
     readyPeer = await registerEda(readyPromotionUrl, 'ready-second');
@@ -2196,6 +2304,47 @@ try {
     pendingPeer?.socket.close();
     laterPeer?.socket.close();
     readyPromotionServer.close();
+  }
+
+  const probePort = await reservePort();
+  const probeServer = new EdaBridgeServer(probePort);
+  const probeUrl = `ws://127.0.0.1:${probePort}/bridge/ws${tokenQuery}`;
+  let probeActive;
+  let probeSilent;
+  let probeLegacy;
+  let probeManual;
+  try {
+    await probeServer.start();
+    probeActive = await registerEda(probeUrl, 'probe-active');
+    probeSilent = await registerEda(probeUrl, 'probe-silent', undefined, true, 'silent');
+    probeLegacy = await registerEda(probeUrl, 'probe-legacy', undefined, true, 'legacy');
+    probeManual = await registerEda(probeUrl, 'probe-manual', undefined, true, 'manual');
+    let snapshot = await probeServer.request('/bridge/admin/clients', {}, 2000);
+    assert.equal(snapshot.activeClientId, 'probe-active');
+    assert.equal(snapshot.clients.find(client => client.clientId === 'probe-silent').selectionProbeSupported, true);
+    assert.equal(snapshot.clients.find(client => client.clientId === 'probe-legacy').selectionProbeSupported, false);
+    await assert.rejects(probeServer.request('/bridge/admin/select-client', { clientId: 'probe-legacy' }, 2000), /does not support selection probe/);
+    await assert.rejects(probeServer.request('/bridge/admin/select-client', { clientId: 'probe-silent', force: true }, 3000), /selection probe timed out/);
+    snapshot = await probeServer.request('/bridge/admin/clients', {}, 2000);
+    assert.equal(snapshot.activeClientId, 'probe-active', 'failed probe must leave the previous active client selected');
+    const leaseBefore = snapshot.leaseTerm;
+    const manualProbe = waitForMessage(probeManual.socket, message => message.type === 'bridge/probe');
+    const selecting = probeServer.request('/bridge/admin/select-client', { clientId: 'probe-manual' }, 3000);
+    const challenge = await manualProbe;
+    assert.equal((await probeServer.request('/bridge/admin/clients', {}, 2000)).leaseTerm, leaseBefore,
+      'the lease must not change until the target acknowledges the challenge');
+    probeActive.socket.send(JSON.stringify({ type: 'bridge/probe-ack', clientId: 'probe-active', probeId: challenge.probeId }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal((await probeServer.request('/bridge/admin/clients', {}, 2000)).activeClientId, 'probe-active',
+      'an acknowledgement from another socket cannot select the target');
+    probeManual.socket.send(JSON.stringify({ type: 'bridge/probe-ack', clientId: 'probe-manual', probeId: challenge.probeId }));
+    assert.equal((await selecting).activeClientId, 'probe-manual');
+  } finally {
+    probeActive?.socket.close();
+    probeSilent?.socket.close();
+    probeLegacy?.socket.close();
+    probeManual?.socket.close();
+    probeServer.close();
   }
 
   mainServer.close();

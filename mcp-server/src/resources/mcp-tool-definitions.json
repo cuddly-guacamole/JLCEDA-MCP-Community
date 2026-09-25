@@ -10,7 +10,7 @@
   },
   {
     "name": "bridge_select_client",
-    "description": "按精确 clientId 选择后续 MCP 操作所针对的嘉立创 EDA 页面。调用前必须先使用 bridge_clients 核对项目和页面；活动页面存在未完成任务时禁止切换，除非该任务已确认卡死并明确设置 force=true 进行故障恢复。",
+    "description": "按精确 clientId 选择后续 MCP 操作所针对的嘉立创 EDA 页面。待命页面须先通过短时双向探活，旧版 Bridge 不支持该探活时需升级扩展。调用前必须先使用 bridge_clients 核对项目和页面；活动页面存在未完成任务时禁止切换，除非该任务已确认卡死并明确设置 force=true 进行故障恢复。",
     "inputSchema": {
       "type": "object",
       "properties": {

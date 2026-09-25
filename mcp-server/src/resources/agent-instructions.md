@@ -10,7 +10,7 @@
 ## 工具调用约束
 
 - `bridge_clients`：列出所有已连接 EDA 页面及其官方 API 返回的项目、文档、图页身份。在存在多个客户端，或用户指定了项目/页面时，任何 EDA 读取或修改操作前必须先调用并核对目标。
-- `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
+- `bridge_select_client`：仅使用 `bridge_clients` 返回的精确 `clientId` 显式选择目标。待命客户端先经过双向队列探活；若提示旧扩展不支持探活，升级该页面的 Bridge 后再选择。不得依据连接顺序、名称相似或猜测选择；目标不唯一时必须请用户确认。单客户端且身份符合任务时无需重复选择。
 - EDA 修改超时、已开始的写任务中途失联，或工具返回 `commitUnknown: true` 后，查看 `bridge_clients` 的 `requestId`、`uncertaintyReason`、文档身份和 `lastHeartbeatMsAgo`，先用 `bridge_recover_client` 的 `action=recover` 建立恢复会话。隔离期间可查询只读状态，但原调用尚未结束时读回只是暂时快照。若调用持续挂起，再重启原 EDA 宿主以终止旧调用，打开目标图页，等待恢复会话建立后的新 Bridge 连接和全新 `clientId`；最后以 `action=readback` 验证新客户端身份和当前页状态。恢复请求本身不能取消 EDA 调用；普通掉线自动重连保留旧 `clientId`，建立恢复会话时已连接的客户端即使更换 WebSocket 也不能用于本次回读。
 - 原理图当前页器件 ID 回读优先用 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args: [null, false]`；需要器件对象时可用 `eda.sch_PrimitiveComponent.getAll` 搭配同样的参数。这两种精确参数形式可通过恢复期只读隔离，无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。跨页查询不得用于判断当前页的超时操作是否提交。
 - `wire_create`、`netport_create`、`netport_move` 超时或提交状态不明时，恢复回读须设置 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；先检查完整导线、NetPort、NET 属性和语义网表，再决定是否重试。只读 `/context` 不会解除该写入隔离。

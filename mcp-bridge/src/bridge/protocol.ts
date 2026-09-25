@@ -38,6 +38,7 @@ export interface BridgeClientHelloMessage {
 	clientId: string;
 	bridgeVersion: string;
 	protocolVersion?: number;
+	selectionProbeVersion?: number;
 	context?: BridgeClientContext;
 }
 
@@ -89,6 +90,13 @@ export interface BridgeClientReadyMessage {
 	readyAt: number;
 }
 
+// 探活确认只在串行任务队列推进到探活位置后发送。
+export interface BridgeClientProbeAckMessage {
+	type: 'bridge/probe-ack';
+	clientId: string;
+	probeId: string;
+}
+
 // 服务端返回握手确认消息。
 export interface BridgeServerWelcomeMessage {
 	type: 'bridge/welcome';
@@ -122,6 +130,13 @@ export interface BridgeServerHeartbeatAckMessage {
 	receivedAt: string;
 }
 
+// 选中待命客户端前的只读双向探活。
+export interface BridgeServerProbeMessage {
+	type: 'bridge/probe';
+	clientId: string;
+	probeId: string;
+}
+
 // 服务端下发桥接任务消息。
 export interface BridgeServerTaskMessage {
 	type: 'bridge/task';
@@ -147,9 +162,9 @@ export interface BridgeServerRecoveryMessage {
 	reason: string;
 }
 
-export type BridgeClientMessage = BridgeClientHelloMessage | BridgeClientHeartbeatMessage | BridgeClientTaskStartedMessage | BridgeClientResultMessage | BridgeClientLogMessage | BridgeClientReadyMessage;
+export type BridgeClientMessage = BridgeClientHelloMessage | BridgeClientHeartbeatMessage | BridgeClientTaskStartedMessage | BridgeClientResultMessage | BridgeClientLogMessage | BridgeClientReadyMessage | BridgeClientProbeAckMessage;
 
-export type BridgeServerMessage = BridgeServerWelcomeMessage | BridgeServerRoleMessage | BridgeServerDebugSwitchMessage | BridgeServerHeartbeatAckMessage | BridgeServerTaskMessage | BridgeServerErrorMessage | BridgeServerRecoveryMessage;
+export type BridgeServerMessage = BridgeServerWelcomeMessage | BridgeServerRoleMessage | BridgeServerDebugSwitchMessage | BridgeServerHeartbeatAckMessage | BridgeServerProbeMessage | BridgeServerTaskMessage | BridgeServerErrorMessage | BridgeServerRecoveryMessage;
 
 // 任务载荷定义。
 export interface BridgeQueueTask {
