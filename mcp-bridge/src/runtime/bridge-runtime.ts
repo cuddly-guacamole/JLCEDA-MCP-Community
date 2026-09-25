@@ -31,6 +31,7 @@ import { BridgeTaskQuarantine, BridgeTaskTimeoutError, requiresHostRestartForRes
 
 const RECONNECT_INTERVAL_MS = 1200;
 const CONTEXT_SYNC_INTERVAL_MS = 1000;
+const PAGE_CONTEXT_READ_TIMEOUT_MS = 5000;
 const CONNECT_SUCCESS_TOAST_TIMER_SECONDS = 3;
 let started = false;
 let connecting = false;
@@ -38,6 +39,7 @@ let clientId = '';
 let transport: BridgeTransport | undefined;
 let reconnectTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
 let contextSyncTimer: ReturnType<typeof globalThis.setInterval> | undefined;
+let contextSyncInFlight = false;
 let configSubscription: ISYS_MessageBusTask | null = null;
 let taskChain: Promise<void> = Promise.resolve();
 const taskQuarantine = new BridgeTaskQuarantine();
@@ -48,7 +50,7 @@ let currentActiveClientId = '';
 let controlledRecoveryPending = false;
 let pendingUnknownWriteRequestId: string | undefined;
 let transportGeneration = 0;
-const HOST_RESTART_REQUIRED_MESSAGE = 'PCB autoLayout may still commit. Restart the EDA host before controlled recovery readback.';
+const HOST_RESTART_REQUIRED_MESSAGE = 'PCB autoLayout or autoRouting may still commit. Restart the EDA host before controlled recovery readback.';
 // 每次建立新连接时递增，确保每次调用 eda.sys_WebSocket.register 使用唯一 socketId。
 let socketSequence = 0;
 
@@ -219,14 +221,32 @@ function getSocketId(): string {
 	return `jlc_mcp_bridge_socket_${getClientId()}_${socketSequence}`;
 }
 
+async function withPageContextTimeout<T>(read: Promise<T>, operation: string): Promise<T> {
+	let timeoutId: ReturnType<typeof globalThis.setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			read,
+			new Promise<T>((_resolve, reject) => {
+				timeoutId = globalThis.setTimeout(() => {
+					reject(new Error(`${operation} timed out after ${String(PAGE_CONTEXT_READ_TIMEOUT_MS)}ms.`));
+				}, PAGE_CONTEXT_READ_TIMEOUT_MS);
+			}),
+		]);
+	}
+	finally {
+		if (timeoutId !== undefined)
+			globalThis.clearTimeout(timeoutId);
+	}
+}
+
 // 使用官方上下文 API 读取当前目标身份，避免多页面时仅按连接顺序选择。
 async function readBridgeClientContext(expectedPageKind?: BridgeClientContext['pageKind']): Promise<BridgeClientContext | undefined> {
-	const [document, project, schematicPage, pcb] = await Promise.all([
+	const [document, project, schematicPage, pcb] = await withPageContextTimeout(Promise.all([
 		safeCall(() => eda.dmt_SelectControl.getCurrentDocumentInfo()),
 		safeCall(() => eda.dmt_Project.getCurrentProjectInfo()),
 		safeCall(() => eda.dmt_Schematic.getCurrentSchematicPageInfo()),
 		safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
-	]);
+	]), 'EDA page context read');
 	if (!document && !project && !schematicPage && !pcb) {
 		if (expectedPageKind)
 			throw new Error(`Cannot verify the current ${expectedPageKind} page before writing; the operation was not started.`);
@@ -588,8 +608,26 @@ async function ensureConnected(): Promise<void> {
 
 	connecting = true;
 	statusReporter.markConnecting();
+	const connectionGeneration = transportGeneration;
 	const activeClientId = getClientId();
-	const initialContext = await readBridgeClientContext();
+	let initialContext: BridgeClientContext | undefined;
+	try {
+		initialContext = await readBridgeClientContext();
+	}
+	catch (error: unknown) {
+		connecting = false;
+		if (started) {
+			statusReporter.markFailed(toSafeErrorMessage(error));
+			scheduleReconnect();
+		}
+		return;
+	}
+	if (!started || connectionGeneration !== transportGeneration || transport) {
+		connecting = false;
+		if (started && !transport)
+			scheduleReconnect();
+		return;
+	}
 	const instance = new BridgeTransport(getConfiguredMcpUrl(), getSocketId(), activeClientId, String(extensionConfig.version), initialContext, {
 		onRoleChanged: (message) => {
 			applyRole(message);
@@ -624,8 +662,10 @@ async function ensureConnected(): Promise<void> {
 		bridgeLogDispatchPipeline.resetHandshakeState();
 		await instance.connect();
 		debugLog('[DEBUG] bridge-runtime connection established');
-		if (!started) {
+		if (!started || connectionGeneration !== transportGeneration || transport) {
 			instance.close();
+			if (started && !transport)
+				scheduleReconnect();
 			return;
 		}
 
@@ -733,10 +773,10 @@ function subscribeConfigChange(): void {
 
 // 检查当前页面是否为原理图或 PCB 可编辑页。
 async function isEditablePage(): Promise<boolean> {
-	const [schPageInfo, pcbInfo] = await Promise.all([
+	const [schPageInfo, pcbInfo] = await withPageContextTimeout(Promise.all([
 		safeCall(() => eda.dmt_Schematic.getCurrentSchematicPageInfo()),
 		safeCall(() => eda.dmt_Pcb.getCurrentPcbInfo()),
-	]);
+	]), 'EDA editable page detection');
 	return schPageInfo != null || pcbInfo != null;
 }
 
@@ -744,6 +784,9 @@ async function isEditablePage(): Promise<boolean> {
 function startContextSync(): void {
 	clearContextSyncTimer();
 	contextSyncTimer = globalThis.setInterval(() => {
+		if (contextSyncInFlight)
+			return;
+		contextSyncInFlight = true;
 		void isEditablePage().then(async (editable) => {
 			if (editable) {
 				transport?.updateContext(await readBridgeClientContext());
@@ -768,6 +811,8 @@ function startContextSync(): void {
 			}
 		}).catch(() => {
 			// 页面类型检测失败时不做处理，下次同步时再试。
+		}).finally(() => {
+			contextSyncInFlight = false;
 		});
 	}, CONTEXT_SYNC_INTERVAL_MS);
 }

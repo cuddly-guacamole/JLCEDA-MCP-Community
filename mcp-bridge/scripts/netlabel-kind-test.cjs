@@ -320,7 +320,7 @@ async function main() {
 	const layoutPayload = { apiFullName: 'eda.pcb_Document.autoLayout', args: [] };
 	const unknownLayoutResult = { ok: false, commitState: 'unknown', retryBlocked: true };
 	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, unknownLayoutResult), true);
-	assert.equal(requiresHostRestartForResult(layoutPath, { apiFullName: 'eda.pcb_Document.autoRouting' }, unknownLayoutResult), false);
+	assert.equal(requiresHostRestartForResult(layoutPath, { apiFullName: 'eda.pcb_Document.autoRouting' }, unknownLayoutResult), true);
 	assert.equal(requiresHostRestartForResult(layoutPath, layoutPayload, { ok: true, commitState: 'complete' }), false);
 	const layoutQuarantine = new BridgeTaskQuarantine();
 	let resolveLateLayoutResult;

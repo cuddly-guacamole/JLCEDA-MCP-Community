@@ -66,6 +66,16 @@ class MockBridgeTransport {
 require('../src/runtime/bridge-transport.ts').BridgeTransport = MockBridgeTransport;
 const { enqueueTask, startBridgeRuntime, stopBridgeRuntime } = require('../src/runtime/bridge-runtime.ts');
 
+async function waitUntil(predicate, timeoutMs = 10_000) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (predicate())
+			return;
+		await new Promise(resolve => setTimeout(resolve, 20));
+	}
+	throw new Error('Bridge state did not become ready before the test deadline');
+}
+
 async function main() {
 	const deleteEntered = deferred();
 	const finishDelete = deferred();
@@ -76,6 +86,9 @@ async function main() {
 	let pcbWriteCalls = 0;
 	let currentDocumentType = 3;
 	let gatedDocumentRead;
+	let hangingDocumentReads = 0;
+	let hangingEditablePageReads = false;
+	let hungEditableGetterCalls = 0;
 	globalThis.eda = {
 		EDMT_EditorDocumentType: { SCHEMATIC_PAGE: 1, PCB: 3 },
 		sys_Storage: { getExtensionUserConfig() { return undefined; }, async setExtensionUserConfig() {} },
@@ -86,6 +99,10 @@ async function main() {
 		sys_Message: { showToastMessage() {} },
 		dmt_SelectControl: {
 			async getCurrentDocumentInfo() {
+				if (hangingDocumentReads > 0) {
+					hangingDocumentReads -= 1;
+					return new Promise(() => {});
+				}
 				if (gatedDocumentRead) {
 					const gate = gatedDocumentRead;
 					gatedDocumentRead = undefined;
@@ -99,7 +116,15 @@ async function main() {
 			},
 		},
 		dmt_Project: { async getCurrentProjectInfo() { return { uuid: 'project-one' }; } },
-		dmt_Schematic: { async getCurrentSchematicPageInfo() { return { uuid: 'schematic-one' }; } },
+		dmt_Schematic: {
+			async getCurrentSchematicPageInfo() {
+				if (hangingEditablePageReads) {
+					hungEditableGetterCalls += 1;
+					return new Promise(() => {});
+				}
+				return { uuid: 'schematic-one' };
+			},
+		},
 		dmt_Pcb: { async getCurrentPcbInfo() { return { uuid: 'cached-pcb' }; } },
 		pcb_PrimitiveComponent: {
 			async create() {
@@ -201,6 +226,18 @@ async function main() {
 		assert.equal(transport.started.includes('lease-changed-during-context'), false);
 		assert.equal(secondWriteCalls, 0);
 		submittedLease = 4;
+		const hungContextGate = holdNextDocumentRead();
+		submit('hung-context-write', { apiFullName: 'eda.sch_PrimitiveComponent.create', args: [] });
+		await hungContextGate.entered.promise;
+		submit('read-after-hung-context', { apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] });
+		const hungWrite = await transport.resultFor('hung-context-write');
+		const readAfterHungContext = await transport.resultFor('read-after-hung-context');
+		assert.match(hungWrite.error.message, /page context read timed out/);
+		assert.equal(transport.started.includes('hung-context-write'), false, 'a timed-out identity read must not start the write handler');
+		assert.equal(secondWriteCalls, 0);
+		assert.equal(readAfterHungContext.error, undefined, 'later read-only work must not remain stuck behind the failed preflight');
+		hungContextGate.release.resolve();
+		readCalls = 0;
 		submit('uncertain-delete', { apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['to-delete'] });
 		await deleteEntered.promise;
 		// Both following tasks enter taskChain before the first handler returns.
@@ -234,10 +271,31 @@ async function main() {
 		assert.equal(read.error, undefined, 'a read-only task must remain available');
 		assert.equal(readCalls, 1);
 		assert.equal(transport.started.includes('queued-read'), true);
-		process.stdout.write('Bridge unknown-commit queue barrier test passed\n');
 	}
 	finally {
 		finishDelete.resolve();
+		stopBridgeRuntime();
+	}
+	const previousTransport = activeTransport;
+	hangingEditablePageReads = true;
+	startBridgeRuntime();
+	try {
+		await new Promise(resolve => setTimeout(resolve, 5400));
+		assert.equal(activeTransport, previousTransport, 'a hung editable-page getter must prevent a premature connection');
+		assert.ok(hungEditableGetterCalls <= 2, 'periodic context checks must not accumulate during a hung native getter');
+		hangingEditablePageReads = false;
+		await waitUntil(() => activeTransport !== previousTransport, 5000);
+		const reconnectedTransport = activeTransport;
+		hangingDocumentReads = 1;
+		const restartBridgeServer = require('../src/runtime/bridge-runtime.ts').restartBridgeServer;
+		restartBridgeServer();
+		await waitUntil(() => activeTransport !== reconnectedTransport, 10_000);
+		assert.equal(hangingDocumentReads, 0, 'the first connection context read must have reached the hung getter');
+		assert.equal(activeTransport.started.length, 0);
+		process.stdout.write('Bridge context timeout and queue barrier tests passed\n');
+	}
+	finally {
+		hangingEditablePageReads = false;
 		stopBridgeRuntime();
 	}
 }

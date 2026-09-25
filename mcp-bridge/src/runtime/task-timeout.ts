@@ -55,7 +55,7 @@ export function requiresHostRestartForResult(path: string, payload: unknown, res
 	const apiFullName = (payload as Record<string, unknown>).apiFullName;
 	const response = result as Record<string, unknown>;
 	return typeof apiFullName === 'string'
-		&& apiFullName.toLowerCase() === 'eda.pcb_document.autolayout'
+		&& ['eda.pcb_document.autolayout', 'eda.pcb_document.autorouting'].includes(apiFullName.trim().toLowerCase())
 		&& response.ok === false
 		&& response.commitState === 'unknown'
 		&& response.retryBlocked === true;
