@@ -331,6 +331,16 @@ export async function handlePcbDocumentTask(payload: unknown): Promise<unknown> 
 			documentUuid: documentInfo?.uuid,
 			projectUuid: documentInfo?.parentProjectUuid ?? projectInfo?.uuid,
 		};
+		if (typeof pcbInfo?.uuid !== 'string' || !pcbInfo.uuid.trim()) {
+			return {
+				ok: false,
+				action,
+				importContext,
+				reason: 'pcb_identity_unavailable',
+				commitState: 'not_started',
+				requiresNativeConfirmation: false,
+			};
+		}
 		if (pcbInfo && (typeof pcbInfo.parentBoardName !== 'string' || !pcbInfo.parentBoardName.trim())) {
 			return {
 				ok: false,

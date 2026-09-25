@@ -1089,6 +1089,13 @@ async function main() {
 	assert.equal(unlinkedPcbImport.reason, 'pcb_not_associated_with_board');
 	assert.equal(unlinkedPcbImport.commitState, 'not_started');
 	assert.equal(unlinkedPcbImport.requiresNativeConfirmation, false);
+	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => {
+		throw new Error('PCB metadata unavailable');
+	};
+	const unavailablePcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });
+	assert.equal(unavailablePcbImport.reason, 'pcb_identity_unavailable');
+	assert.equal(unavailablePcbImport.commitState, 'not_started');
+	assert.equal(unavailablePcbImport.requiresNativeConfirmation, false);
 	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = linkedPcbInfo;
 	globalThis.eda.pcb_Document.importChanges = nativeImportChanges;
 	const pendingPcbImport = await handlePcbDocumentTask({ action: 'import_changes', uuid: 'sch-1' });

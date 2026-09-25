@@ -116,6 +116,17 @@ async function main() {
 	assert.equal(unknown.nativeCallSettled, false);
 	assert.equal(requiresHostRestartForResult('/bridge/jlceda/editor/navigate', {}, unknown), true);
 	globalThis.eda.dmt_EditorControl.openDocument = originalOpen;
+	globalThis.eda.dmt_EditorControl.openDocument = async () => {
+		throw new Error('Document cannot be opened');
+	};
+	await assert.rejects(() => handleEditorNavigateTask({ operation: 'open', projectUuid, documentUuid: 'pcb-1' }), /Document cannot be opened/);
+	globalThis.eda.dmt_EditorControl.openDocument = originalOpen;
+	const originalActivate = globalThis.eda.dmt_EditorControl.activateDocument;
+	globalThis.eda.dmt_EditorControl.activateDocument = async () => {
+		throw new Error('Tab is no longer available');
+	};
+	await assert.rejects(() => handleEditorNavigateTask({ operation: 'activate', projectUuid, documentUuid: 'pcb-1', tabId: 'pcb-1@project-1' }), /Tab is no longer available/);
+	globalThis.eda.dmt_EditorControl.activateDocument = originalActivate;
 	globalThis.eda.dmt_EditorControl.openDocument = async (documentUuid) => {
 		changeDocument(documentUuid, `${documentUuid}@${projectUuid}`);
 		return undefined;
