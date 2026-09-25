@@ -10,7 +10,7 @@
  */
 
 import type { DesignatorChange } from './component-designator-restore';
-import { getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
+import { getEdaRuntime, getSyncState, isPlainObjectRecord, toSafeErrorMessage } from '../utils';
 import { readSchematicDesignators, restoreChangedSchematicDesignators } from './component-designator-restore';
 
 interface ComponentPlaceAutoItem {
@@ -325,6 +325,22 @@ function isUnknownCreateResult(errorMessage: string): boolean {
 	return /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i.test(errorMessage);
 }
 
+async function currentSchematicPageUuid(): Promise<string> {
+	const schematic = getEdaRuntime()?.dmt_Schematic;
+	if (!isPlainObjectRecord(schematic) || typeof schematic.getCurrentSchematicPageInfo !== 'function')
+		throw new Error('无法读取当前原理图图页身份。');
+	const page = await Promise.resolve((schematic.getCurrentSchematicPageInfo as () => Promise<unknown>).call(schematic));
+	const pageUuid = isPlainObjectRecord(page) && typeof page.uuid === 'string' ? page.uuid.trim() : '';
+	if (!pageUuid)
+		throw new Error('当前未打开原理图图页。');
+	return pageUuid;
+}
+
+async function assertSchematicPageUuid(expected: string): Promise<void> {
+	if (await currentSchematicPageUuid() !== expected)
+		throw new Error('原理图图页已切换，本批次已停止。');
+}
+
 /**
  * 处理器件自动坐标放置任务。
  * @param payload 任务参数。
@@ -361,10 +377,14 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 
 	const api = resolveComponentCreateApi();
 	let trackedDesignators: Map<string, string>;
+	let pageUuid: string;
 	let annotationWarning: string | undefined;
 	let creationWarning: string | undefined;
+	let pageWarning: string | undefined;
 	try {
+		pageUuid = await currentSchematicPageUuid();
 		trackedDesignators = await readSchematicDesignators(api);
+		await assertSchematicPageUuid(pageUuid);
 	}
 	catch (error: unknown) {
 		return {
@@ -378,8 +398,8 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			failedComponents: [],
 			designatorChanges: [],
 			restoredDesignators: [],
-			annotationWarning: `无法记录已有器件位号，本次未放置：${toSafeErrorMessage(error)}`,
-			message: '未能读取已有器件位号，本次未开始放置。',
+			annotationWarning: `放置前无法核对当前图页或已有器件位号：${toSafeErrorMessage(error)}`,
+			message: '无法核对当前图页或已有器件位号，本次未开始放置。',
 		};
 	}
 	const placedComponents: Array<{ uuid: string; libraryUuid: string; x: number; y: number; primitiveId: string; designator: string }> = [];
@@ -391,6 +411,13 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 
 	for (let index = 0; index < components.length; index += 1) {
 		const component = components[index];
+		try {
+			await assertSchematicPageUuid(pageUuid);
+		}
+		catch (error: unknown) {
+			pageWarning = `放置前无法确认原理图图页身份：${toSafeErrorMessage(error)}`;
+			break;
+		}
 		const position = calculateComponentPosition(
 			index,
 			component,
@@ -415,15 +442,26 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 				),
 			);
 			if (createdComponent === undefined || createdComponent === null) {
-				throw new Error('sch_PrimitiveComponent.create returned undefined');
+				commitUnknown = true;
+				nativeCallSettled = true;
+				creationWarning = 'EDA 创建调用已返回，但没有新器件对象，无法核对创建结果。';
+				failedComponents.push({ uuid: component.uuid, libraryUuid: component.libraryUuid, error: creationWarning });
+				break;
 			}
-
+			const primitiveId = getSyncState<string>(createdComponent, 'getState_PrimitiveId', '').trim();
+			if (!primitiveId) {
+				commitUnknown = true;
+				nativeCallSettled = true;
+				creationWarning = 'EDA 返回的新器件缺少图元 ID，无法核对创建结果。';
+				failedComponents.push({ uuid: component.uuid, libraryUuid: component.libraryUuid, error: creationWarning });
+				break;
+			}
 			placedComponents.push({
 				uuid: component.uuid,
 				libraryUuid: component.libraryUuid,
 				x: position.x,
 				y: position.y,
-				primitiveId: getSyncState(createdComponent, 'getState_PrimitiveId', ''),
+				primitiveId,
 				designator: getSyncState(createdComponent, 'getState_Designator', ''),
 			});
 		}
@@ -446,10 +484,21 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 		try {
 			// Track the starting page and every earlier placement in this batch.
 			// A later create may renumber an earlier new component too.
-			const restored = await restoreChangedSchematicDesignators(api, trackedDesignators);
+			const restored = await restoreChangedSchematicDesignators(api, trackedDesignators, () => assertSchematicPageUuid(pageUuid));
+			await assertSchematicPageUuid(pageUuid);
 			designatorChanges = restored.designatorChanges;
 			restoredDesignators.push(...restored.restoredDesignators);
 			const currentDesignators = restored.currentDesignators;
+			const latest = placedComponents[placedComponents.length - 1];
+			if (!currentDesignators.has(latest.primitiveId)) {
+				placedComponents.pop();
+				commitUnknown = true;
+				nativeCallSettled = restored.nativeCallSettled !== false;
+				creationWarning = `EDA 返回的器件图元 ${latest.primitiveId} 不在当前原理图图页中，创建结果需要核对。`;
+				failedComponents.push({ uuid: component.uuid, libraryUuid: component.libraryUuid, error: creationWarning });
+				annotationWarning = restored.annotationWarning;
+				break;
+			}
 			for (const placed of placedComponents) {
 				const currentDesignator = currentDesignators.get(placed.primitiveId);
 				if (currentDesignator !== undefined)
@@ -461,21 +510,24 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 				nativeCallSettled = restored.nativeCallSettled !== false;
 				break;
 			}
-			const latest = placedComponents[placedComponents.length - 1];
 			if (latest.primitiveId)
 				trackedDesignators.set(latest.primitiveId, latest.designator);
 		}
 		catch (error: unknown) {
-			annotationWarning = `放置已执行，但无法核对已有器件位号：${toSafeErrorMessage(error)}`;
+			placedComponents.pop();
+			commitUnknown = true;
+			nativeCallSettled = true;
+			creationWarning = `器件创建已返回，但当前图页回读失败，无法核对创建结果：${toSafeErrorMessage(error)}`;
+			failedComponents.push({ uuid: component.uuid, libraryUuid: component.libraryUuid, error: creationWarning });
 			break;
 		}
 	}
 	const notAttemptedCount = components.length - placedComponents.length - failedComponents.length;
 
-	if (failedComponents.length > 0 || annotationWarning || creationWarning) {
+	if (failedComponents.length > 0 || annotationWarning || creationWarning || pageWarning) {
 		return {
 			ok: false,
-			needsReview: Boolean(annotationWarning || creationWarning),
+			needsReview: Boolean(annotationWarning || creationWarning || pageWarning),
 			placedCount: placedComponents.length,
 			failedCount: failedComponents.length,
 			totalCount: components.length,
@@ -486,12 +538,15 @@ export async function handleComponentPlaceAutoTask(payload: unknown): Promise<un
 			restoredDesignators,
 			annotationWarning,
 			...(creationWarning ? { creationWarning } : {}),
+			...(pageWarning ? { pageWarning } : {}),
 			...(commitUnknown ? { commitUnknown: true, readbackRequired: true, nativeCallSettled } : {}),
 			message: creationWarning
 				? `器件创建结果未知；已确认放置 ${String(placedComponents.length)} 个，${String(notAttemptedCount)} 个未尝试。请先回读当前原理图。`
-				: annotationWarning
-					? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；器件位号需核对。`
-					: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
+				: pageWarning
+					? `原理图图页身份无法确认；已确认放置 ${String(placedComponents.length)} 个，${String(notAttemptedCount)} 个未尝试。`
+					: annotationWarning
+						? `放置了 ${String(placedComponents.length)} 个器件，${String(notAttemptedCount)} 个未尝试；器件位号需核对。`
+						: `放置了 ${String(placedComponents.length)} 个器件，${String(failedComponents.length)} 个失败。`,
 		};
 	}
 

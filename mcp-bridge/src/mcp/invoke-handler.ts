@@ -9,6 +9,7 @@
  * ------------------------------------------------------------------------
  */
 
+import { isReadOnlyBridgeRequest } from '../bridge/bridge-contract';
 import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
@@ -23,6 +24,10 @@ const PCB_ROUTING_READBACKS = new Map([
 ]);
 const SCHEMATIC_PAGES_GET_ALL = 'eda.dmt_schematic.getallschematicpagesinfo';
 let pendingAutoLayoutPcbUuid: string | undefined;
+
+function isUnknownNativeRpcResult(errorMessage: string): boolean {
+	return /timed?\s*out|ETIMEDOUT|disconnect|connection\s+(?:closed|lost|reset|aborted)|socket\s+(?:closed|hang up)|transport\s+(?:closed|lost)|websocket.*(?:closed|not open)|ECONNRESET|ECONNABORTED|EPIPE/i.test(errorMessage);
+}
 
 function pcbComponentPosition(component: unknown): { primitiveId: string; designator: string; x: number; y: number; rotation: number } | undefined {
 	const raw = isPlainObjectRecord(component) ? component : {};
@@ -211,11 +216,21 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		if (!component) {
 			throw new Error(`找不到器件图元 ${invokeArgs[0]}，未执行修改。`);
 		}
-		const otherProperty = getSyncState<unknown>(component, 'getState_OtherProperty', undefined);
-		if (!isPlainObjectRecord(otherProperty)) {
+		const getOtherProperty = (component as Record<string, unknown>).getState_OtherProperty;
+		if (typeof getOtherProperty !== 'function') {
 			throw new TypeError('无法读取器件原有 BOM 属性，已取消可能清空 BOM 属性的修改。');
 		}
-		invokeArgs[1] = { ...invokeArgs[1], otherProperty: { ...otherProperty } };
+		let otherProperty: unknown;
+		try {
+			otherProperty = getOtherProperty.call(component);
+		}
+		catch {
+			throw new TypeError('无法读取器件原有 BOM 属性，已取消可能清空 BOM 属性的修改。');
+		}
+		if (otherProperty !== undefined && !isPlainObjectRecord(otherProperty)) {
+			throw new TypeError('无法读取器件原有 BOM 属性，已取消可能清空 BOM 属性的修改。');
+		}
+		invokeArgs[1] = { ...invokeArgs[1], otherProperty: otherProperty === undefined ? {} : { ...otherProperty } };
 	}
 
 	// EDA 3.x 的数组重载可能仅删除首项。逐个删除并核对实际图元列表。
@@ -231,6 +246,32 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		const deletedIds: string[] = [];
 		const failedIds: string[] = [];
 		let deleteAttempted = false;
+		const callDelete = async (target: unknown): Promise<string | undefined> => {
+			try {
+				await Promise.resolve(callable.call(thisArg, target));
+				return undefined;
+			}
+			catch (error: unknown) {
+				const message = toSafeErrorMessage(error);
+				if (isUnknownNativeRpcResult(message))
+					return message;
+				throw error;
+			}
+		};
+		const unknownDeleteResult = (id: string, index: number, error: string): Record<string, unknown> => ({
+			apiFullName: resolvedPath,
+			ok: false,
+			result: false,
+			reason: 'native_delete_result_unknown',
+			error,
+			deletedIds,
+			failedIds,
+			uncertainIds: [id],
+			notAttemptedIds: ids.slice(index + 1),
+			commitUnknown: true,
+			readbackRequired: true,
+			nativeCallSettled: false,
+		});
 		for (const [index, id] of ids.entries()) {
 			let before: string[];
 			try {
@@ -251,6 +292,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 					notAttemptedIds: ids.slice(index),
 					commitUnknown: true,
 					readbackRequired: true,
+					nativeCallSettled: true,
 				};
 			}
 			if (!before.includes(id)) {
@@ -258,13 +300,17 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 				continue;
 			}
 			deleteAttempted = true;
-			await Promise.resolve(callable.call(thisArg, id));
+			const initialDeleteError = await callDelete(id);
+			if (initialDeleteError)
+				return unknownDeleteResult(id, index, initialDeleteError);
 			try {
 				let remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
 				if (remaining.includes(id) && typeof module.get === 'function') {
 					const liveObject = await Promise.resolve(module.get.call(thisArg, id));
 					if (liveObject) {
-						await Promise.resolve(callable.call(thisArg, liveObject));
+						const fallbackDeleteError = await callDelete(liveObject);
+						if (fallbackDeleteError)
+							return unknownDeleteResult(id, index, fallbackDeleteError);
 						remaining = await Promise.resolve(module.getAllPrimitiveId.call(thisArg, undefined, true));
 					}
 				}
@@ -283,6 +329,7 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 					notAttemptedIds: ids.slice(index + 1),
 					commitUnknown: true,
 					readbackRequired: true,
+					nativeCallSettled: true,
 				};
 			}
 		}
@@ -335,6 +382,17 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 				retryBlocked: true,
 				error: toSafeErrorMessage(error),
 				verification: 'Auto routing may still commit. Restart the original EDA host, then read back every PCB track, via, and net before retrying.',
+			};
+		}
+		const errorMessage = toSafeErrorMessage(error);
+		if (!isReadOnlyBridgeRequest('/bridge/jlceda/api/invoke', payload) && isUnknownNativeRpcResult(errorMessage)) {
+			return {
+				apiFullName: resolvedPath,
+				ok: false,
+				commitUnknown: true,
+				readbackRequired: true,
+				nativeCallSettled: false,
+				error: errorMessage,
 			};
 		}
 		throw error;

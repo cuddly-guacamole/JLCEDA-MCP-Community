@@ -66,7 +66,7 @@ async function main() {
 	for (const component of [
 		{ otherProperty: { Value: 'stale' } },
 		{ getState_OtherProperty() { throw new Error('state read failed'); } },
-		{ getState_OtherProperty() { return undefined; } },
+		{ getState_OtherProperty() { return null; } },
 	]) {
 		globalThis.eda.sch_PrimitiveComponent = {
 			async get() { return component; },
@@ -78,12 +78,42 @@ async function main() {
 		);
 	}
 	assert.equal(unsafeModifyCalls, 0, 'unreadable BOM metadata must block native modify');
+	globalThis.eda.sch_PrimitiveComponent = {
+		async get() { return { getState_OtherProperty() { return undefined; } }; },
+		async modify(_id, patch) {
+			assert.deepEqual(patch.otherProperty, unsafeModifyCalls === 0 ? {} : { Value: '22k' });
+			unsafeModifyCalls += 1;
+			return patch;
+		},
+	};
+	const noCustomProperties = await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.modify',
+		args: ['r1', { designator: 'R2' }],
+	});
+	assert.deepEqual(noCustomProperties.result.otherProperty, {});
+	globalThis.eda.sch_PrimitiveComponent.get = async () => { throw new Error('explicit property must skip original-state read'); };
 	const explicitProperty = await handleApiInvokeTask({
 		apiFullName: 'eda.sch_PrimitiveComponent.modify',
 		args: ['r1', { otherProperty: { Value: '22k' } }],
 	});
-	assert.equal(explicitProperty.result, undefined);
-	assert.equal(unsafeModifyCalls, 1, 'explicit replacement metadata needs no state getter');
+	assert.deepEqual(explicitProperty.result.otherProperty, { Value: '22k' });
+	assert.equal(unsafeModifyCalls, 2, 'explicit replacement metadata needs no state getter');
+	globalThis.eda.sch_PrimitiveComponent = {
+		async modify() { throw new Error('RPC Call modify Timed Out'); },
+		async getAll() { throw new Error('RPC Call getAll Timed Out'); },
+	};
+	const uncertainInvoke = await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.modify',
+		args: ['r1', { otherProperty: {} }],
+	});
+	assert.equal(uncertainInvoke.commitUnknown, true);
+	assert.equal(uncertainInvoke.readbackRequired, true);
+	assert.equal(uncertainInvoke.nativeCallSettled, false);
+	await assert.rejects(
+		handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.getAll', args: [] }),
+		/Timed Out/,
+		'read-only API failures must remain ordinary errors',
+	);
 
 	// The host's array overload removes only its first element; single IDs work.
 	const remaining = new Set(['a', 'b', 'c']);
@@ -99,6 +129,29 @@ async function main() {
 	assert.equal(deleted.result, true);
 	assert.deepEqual(deleted.deletedIds, ['a', 'b', 'c']);
 	assert.deepEqual([...remaining], []);
+	const initialDeleteApi = globalThis.eda.sch_PrimitiveComponent;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return ['timeout-id']; },
+		async delete() { throw new Error('RPC Call delete Timed Out'); },
+	};
+	const uncertainDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['timeout-id'] });
+	assert.equal(uncertainDelete.commitUnknown, true);
+	assert.equal(uncertainDelete.nativeCallSettled, false);
+	assert.deepEqual(uncertainDelete.uncertainIds, ['timeout-id']);
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId() { return ['fallback-timeout']; },
+		async get() { return primitive('fallback-timeout', 'R1'); },
+		async delete(input) {
+			if (typeof input === 'string')
+				return false;
+			throw new Error('RPC Call delete Timed Out');
+		},
+	};
+	const uncertainFallbackDelete = await handleApiInvokeTask({ apiFullName: 'eda.sch_PrimitiveComponent.delete', args: ['fallback-timeout'] });
+	assert.equal(uncertainFallbackDelete.commitUnknown, true);
+	assert.equal(uncertainFallbackDelete.nativeCallSettled, false);
+	assert.deepEqual(uncertainFallbackDelete.uncertainIds, ['fallback-timeout']);
+	globalThis.eda.sch_PrimitiveComponent = initialDeleteApi;
 
 	// Some host builds reject an ID string but accept its live primitive object.
 	remaining.add('d');
@@ -814,13 +867,16 @@ async function main() {
 	assert.match(timedOutCreate.creationWarning, /Timed Out/);
 
 	let rejectedCreateCalls = 0;
+	const rejectedCreateComponents = [];
 	globalThis.eda.sch_PrimitiveComponent = {
-		async getAll() { return []; },
+		async getAll() { return rejectedCreateComponents; },
 		async create() {
 			rejectedCreateCalls += 1;
 			if (rejectedCreateCalls === 1)
 				throw new Error('Invalid library device');
-			return primitive('second-created', 'R1');
+			const created = primitive('second-created', 'R1');
+			rejectedCreateComponents.push(created);
+			return created;
 		},
 	};
 	const rejectedCreate = await handleComponentPlaceAutoTask({ components: [
@@ -831,6 +887,88 @@ async function main() {
 	assert.equal(rejectedCreate.failedCount, 1);
 	assert.equal(rejectedCreate.placedCount, 1);
 	assert.equal(rejectedCreate.commitUnknown, undefined);
+
+	for (const returnedId of ['missing-current-page', '']) {
+		let createCount = 0;
+		globalThis.eda.sch_PrimitiveComponent = {
+			async getAll() { return [primitive('existing-u', 'U4')]; },
+			async create() {
+				createCount += 1;
+				return primitive(returnedId, 'R1');
+			},
+		};
+		const unverifiedCreate = await handleComponentPlaceAutoTask({ components: [
+			{ uuid: 'first', libraryUuid: 'library' },
+			{ uuid: 'second', libraryUuid: 'library' },
+		] });
+		assert.equal(createCount, 1);
+		assert.equal(unverifiedCreate.ok, false);
+		assert.equal(unverifiedCreate.needsReview, true);
+		assert.equal(unverifiedCreate.placedCount, 0);
+		assert.equal(unverifiedCreate.failedCount, 1);
+		assert.equal(unverifiedCreate.notAttemptedCount, 1);
+		assert.equal(unverifiedCreate.commitUnknown, true);
+		assert.equal(unverifiedCreate.readbackRequired, true);
+		assert.equal(unverifiedCreate.nativeCallSettled, true);
+	}
+	let undefinedCreateCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return [primitive('existing-u', 'U4')]; },
+		async create() { undefinedCreateCalls += 1; return undefined; },
+	};
+	const undefinedCreate = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
+	] });
+	assert.equal(undefinedCreateCalls, 1);
+	assert.equal(undefinedCreate.placedCount, 0);
+	assert.equal(undefinedCreate.commitUnknown, true);
+	assert.equal(undefinedCreate.nativeCallSettled, true);
+
+	currentPageUuid = 'P1';
+	let pageDriftCreateCalls = 0;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return [primitive('existing-u', 'U4')]; },
+		async create() {
+			pageDriftCreateCalls += 1;
+			currentPageUuid = 'P2';
+			return primitive('new-r', 'R1');
+		},
+	};
+	const switchedPageCreate = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
+	] });
+	assert.equal(pageDriftCreateCalls, 1);
+	assert.equal(switchedPageCreate.placedCount, 0);
+	assert.equal(switchedPageCreate.commitUnknown, true);
+	assert.equal(switchedPageCreate.nativeCallSettled, true);
+	assert.match(switchedPageCreate.creationWarning, /图页已切换/);
+	currentPageUuid = 'P1';
+	const originalPageInfo = globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo;
+	let pageReads = 0;
+	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = async () => ({ uuid: ++pageReads <= 4 ? 'P1' : 'P2' });
+	let prewriteCreateCalls = 0;
+	const prewriteComponents = [primitive('existing-u', 'U4')];
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAll() { return prewriteComponents; },
+		async create() {
+			prewriteCreateCalls += 1;
+			const created = primitive('first-r', 'R1');
+			prewriteComponents.push(created);
+			return created;
+		},
+	};
+	const prewritePageChange = await handleComponentPlaceAutoTask({ components: [
+		{ uuid: 'first', libraryUuid: 'library' },
+		{ uuid: 'second', libraryUuid: 'library' },
+	] });
+	assert.equal(prewriteCreateCalls, 1);
+	assert.equal(prewritePageChange.placedCount, 1);
+	assert.equal(prewritePageChange.notAttemptedCount, 1);
+	assert.match(prewritePageChange.pageWarning, /图页已切换/);
+	assert.equal(prewritePageChange.commitUnknown, undefined);
+	globalThis.eda.dmt_Schematic.getCurrentSchematicPageInfo = originalPageInfo;
 
 	globalThis.eda.sch_PrimitiveComponent.getAll = async () => {
 		throw new Error('readback failed');
@@ -856,9 +994,11 @@ async function main() {
 	] });
 	assert.equal(uncertainPlacement.ok, false);
 	assert.equal(uncertainPlacement.needsReview, true);
-	assert.equal(uncertainPlacement.placedCount, 1);
+	assert.equal(uncertainPlacement.placedCount, 0);
+	assert.equal(uncertainPlacement.failedCount, 1);
 	assert.equal(uncertainPlacement.notAttemptedCount, 1);
-	assert.equal(uncertainPlacement.placedComponents[0].primitiveId, 'placed-before-readback-error');
+	assert.equal(uncertainPlacement.commitUnknown, true);
+	assert.equal(uncertainPlacement.nativeCallSettled, true);
 }
 
 main().then(() => console.log('schematic component issue tests passed')).catch((error) => {
