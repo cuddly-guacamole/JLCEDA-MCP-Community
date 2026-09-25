@@ -2,6 +2,8 @@
 
 ## 2.3.3
 
+`schematic_read includeConnectivityPrimitives:true` 可用于常规连线核查、写后验证和受控恢复；正常写入已返回足够的核验结果时可直接复用。
+
 `schematic_component_edit` 的几何修改会检查匿名导线连通组，同组内移动保持成功；引脚脱离或转移到另一组时报告 `pin_network_changed` 和前后组 ID。`schematic_read` 可用 `timeoutMs` 延长大图页读取预算至 120 秒。
 
 2.3.3 扩充了原理图和 PCB 的完整读取与受控编辑，新增 `editor_navigate` 以打开或激活当前工程的图页，并针对复制页共享 ID、交互放置结果和无网络 PCB 图元改进回读。工具路由和消息字段仍由共享 `contracts/bridge-contract.json` 管理；`JLCEDA_BRIDGE_TOKEN` 为可选配置。

@@ -1,7 +1,7 @@
 /**
  * ------------------------------------------------------------------------
  * 名称：桥接器件选型任务处理
- * 说明：在 EDA 侧调用器件库搜索接口，返回候选器件列表供上层确认。
+ * 说明：在 EDA 侧调用器件库搜索接口，返回候选器件列表供上层选择。
  * 作者：Lion
  * 邮箱：chengbin@3578.cn
  * 日期：2026-03-24
@@ -261,7 +261,7 @@ export async function handleComponentSelectTask(payload: unknown): Promise<unkno
 	const selection: ComponentSelectRequest = {
 		protocol: COMPONENT_SELECT_PROTOCOL,
 		title: `器件选型：${keyword}`,
-		description: `以下是系统库中“${keyword}”的搜索结果，请先确认具体型号后再继续放置。`,
+		description: `以下是系统库中“${keyword}”的搜索结果。可按已确定的型号或用户授权的选型条件继续；存在未决取舍时再请用户确认。`,
 		candidates,
 		pageSize: limit,
 		currentPage: page,
