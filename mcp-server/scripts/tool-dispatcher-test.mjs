@@ -112,6 +112,14 @@ assert.equal(bridgePathForTool('schematic_component_edit'), '/bridge/jlceda/sche
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'read' }), true);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'modify' }), false);
 assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/schematic/component-edit', { action: 'delete' }), false);
+await dispatcher.dispatch({ name: 'pcb_component_edit', arguments: { action: 'read' } });
+assert.equal(calls.at(-1).path, '/bridge/jlceda/pcb/component-edit');
+assert.deepEqual(calls.at(-1).payload, { action: 'read' });
+assert.equal(calls.at(-1).timeoutMs, bridgeTimeoutForTool('pcb_component_edit', { action: 'read' }) + 2000);
+assert.equal(bridgePathForTool('pcb_component_edit'), '/bridge/jlceda/pcb/component-edit');
+assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/component-edit', { action: 'read' }), true);
+for (const action of ['create', 'modify', 'delete'])
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/component-edit', { action }), false);
 
 const uncertainCleanupBridge = {
   async request(path) {
@@ -444,6 +452,30 @@ for (const input of [
   { action: 'delete' },
 ]) {
   assert.equal(schematicComponentEditSchema.safeParse(input).success, false, `schematic_component_edit should reject ${JSON.stringify(input)}`);
+}
+const pcbComponentEditDefinition = definitions.find((definition) => definition.name === 'pcb_component_edit');
+assert.ok(pcbComponentEditDefinition);
+const pcbComponentEditSchema = z.fromJSONSchema(pcbComponentEditDefinition.inputSchema);
+assert.equal(pcbComponentEditDefinition.inputSchema.$defs.componentProperty.minProperties, 1);
+for (const input of [
+  { action: 'read' },
+  { action: 'create', source: { kind: 'device', libraryUuid: 'lib', uuid: 'dev' }, layer: 1, x: 10, y: 20 },
+  { action: 'create', source: { kind: 'footprint', libraryUuid: 'lib', uuid: 'fp' }, layer: 2, x: 0, y: 0, rotation: 90, primitiveLock: true, timeoutMs: 60000 },
+  { action: 'modify', primitiveId: 'p1', property: { x: 11, rotation: 180, designator: 'R2', addIntoBom: true, otherProperty: { Value: '10k', Price: 2.5, Fitted: true } } },
+  { action: 'modify', primitiveId: 'p1', property: { manufacturer: null, supplierId: 'C123' } },
+  { action: 'delete', primitiveId: 'p1' },
+]) {
+  assert.equal(pcbComponentEditSchema.safeParse(input).success, true, `pcb_component_edit should accept ${JSON.stringify(input)}`);
+}
+for (const input of [
+  { action: 'read', primitiveId: 'p1' },
+  { action: 'create', source: { kind: 'device', libraryUuid: 'lib', uuid: 'dev' }, layer: 3, x: 0, y: 0 },
+  { action: 'create', source: { kind: 'footprint', libraryUuid: 'lib', uuid: 'fp' }, layer: 1, x: 0 },
+  { action: 'modify', primitiveId: 'p1', property: { net: 'VCC' } },
+  { action: 'delete', primitiveId: 'p1', property: { x: 1 } },
+  { action: 'delete' },
+]) {
+  assert.equal(pcbComponentEditSchema.safeParse(input).success, false, `pcb_component_edit should reject ${JSON.stringify(input)}`);
 }
 const componentSelectSchema = z.fromJSONSchema(componentSelectDefinition.inputSchema);
 assert.equal(componentSelectSchema.safeParse({ keyword: '1kΩ', limit: 2 }).success, true);

@@ -46,8 +46,8 @@
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "可选的执行图页 UUID 核对值，必须与诊断记录一致；不能补充缺失的执行图页身份。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
-        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "原理图器件修改或删除结果不明时使用 schematic_component_edit 及 {\"action\":\"read\"}，完整读回当前页器件状态；原理图连接或网络标识写入恢复使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}，完整读回导线、NetPort、NetFlag、NET 属性和语义网表；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID、位号和 BOM 扩展属性；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
+        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
+        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 器件创建、修改或删除结果不明时使用 pcb_component_edit 及 {\"action\":\"read\"}，完整读回当前 PCB 页器件状态；原理图器件修改或删除同理使用 schematic_component_edit；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -754,6 +754,37 @@
           }
         }
       }
+    }
+  },
+  {
+    "name": "pcb_component_edit",
+    "description": "完整读取当前 PCB 页器件，或在当前页按图元 ID 修改、删除器件；也可从器件或封装库在给定坐标创建一件。写入后核对位置和属性；结果不明时先恢复并完整回读当前页器件状态，避免重复创建或误改。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["read", "create", "modify", "delete"] },
+        "source": { "$ref": "#/$defs/source", "description": "create 的库器件或封装来源。" },
+        "layer": { "type": "integer", "enum": [1, 2], "description": "create 时的顶层(1)或底层(2)。" },
+        "x": { "type": "number", "description": "create 时的 X 坐标，使用当前 PCB 数据单位。" },
+        "y": { "type": "number", "description": "create 时的 Y 坐标，使用当前 PCB 数据单位。" },
+        "rotation": { "type": "number", "description": "create 时可选的旋转角度。" },
+        "primitiveLock": { "type": "boolean", "description": "create 时可选的图元锁定状态。" },
+        "primitiveId": { "type": "string", "minLength": 1, "description": "modify/delete 的当前 PCB 页目标图元 ID。" },
+        "property": { "$ref": "#/$defs/componentProperty", "description": "modify 的位置、层、方向、锁定状态、位号或 BOM 属性补丁；未指定字段保持原值。otherProperty 仅更新指定键，保留其余自定义属性。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "required": ["action"],
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "read" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "create" }, "source": { "$ref": "#/$defs/source" }, "layer": { "type": "integer", "enum": [1, 2] }, "x": { "type": "number" }, "y": { "type": "number" }, "rotation": { "type": "number" }, "primitiveLock": { "type": "boolean" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "source", "layer", "x", "y"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "modify" }, "primitiveId": { "type": "string", "minLength": 1 }, "property": { "$ref": "#/$defs/componentProperty" }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId", "property"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "delete" }, "primitiveId": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000 } }, "required": ["action", "primitiveId"], "additionalProperties": false }
+      ],
+      "$defs": {
+        "source": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["device", "footprint"] }, "libraryUuid": { "type": "string", "minLength": 1 }, "uuid": { "type": "string", "minLength": 1 } }, "required": ["kind", "libraryUuid", "uuid"], "additionalProperties": false },
+        "componentProperty": { "type": "object", "minProperties": 1, "properties": { "layer": { "type": "integer", "enum": [1, 2] }, "x": { "type": "number" }, "y": { "type": "number" }, "rotation": { "type": "number" }, "primitiveLock": { "type": "boolean" }, "addIntoBom": { "type": "boolean" }, "designator": { "type": ["string", "null"] }, "name": { "type": ["string", "null"] }, "uniqueId": { "type": ["string", "null"] }, "manufacturer": { "type": ["string", "null"] }, "manufacturerId": { "type": ["string", "null"] }, "supplier": { "type": ["string", "null"] }, "supplierId": { "type": ["string", "null"] }, "otherProperty": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } } }, "additionalProperties": false }
+      },
+      "additionalProperties": false
     }
   },
   {

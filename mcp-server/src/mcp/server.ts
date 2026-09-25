@@ -25,6 +25,7 @@ function createToolInputSchema(
         '/bridge/jlceda/api/invoke',
         '/bridge/jlceda/schematic/read',
         '/bridge/jlceda/schematic/component-edit',
+        '/bridge/jlceda/pcb/component-edit',
         '/bridge/jlceda/schematic/review',
         '/bridge/jlceda/schematic/layout-check',
         '/bridge/jlceda/pcb/drc-check',
@@ -47,7 +48,19 @@ function createToolInputSchema(
     }).strict();
     return z.union([recover, readback, resolveImport]);
   }
-  return z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
+  const schema = z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
+  if (name === 'pcb_component_edit' || name === 'schematic_component_edit') {
+    // z.fromJSONSchema currently omits minProperties. Preserve the advertised
+    // contract when the call reaches the MCP parser.
+    return schema.superRefine((value, context) => {
+      if (typeof value === 'object' && value !== null && 'action' in value && value.action === 'modify'
+        && 'property' in value && typeof value.property === 'object' && value.property !== null
+        && Object.keys(value.property).length === 0) {
+        context.addIssue({ code: 'custom', path: ['property'], message: 'property must contain at least one field' });
+      }
+    });
+  }
+  return schema;
 }
 
 export function createMcpServer(
