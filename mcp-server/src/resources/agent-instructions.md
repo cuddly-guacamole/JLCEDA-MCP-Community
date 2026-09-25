@@ -23,6 +23,7 @@
 - 操作 PCB 板框时使用 `pcb_board_outline_manage`，先完整读取或按类型和 ID 确认现有板框线、弧、折线，再创建、修改或删除单个图元。新建图元固定板框层与空网络，修改和删除仅限板框层；多段轮廓不要求每段闭合。写入结果不明时用无参数 `eda.pcb_PrimitiveLine.getAll` 完整回读同一 PCB 的相关图元并核对板框，诊断要求时先重启原宿主。
 - 操作 PCB 禁止区域和约束区域时使用 `pcb_region_manage`：先无 ID 完整读取，再按图元 ID 创建、修改或删除。用 `polygonSource` 提供轮廓，`ruleType` 使用 2/5/6/7/8/9，约束区域使用规则 9；创建/修改后核对回读。写入结果不明时用 `readbackPath:"/bridge/jlceda/pcb/region-manage"` 与 `readbackPayload:{"action":"read"}` 读取同一 PCB 的全部区域，诊断要求时先重启原宿主。
 - 修改 PCB 丝印、文档文本或器件位号/值属性的显示时使用 `pcb_text_manage`：先 `action:read` 核对独立文本或器件属性及其父器件 ID，再按 ID 修改；独立文本还可创建和删除。官方 `Attribute.create()` 无效。写入结果不明时用 `readbackPath:"/bridge/jlceda/pcb/text-manage"` 和 `readbackPayload:{"action":"read"}` 完整读取同一 PCB 的全部独立文本与属性，诊断要求时先重启原宿主。
+- 检查当前 PCB 时可用 `pcb_read` 一次按需读取器件、焊盘、网络、布线、覆铜、板框、区域和文本。默认只读器件与网络；完整板级分析传 `sections:["all"]`，大 PCB 可提高 `timeoutMs`。结果中的 `omittedSections` 表示未请求的部分；读取失败或图页改变时不要使用旧页快照。
 - `pcb_connectivity_action` 创建直线或过孔的提交状态不明时，使用无参数 `eda.pcb_PrimitiveLine.getAll` 作为恢复回读入口；Server 会继续读回全部直线、圆弧、折线、过孔的网络与几何及网络长度。若诊断包含 `hostRestartRequired:true`，先重启原 EDA 宿主并在读回时传 `hostRestartConfirmed:true`；原生创建已经结束而图元回读失败时，只需原客户端断开、恢复会话后的新客户端和完整同板回读。
 - 交互放置的 `component/place/start` 或 `component/place/check` 若返回 `commitUnknown:true`，恢复回读须用 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 和 `args:[null,false]`；Server 会自动请求不截断的 `schematicComponentIds`、位号及 BOM 属性，并核对执行时图页及回读前后的图页身份。查看候选 `primitiveIds` 在完整列表中是否仍存在后再决定是否清理或重试；诊断要求重启时先退出放置模式并重启原宿主。
 - 可写 `api_invoke` 遇到原生 RPC 超时或断线时会保留未确认写入诊断。诊断要求重启时，先重启原宿主，再用全新 Bridge 核对目标文档和受影响图元；只读调用的失败不进入写入恢复。
