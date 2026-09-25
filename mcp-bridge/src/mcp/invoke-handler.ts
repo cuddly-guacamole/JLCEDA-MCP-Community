@@ -9,8 +9,10 @@
  * ------------------------------------------------------------------------
  */
 
+import type { AutoRoutingSnapshot } from './pcb-auto-routing-observation';
 import { isReadOnlyBridgeRequest } from '../bridge/bridge-contract';
 import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSafeErrorMessage, toSerializableAsync } from '../utils';
+import { compareAutoRoutingSnapshots, readAutoRoutingSnapshot, unavailableAutoRoutingObservation } from './pcb-auto-routing-observation';
 
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
@@ -367,6 +369,21 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 	const readbackPcbUuid = normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && pendingAutoLayoutPcbUuid
 		? await currentPcbUuid()
 		: undefined;
+	const observedRoutingNets = requestedRoutingNets?.length && requestedRoutingNets.length <= 3
+		&& requestedRoutingNets.every(net => net.trim().length > 0)
+		&& new Set(requestedRoutingNets).size === requestedRoutingNets.length
+		? requestedRoutingNets
+		: undefined;
+	let routingBefore: AutoRoutingSnapshot | undefined;
+	let routingBeforeError: unknown;
+	if (normalizedPath === PCB_AUTO_ROUTING && observedRoutingNets) {
+		try {
+			routingBefore = await readAutoRoutingSnapshot(observedRoutingNets);
+		}
+		catch (error: unknown) {
+			routingBeforeError = error;
+		}
+	}
 	let invokeResult: unknown;
 	try {
 		invokeResult = await Promise.resolve(callable.apply(thisArg, invokeArgs));
@@ -386,15 +403,29 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			};
 		}
 		if (normalizedPath === PCB_AUTO_ROUTING && /RPC Call autoRouting Timed Out/i.test(toSafeErrorMessage(error))) {
+			let routingObservation: Record<string, unknown> | undefined;
+			if (routingBefore && observedRoutingNets) {
+				try {
+					const routingAfter = await readAutoRoutingSnapshot(observedRoutingNets, routingBefore.pageUuid);
+					routingObservation = compareAutoRoutingSnapshots(routingBefore, routingAfter);
+				}
+				catch (readbackError: unknown) {
+					routingObservation = unavailableAutoRoutingObservation(readbackError);
+				}
+			}
+			else if (routingBeforeError) {
+				routingObservation = unavailableAutoRoutingObservation(routingBeforeError);
+			}
 			return {
 				apiFullName: resolvedPath,
 				...(requestedRoutingNets !== undefined ? { requestedRoutingNets } : {}),
+				...(routingObservation ? { routingObservation } : {}),
 				ok: false,
 				commitState: 'unknown',
 				commitUnknown: true,
 				retryBlocked: true,
 				error: toSafeErrorMessage(error),
-				verification: 'Auto routing may still commit. Restart the original EDA host, then read back every PCB track, via, and net before retrying.',
+				verification: 'The requested-net observation is provisional and does not prove routing completion or selection scope. Restart the original EDA host, then read back every PCB track, via, and net before retrying.',
 			};
 		}
 		const errorMessage = toSafeErrorMessage(error);

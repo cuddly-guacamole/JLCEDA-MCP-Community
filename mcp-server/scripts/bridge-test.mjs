@@ -987,11 +987,17 @@ try {
       }));
       nativeRoutingOld.socket.send(JSON.stringify({
         type: 'bridge/result', clientId: 'native-routing-old', requestId: message.requestId, leaseTerm: message.leaseTerm,
-        result: { apiFullName: 'eda.pcb_Document.autoRouting', ok: false, commitState: 'unknown', commitUnknown: true, retryBlocked: true, error: 'RPC Call autoRouting Timed Out' },
+        result: {
+          apiFullName: 'eda.pcb_Document.autoRouting', ok: false, commitState: 'unknown', commitUnknown: true,
+          retryBlocked: true, error: 'RPC Call autoRouting Timed Out',
+          routingObservation: { status: 'changed', scope: 'requested_nets_only', pageUuid: 'routing-pcb', provisional: true,
+            nets: [{ net: 'VCC', before: { length: 0, routingPrimitiveCount: 0 }, after: { length: 10.5, routingPrimitiveCount: 1 } }] },
+        },
       }));
     });
-    const uncertain = await nativeRoutingServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_Document.autoRouting', args: [{ nets: ['VCC'] }] }, 2000);
+    const uncertain = await nativeRoutingServer.request('/bridge/jlceda/api/invoke', { apiFullName: 'eda.pcb_Document.autoRouting', args: [{ RoutingNets: ['VCC'] }] }, 2000);
     assert.equal(uncertain.commitUnknown, true);
+    assert.equal(uncertain.routingObservation.status, 'changed', 'provisional readback should reach the caller');
     const snapshot = await nativeRoutingServer.request('/bridge/admin/clients', {}, 2000);
     const diagnostic = snapshot.clients[0].quarantine.diagnostics[0];
     assert.equal(diagnostic.requiredReadback, 'pcb_routing_state');
