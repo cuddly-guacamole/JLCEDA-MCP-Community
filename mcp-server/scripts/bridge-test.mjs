@@ -2549,7 +2549,7 @@ try {
         result: { ok: false, action: 'set', commitUnknown: true, nativeCallSettled: false } }));
     });
     assert.equal((await layerServer.request('/bridge/jlceda/pcb/layer-manage',
-      { action: 'set', copperLayerCount: 4 }, 2000)).commitUnknown, true);
+      { action: 'set', confirm: true, copperLayerCount: 4 }, 2000)).commitUnknown, true);
     const diagnostic = (await layerServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
     assert.equal(diagnostic.requiredReadback, 'pcb_layer_state');
     assert.equal(diagnostic.hostRestartRequired, true);

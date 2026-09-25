@@ -69,7 +69,7 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `pcb_text_manage` 的无过滤 `read` 完整返回当前 PCB 的独立文本 String 和器件属性 Attribute；`kind` 可只读取一类，`primitiveId` 可精确读取，`parentPrimitiveId` 可读取指定器件的属性。`create`、`delete` 仅用于独立文本；创建至少提供层、坐标和内容，其余样式采用官方示例默认值。`modify` 可更改独立文本内容与样式，或传入属性 ID 和父器件 ID 修改已有器件属性的值、可见性与样式。官方 `pcb_PrimitiveAttribute.create()` 无效，因此本工具不提供单独创建属性。写入结果不明时使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/text-manage"`、`readbackPayload:{"action":"read"}`，完整核对同一 PCB 的文本与属性；诊断要求时先重启原宿主。
 
-`pcb_layer_manage` 的 `read` 返回当前 PCB 铜层数量及完整图层清单；`set` 接受 2–32 的偶数 `copperLayerCount`，写后核对同一 PCB 的层数与启用的 SIGNAL/PLANE 层数量。降层前如将移除的内层已有图元，Bridge 返回 `removed_layer_not_empty` 和阻挡图元，不执行设置。若结果不明，使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/layer-manage"`、`readbackPayload:{"action":"read"}`；诊断要求时先重启原宿主。
+`pcb_layer_manage` 的 `read` 返回当前 PCB 铜层数量及完整图层清单；`set` 需传 `confirm:true` 和 2–32 的偶数 `copperLayerCount`，写后核对同一 PCB 的层数与启用的 SIGNAL/PLANE 层数量。降层前如将移除的内层已有图元，Bridge 返回 `removed_layer_not_empty` 和阻挡图元，不执行设置。若结果不明，使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/pcb/layer-manage"`、`readbackPayload:{"action":"read"}`；诊断要求时先重启原宿主。
 
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 

@@ -143,6 +143,8 @@ export async function handlePcbLayerManageTask(payload: unknown): Promise<unknow
 	const requested = payload.copperLayerCount;
 	if (action === 'set' && (!Number.isInteger(requested) || Number(requested) < 2 || Number(requested) > 32 || Number(requested) % 2 !== 0))
 		throw new TypeError('copperLayerCount must be an even integer from 2 through 32.');
+	if (action === 'set' && payload.confirm !== true)
+		throw new TypeError('confirm must be true before changing the PCB copper-layer count.');
 	const pageUuid = await currentPcbUuid();
 	const api = getPcbLayerApi();
 	const before = await readLayerState(api, pageUuid);

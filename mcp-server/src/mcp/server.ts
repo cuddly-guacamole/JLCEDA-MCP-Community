@@ -56,7 +56,7 @@ function createToolInputSchema(
   if (name === 'pcb_layer_manage') {
     return z.discriminatedUnion('action', [
       z.object({ action: z.literal('read') }).strict(),
-      z.object({ action: z.literal('set'), copperLayerCount: z.number().int().min(2).max(32).multipleOf(2) }).strict(),
+      z.object({ action: z.literal('set'), confirm: z.literal(true), copperLayerCount: z.number().int().min(2).max(32).multipleOf(2) }).strict(),
     ]);
   }
   const schema = z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);
