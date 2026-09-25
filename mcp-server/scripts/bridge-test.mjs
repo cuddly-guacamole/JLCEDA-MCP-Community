@@ -430,6 +430,9 @@ try {
     assert.equal(isReadOnlyBridgeRequest(connectivityPath, { action }), false);
   }
   assert.equal(isReadOnlyBridgeRequest(connectivityPath, {}), false);
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/connectivity', { action: 'line_create' }), false);
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/pcb/connectivity', { action: 'via_create' }), false);
+  assert.equal(isReadOnlyBridgeRequest('/bridge/jlceda/component/place/check', { sessionId: 'session-1' }), false);
   const invokePath = '/bridge/jlceda/api/invoke';
   assert.equal(isReadOnlyBridgeRequest(invokePath, { apiFullName: 'eda.pcb_primitivecomponent.getall', args: [] }), true);
   for (const apiFullName of ['eda.pcb_PrimitiveLine.getAll', 'eda.pcb_PrimitiveArc.getAll', 'eda.pcb_PrimitivePolyline.getAll', 'eda.pcb_PrimitiveVia.getAll']) {
@@ -1053,6 +1056,87 @@ try {
     nativeRoutingServer.close();
   }
 
+  for (const [action, nativeCallSettled] of [['line_create', true], ['via_create', false]]) {
+    const pcbWritePort = await reservePort();
+    const pcbWriteServer = new EdaBridgeServer(pcbWritePort);
+    let oldClient;
+    let freshClient;
+    try {
+      await pcbWriteServer.start();
+      const pcbWriteUrl = `ws://127.0.0.1:${pcbWritePort}/bridge/ws${tokenQuery}`;
+      oldClient = await registerEda(pcbWriteUrl, `${action}-old`, {
+        documentUuid: 'pcb-write-document', projectUuid: 'pcb-write-project', pageKind: 'pcb', pageUuid: 'pcb-write-page',
+      });
+      oldClient.socket.on('message', data => {
+        const message = JSON.parse(data.toString());
+        if (message.type !== 'bridge/task') return;
+        oldClient.socket.send(JSON.stringify({
+          type: 'bridge/task-started', clientId: `${action}-old`, requestId: message.requestId,
+          leaseTerm: message.leaseTerm, startedAt: Date.now(),
+          context: { documentUuid: 'pcb-write-document', projectUuid: 'pcb-write-project', pageKind: 'pcb', pageUuid: 'pcb-write-page' },
+        }));
+        oldClient.socket.send(JSON.stringify({
+          type: 'bridge/result', clientId: `${action}-old`, requestId: message.requestId,
+          leaseTerm: message.leaseTerm, result: { ok: false, action, commitUnknown: true, nativeCallSettled },
+        }));
+      });
+      const payload = action === 'line_create'
+        ? { action, net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2 }
+        : { action, net: 'VCC', x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6 };
+      assert.equal((await pcbWriteServer.request('/bridge/jlceda/pcb/connectivity', payload, 2000)).commitUnknown, true);
+      const diagnostic = (await pcbWriteServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `${action}-old`).quarantine.diagnostics[0];
+      assert.equal(diagnostic.requiredReadback, 'pcb_routing_state');
+      assert.equal(diagnostic.hostRestartRequired, !nativeCallSettled);
+      assert.equal(diagnostic.context.pageUuid, 'pcb-write-page');
+      await assert.rejects(pcbWriteServer.request('/bridge/jlceda/pcb/connectivity', payload, 2000), /writes are blocked pending recovery readback/);
+      const recovery = await pcbWriteServer.request('/bridge/admin/recover-client', {
+        action: 'recover', confirm: true, requestId: diagnostic.requestId,
+      }, 2000);
+      freshClient = await registerEda(pcbWriteUrl, `${action}-fresh`, {
+        documentUuid: 'pcb-write-document', projectUuid: 'pcb-write-project', pageKind: 'pcb', pageUuid: 'pcb-write-page',
+      });
+      attachTaskResponder(freshClient.socket, `${action}-fresh`, message => {
+        if (message.path === '/bridge/jlceda/context')
+          return { currentDocumentInfo: { uuid: 'pcb-write-document', parentProjectUuid: 'pcb-write-project' },
+            currentProjectInfo: { uuid: 'pcb-write-project' }, currentPcbInfo: { uuid: 'pcb-write-page' } };
+        if (message.path === '/bridge/jlceda/net/query-pcb')
+          return { ok: true, mode: 'all', total: 1, offset: 0, returned: 1,
+            nets: [{ net: 'VCC', length: 10 }], truncated: false };
+        if (message.path === '/bridge/jlceda/api/invoke') {
+          const apiFullName = message.payload.apiFullName;
+          const routingPrimitives = apiFullName === 'eda.pcb_PrimitiveLine.getAll'
+            ? [{ primitiveId: 'line-1', net: 'VCC', layer: 1, startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2 }]
+            : apiFullName === 'eda.pcb_PrimitiveVia.getAll'
+              ? [{ primitiveId: 'via-1', net: 'VCC', x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6, viaType: 1 }]
+              : [];
+          return { apiFullName, routingPrimitives, routingPrimitiveCount: routingPrimitives.length };
+        }
+        return { ok: true };
+      });
+      const readbackRequest = { action: 'readback', confirm: true, recoveryId: recovery.recoveryId,
+        clientId: `${action}-fresh`, readbackPath: '/bridge/jlceda/api/invoke',
+        readbackPayload: { apiFullName: 'eda.pcb_PrimitiveLine.getAll', args: [] } };
+      if (!nativeCallSettled)
+        await assert.rejects(pcbWriteServer.request('/bridge/admin/recover-client', readbackRequest, 2000), /original EDA host was restarted/);
+      oldClient.socket.close();
+      await waitUntil(async () => (await pcbWriteServer.request('/bridge/admin/clients', {}, 2000)).clients
+        .find(client => client.clientId === `${action}-old`)?.ready === false);
+      const verified = await pcbWriteServer.request('/bridge/admin/recover-client', {
+        ...readbackRequest, ...(nativeCallSettled ? {} : { hostRestartConfirmed: true }),
+      }, 2000);
+      assert.equal(verified.readbackVerified, true);
+      assert.equal(verified.routingSnapshot.primitives.line.length, 1);
+      assert.equal(verified.routingSnapshot.primitives.via.length, 1);
+      assert.equal(verified.routingSnapshot.nets[0].net, 'VCC');
+      assert.equal((await pcbWriteServer.request('/bridge/jlceda/pcb/connectivity', payload, 2000)).ok, true);
+    } finally {
+      oldClient?.socket.close();
+      freshClient?.socket.close();
+      pcbWriteServer.close();
+    }
+  }
+
   const lateRoutingPort = await reservePort();
   const lateRoutingServer = new EdaBridgeServer(lateRoutingPort);
   let lateRoutingPeer;
@@ -1554,6 +1638,83 @@ try {
     crossPageDeleteOld?.socket.close();
     crossPageDeleteFresh?.socket.close();
     crossPageDeleteServer.close();
+  }
+
+  const placementCheckPort = await reservePort();
+  const placementCheckServer = new EdaBridgeServer(placementCheckPort);
+  let placementCheckOld;
+  let placementCheckFresh;
+  try {
+    await placementCheckServer.start();
+    const placementCheckUrl = `ws://127.0.0.1:${placementCheckPort}/bridge/ws${tokenQuery}`;
+    placementCheckOld = await registerEda(placementCheckUrl, 'placement-check-old', {
+      documentUuid: 'placement-document', projectUuid: 'placement-project', pageKind: 'schematic', pageUuid: 'placement-page',
+    });
+    placementCheckOld.socket.on('message', data => {
+      const message = JSON.parse(data.toString());
+      if (message.type !== 'bridge/task') return;
+      placementCheckOld.socket.send(JSON.stringify({
+        type: 'bridge/task-started', clientId: 'placement-check-old', requestId: message.requestId,
+        leaseTerm: message.leaseTerm, startedAt: Date.now(),
+        context: { documentUuid: 'placement-document', projectUuid: 'placement-project', pageKind: 'schematic', pageUuid: 'placement-page' },
+      }));
+      placementCheckOld.socket.send(JSON.stringify({
+        type: 'bridge/result', clientId: 'placement-check-old', requestId: message.requestId,
+        leaseTerm: message.leaseTerm,
+        result: { ok: false, commitUnknown: true, primitiveIds: ['kept', 'extra'] },
+      }));
+    });
+    assert.equal((await placementCheckServer.request('/bridge/jlceda/component/place/check', { sessionId: 'placement-1' }, 2000)).commitUnknown, true);
+    const placementDiagnostic = (await placementCheckServer.request('/bridge/admin/clients', {}, 2000)).clients[0].quarantine.diagnostics[0];
+    assert.equal(placementDiagnostic.requiredReadback, 'schematic_component_ids');
+    assert.equal(placementDiagnostic.pageBound, true);
+    const placementRecovery = await placementCheckServer.request('/bridge/admin/recover-client', {
+      action: 'recover', confirm: true, requestId: placementDiagnostic.requestId,
+    }, 2000);
+    placementCheckOld.socket.close();
+    await waitUntil(async () => (await placementCheckServer.request('/bridge/admin/clients', {}, 2000)).clients
+      .find(client => client.clientId === 'placement-check-old')?.ready === false);
+    placementCheckFresh = await registerEda(placementCheckUrl, 'placement-check-fresh', {
+      documentUuid: 'placement-document', projectUuid: 'placement-project', pageKind: 'schematic', pageUuid: 'placement-page',
+    });
+    let reportedPageUuid = 'other-page';
+    let reportedComponentCount = 1;
+    let switchPageAfterInventory = false;
+    attachTaskResponder(placementCheckFresh.socket, 'placement-check-fresh', message => {
+      if (message.path === '/bridge/jlceda/context')
+        return { currentDocumentInfo: { uuid: 'placement-document', parentProjectUuid: 'placement-project' },
+          currentProjectInfo: { uuid: 'placement-project' }, currentSchematicPageInfo: { uuid: reportedPageUuid } };
+      if (message.path === '/bridge/jlceda/api/invoke') {
+        assert.equal(message.payload.includeCompleteSchematicComponentIds, true);
+        if (switchPageAfterInventory) reportedPageUuid = 'other-page';
+        return { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId',
+          schematicComponentIds: ['kept'], schematicComponentCount: reportedComponentCount };
+      }
+      return { ok: true };
+    });
+    const placementReadback = { action: 'readback', confirm: true, recoveryId: placementRecovery.recoveryId,
+      clientId: 'placement-check-fresh', readbackPath: '/bridge/jlceda/api/invoke',
+      readbackPayload: { apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false] } };
+    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', {
+      ...placementReadback, readbackPath: '/bridge/jlceda/context', readbackPayload: {},
+    }, 2000), /placement cleanup requires current-page/);
+    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /Schematic document or page identity changed/);
+    reportedPageUuid = 'placement-page';
+    reportedComponentCount = 2;
+    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /component ID readback was incomplete/);
+    reportedComponentCount = 1;
+    switchPageAfterInventory = true;
+    await assert.rejects(placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000), /Readback pageUuid does not match/);
+    reportedPageUuid = 'placement-page';
+    switchPageAfterInventory = false;
+    const verified = await placementCheckServer.request('/bridge/admin/recover-client', placementReadback, 2000);
+    assert.equal(verified.readbackVerified, true);
+    assert.deepEqual(verified.readback.schematicComponentIds, ['kept']);
+    assert.equal((await placementCheckServer.request('/bridge/jlceda/component/place/check', { sessionId: 'placement-2' }, 2000)).ok, true);
+  } finally {
+    placementCheckOld?.socket.close();
+    placementCheckFresh?.socket.close();
+    placementCheckServer.close();
   }
 
   const pageMutationPort = await reservePort();

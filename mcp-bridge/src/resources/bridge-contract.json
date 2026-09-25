@@ -350,6 +350,12 @@
 			}
 		},
 		{
+			"toolName": "pcb_connectivity_action",
+			"path": "/bridge/jlceda/pcb/connectivity",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read"
+		},
+		{
 			"toolName": "schematic_document_action",
 			"path": "/bridge/jlceda/schematic/document",
 			"owner": "bridge",
@@ -457,8 +463,7 @@
 		{
 			"path": "/bridge/jlceda/component/place/check",
 			"owner": "bridge",
-			"timeoutPolicy": "default",
-			"readOnly": true
+			"timeoutPolicy": "default"
 		},
 		{
 			"path": "/bridge/jlceda/component/place/close",

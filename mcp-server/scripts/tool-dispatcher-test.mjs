@@ -96,6 +96,23 @@ assert.deepEqual(duplicateCalls, [
   '/bridge/jlceda/component/place/close',
 ]);
 
+const uncertainCleanupBridge = {
+  async request(path) {
+    if (path === '/bridge/jlceda/component/place')
+      return { placement: { components: [{ uuid: 'one' }], timeoutSeconds: 30 } };
+    if (path.endsWith('/start')) return { ok: true, sessionId: 'cleanup-session' };
+    if (path.endsWith('/check')) return { ok: false, commitUnknown: true, readbackRequired: true, primitiveIds: ['a', 'b'], error: 'duplicate cleanup readback failed' };
+    if (path.endsWith('/close')) return { ok: true };
+    throw new Error(`Unexpected path: ${path}`);
+  },
+};
+const uncertainCleanupResult = await new ToolDispatcher(uncertainCleanupBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
+assert.equal(uncertainCleanupResult.structuredContent.ok, false);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].commitUnknown, true);
+assert.equal(uncertainCleanupResult.structuredContent.results[0].readbackRequired, true);
+assert.deepEqual(uncertainCleanupResult.structuredContent.results[0].primitiveIds, ['a', 'b']);
+assert.match(uncertainCleanupResult.structuredContent.results[0].error, /cleanup readback failed/);
+
 const batchCalls = [];
 let startedCount = 0;
 let firstCheckCount = 0;
@@ -110,7 +127,7 @@ const batchBridge = {
       firstCheckCount += 1;
       return firstCheckCount === 1
         ? { ok: true, placed: false, awaitingExit: true, candidatePrimitiveIds: ['floating-id'], userCancelled: false }
-        : { ok: true, placed: true, primitiveIds: ['first-id'], userCancelled: false };
+        : { ok: true, placed: true, primitiveIds: ['first-id'], removedDuplicateIds: ['first-extra'], userCancelled: false };
     }
     if (path.endsWith('/check')) return { ok: true, placed: true, primitiveIds: ['second-id'], userCancelled: false };
     if (path.endsWith('/close')) return { ok: true };
@@ -120,6 +137,7 @@ const batchBridge = {
 const batchResult = await new ToolDispatcher(batchBridge).dispatch({ name: 'component_place', arguments: { components: [] } });
 assert.equal(batchResult.structuredContent.ok, true);
 assert.deepEqual(batchResult.structuredContent.results.map((item) => item.primitiveIds), [['first-id'], ['second-id']]);
+assert.deepEqual(batchResult.structuredContent.results[0].removedDuplicateIds, ['first-extra']);
 assert.equal(batchResult.structuredContent.results[0].candidatePrimitiveIds, undefined);
 assert.deepEqual(batchCalls, [
   '/bridge/jlceda/component/place',
@@ -187,6 +205,14 @@ assert.equal(pcbNetQueryResult.structuredContent.ok, true);
 const pcbNetQueryCall = calls.find(call => call.path === '/bridge/jlceda/net/query-pcb');
 assert.equal(pcbNetQueryCall.timeoutMs, 44000);
 
+const pcbConnectivityPayload = { action: 'line_create', net: 'VCC', layer: 1,
+  startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2, timeoutMs: 42000 };
+const pcbConnectivityResult = await dispatcher.dispatch({ name: 'pcb_connectivity_action', arguments: pcbConnectivityPayload });
+assert.equal(pcbConnectivityResult.structuredContent.ok, true);
+const pcbConnectivityCall = calls.find(call => call.path === '/bridge/jlceda/pcb/connectivity');
+assert.deepEqual(pcbConnectivityCall.payload, pcbConnectivityPayload);
+assert.equal(pcbConnectivityCall.timeoutMs, 44000);
+
 for (const [name, timeoutMs] of [
   ['pcb_drc_check', 62_000],
   ['schematic_drc_check', 62_000],
@@ -195,6 +221,7 @@ for (const [name, timeoutMs] of [
   ['design_archive_export', 62_000],
   ['manufacture_export', 62_000],
   ['pcb_document_action', 62_000],
+  ['pcb_connectivity_action', 32_000],
   ['schematic_document_action', 62_000],
   ['pcb_net_query', 62_000],
   ['design_source_export', 32_000],
@@ -344,6 +371,18 @@ assert.ok(pcbNetQueryDefinition);
 const pcbNetQuerySchema = z.fromJSONSchema(pcbNetQueryDefinition.inputSchema);
 assert.equal(pcbNetQuerySchema.safeParse({ mode: 'all', timeoutMs: 6000 }).success, true);
 assert.equal(pcbNetQuerySchema.safeParse({ mode: 'exact', query: 'USB_D+', timeoutMs: 6000 }).success, true);
+
+const pcbConnectivityDefinition = definitions.find((definition) => definition.name === 'pcb_connectivity_action');
+assert.ok(pcbConnectivityDefinition);
+const pcbConnectivitySchema = z.fromJSONSchema(pcbConnectivityDefinition.inputSchema);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'line_create', net: 'VCC', layer: 1,
+  startX: 0, startY: 0, endX: 10, endY: 0, lineWidth: 0.2 }).success, true);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'via_create', net: 'NEW_NET', allowNewNet: true,
+  x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6 }).success, true);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'line_create', net: 'VCC', layer: 1,
+  startX: 0, startY: 0, endX: 10, endY: 0 }).success, false);
+assert.equal(pcbConnectivitySchema.safeParse({ action: 'via_create', net: 'VCC',
+  x: 10, y: 0, holeDiameter: 0.3, diameter: 0.6, layer: 1 }).success, false);
 
 const componentSelectDefinition = definitions.find((definition) => definition.name === 'component_select');
 assert.ok(componentSelectDefinition);

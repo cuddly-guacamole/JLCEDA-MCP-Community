@@ -4,7 +4,11 @@
 
 多页面连接时，首个页面未就绪会自动改选已就绪页面；显式选择或正在执行任务时不会自动切换。当前页写入使用执行时的实际图页身份进行恢复核对，提交状态不明时本机也立即阻止后续写入；跨图页的页面管理操作不能用当前图页回读解除隔离。完整安全恢复要求 Bridge 和 Server 均升级到 2.3.2。调用 `eda.pcb_PrimitiveComponent.getAll` 时可指定 `includeCompletePositions:true` 额外获取不截断的 `componentPositions`，通用 `result` 保持原有字段。
 
+交互放置若清理完全重叠的重复器件后无法核对结果，恢复时必须读取原图页不截断的器件 ID 列表；`api_invoke` 的当前页 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 可传 `args:[null,false]` 与 `includeCompleteSchematicComponentIds:true` 获取该列表。
+
 PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔离写入。受控恢复需先重启原 EDA 宿主，再对任务执行时的同一 PCB 完整读回直线、圆弧、折线、过孔的网络与几何及全部网络长度；`api_invoke` 的这些图元 `getAll` 可用 `includeCompleteRouting:true` 获取不截断的快照。即使原生 API 返回 `success:true`，仍需检查失败网络与实际布线结果。
+
+`pcb_connectivity_action` 可在当前 PCB 按精确网络名和铜层（SIGNAL 或 PLANE）直接创建直线导线，或按坐标、孔径与外径创建过孔。默认要求网络已存在；独立 PCB 新网络须显式传 `allowNewNet:true`。创建后回读图元；提交状态不明时隔离写入，对同一 PCB 完整回读全部布线图元和网络，原生调用可能未结束时还须重启 EDA 宿主。
 
 ## 功能与工具
 
@@ -16,6 +20,7 @@ PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔�
 - `schematic_pages_manage`：在 `confirm: true` 时创建、复制、重命名或完整重排原理图页面。重排必须提供每个当前页面 UUID，Bridge 会重新读取并验证结果；不提供删除功能。
 - `pcb_drc_check`：读取 PCB 设计规则检查结果。
 - `pcb_net_query`：按条件和数量限制查询当前 PCB 网络；精确网络图元过滤使用官方 `EPCB_PrimitiveType` 枚举。
+- `pcb_connectivity_action`：按当前 PCB 数据单位创建单条直线导线或过孔，并回读创建结果；需要已存在网络，或显式允许新网络。
 - `schematic_drc_check`、`pcb_constraints_query`、`project_info` 和 `netlist_compare`：提供设计审查和工程身份信息；`project_info` 可选返回受限的 Board 和 Panel 清单。
 - `eda_context`：在客户端支持时返回 JLCEDA/EasyEDA 版本、在线模式、编辑器版本、编译日期和当前画布数据单位。
 - `eda_canvas_snapshot`：读取当前画布元数据，并可在明确请求时返回受限的只读 MCP 图像。

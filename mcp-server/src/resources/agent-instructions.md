@@ -15,6 +15,8 @@
 - 原理图当前页器件 ID 回读优先用 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args: [null, false]`；需要器件对象时可用 `eda.sch_PrimitiveComponent.getAll` 搭配同样的参数。这两种精确参数形式可通过恢复期只读隔离，无参数调用继续兼容，但部分 EDA 版本可能混入其他图页。跨页查询不得用于判断当前页的超时操作是否提交。
 - `wire_create`、`netport_create`、`netport_move` 超时或提交状态不明时，恢复回读须设置 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；先检查完整导线、NetPort、NET 属性和语义网表，再决定是否重试。只读 `/context` 不会解除该写入隔离。
 - PCB 器件位置恢复回读可用 `api_invoke` 调用 `eda.pcb_PrimitiveComponent.getAll`，传 `args: []`。若原操作是 `eda.pcb_Document.autoLayout`，`bridge_recover_client` 必须以该完整器件列表作为回读；只读 `/context` 不会解除写阻断。先核对活动 PCB 的文档身份，再与超时前的位置快照比较。
+- `pcb_connectivity_action` 创建直线或过孔的提交状态不明时，使用无参数 `eda.pcb_PrimitiveLine.getAll` 作为恢复回读入口；Server 会继续读回全部直线、圆弧、折线、过孔的网络与几何及网络长度。若诊断包含 `hostRestartRequired:true`，先重启原 EDA 宿主并在读回时传 `hostRestartConfirmed:true`；原生创建已经结束而图元回读失败时，只需原客户端断开、恢复会话后的新客户端和完整同板回读。
+- 交互放置的 `component/place/check` 若返回 `commitUnknown:true`，恢复回读须用 `eda.sch_PrimitiveComponent.getAllPrimitiveId` 和 `args:[null,false]`；Server 会自动请求不截断的 `schematicComponentIds`，并核对执行时图页及回读前后的图页身份。查看候选 `primitiveIds` 在完整列表中是否仍存在后再决定是否清理或重试。
 - `schematic_read`：在器件选型（`component_select`）或器件放置（`component_place`）需要当前页辅助上下文时调用；上述三种连接写入的受控恢复是另一项明确用途。仅覆盖当前激活页面。普通原理图检查、审查、功能分析、连线核查等场景应使用 `schematic_review`。
   返回字段说明：`drcCheckPassed` 为 DRC 检查是否通过；`components` 为器件列表，每个器件含 `componentDesignator`（位号）、`componentSymbolName`（符号名）、`pins`（引脚列表，每个引脚含 `pinNumber`、`pinSignalName`、`pinElectricalType`、`connectedNetworkName`（引脚所连网络名，空字符串表示工具未能识别到连接——可能是引脚真正悬空，也可能是该引脚位于复用块（Reuse Block）内部、复用块内部导线对 API 不可见所致；若 `drcCheckPassed` 为 `true`，则空值大概率属于工具限制而非真实错误，应提示用户自行在原理图中核实）、`hasNoConnectMark`）；`networks` 为网络列表，每个网络含 `networkName` 和 `connectedPinRefs`（连接该网络的所有引脚引用，格式为位号.引脚号）。
 - `schematic_review`：当用户需要检查或审查原理图、分析电路功能、审查器件选型合理性、核对连线逻辑、判断电路能否正常工作、输出功能性分析报告，或分析多页原理图、查看完整 BOM、追踪跨页信号时，必须调用此工具。
@@ -28,6 +30,7 @@
 
 - `pcb_drc_check`：只读检查当前 PCB 的设计规则。默认不打开 DRC UI；返回结构化违规列表。调用前确认当前页面是 PCB。
 - `pcb_net_query`：只读查询当前 PCB 网络，可用 `query` 和 `limit` 缩小结果范围；对单个网络使用 `mode: "exact"` 时，可按需请求 `analysis.length`、`analysis.color` 或 `analysis.primitives`。
+- `pcb_connectivity_action`：在当前 PCB 上创建单条直线导线或过孔。先用 `pcb_net_query` 取得精确网络名、用 `pcb_layer_query` 确认启用且未锁定的铜层（SIGNAL 或 PLANE）；独立 PCB 新建网络时显式传 `allowNewNet:true`。`line_create` 须提供 `net`、`layer`、起终点和正数 `lineWidth`；`via_create` 须提供 `net`、中心点、正数 `holeDiameter` 与 `diameter`。坐标及尺寸遵循当前 PCB 数据单位。写后核对返回的图元/网络，按需运行 `pcb_drc_check`。
 - 自动布局/布线可能运行较久。超时后 Bridge 会隔离当前客户端，直到底层 EDA Promise 结束；在此期间不得通过 `api_invoke` 重试写操作。
 - `schematic_drc_check`：只读检查当前原理图页；默认不打开 UI，返回结构化违规列表。
 - `pcb_constraints_query`：只读读取当前 PCB 的规则、网络类、差分对、等长组或焊盘对组。需要 PCB 页面。

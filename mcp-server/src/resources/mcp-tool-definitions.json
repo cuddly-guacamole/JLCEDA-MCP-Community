@@ -32,7 +32,7 @@
   },
   {
     "name": "bridge_recover_client",
-    "description": "处理 EDA 写操作超时、执行中失联、提交未确认状态及 PCB 导入待确认状态。普通未确认写入先从 bridge_clients 取得 requestId，以 action=recover、confirm=true 建立恢复会话；旧调用仍挂起或 PCB 自动布局/布线状态未知时再重启原 EDA 宿主，等待原 Bridge 断开及恢复会话后的全新 clientId，就原文档和图页只读回读并以 action=readback 完成。原客户端和先前已连接客户端的普通重连不能用于回读；PCB 自动布局必须完整读回器件位置，自动布线必须完整读回导线、过孔及网络。import_changes 返回 pending_confirmation 后全局阻止写入；用户在原生对话框应用或取消后，以 action=resolve_import、confirm=true、resolution=applied/cancelled 显式确认，Server 核对同一 PCB 并完整读回器件和网络后解除。无法确认弹框已关闭时，先 action=recover，再重启原 EDA 宿主，以全新连接 action=readback，另需 hostRestartConfirmed=true。隔离期间只读查询可用。",
+    "description": "处理 EDA 写操作超时、执行中失联、提交未确认状态及 PCB 导入待确认状态。先从 bridge_clients 取得 requestId，以 action=recover、confirm=true 建立恢复会话；PCB 布线诊断含 hostRestartRequired:true 时须重启宿主。等待原 Bridge 断开及恢复会话后的全新 clientId，就原文档和图页只读回读并以 action=readback 完成。原客户端和先前已连接客户端的普通重连不能用于回读；交互放置重复件清理须完整读回当前页器件 ID，PCB 自动布局须完整读回器件位置，自动布线及 PCB 直线/过孔创建须完整读回导线、过孔及网络。import_changes 返回 pending_confirmation 后全局阻止写入；用户在原生对话框应用或取消后，以 action=resolve_import、confirm=true、resolution=applied/cancelled 显式确认，Server 核对同一 PCB 并完整读回器件和网络后解除。无法确认弹框已关闭时，先 action=recover，再重启原 EDA 宿主，以全新连接 action=readback，另需 hostRestartConfirmed=true。隔离期间只读查询可用。",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -45,9 +45,9 @@
         "expectedProjectUuid": { "type": "string", "minLength": 1 },
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "原始诊断未记录图页 UUID 时可补充；已记录时以诊断中的 pageUuid 为准。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
-        "hostRestartConfirmed": { "const": true, "description": "待确认 PCB 导入或 autoRouting 超时进入 recover/readback 流程时，确认原 EDA 宿主已重启。" },
+        "hostRestartConfirmed": { "const": true, "description": "PCB 导入、autoRouting 超时或 PCB 直线/过孔原生创建未确认，且诊断要求重启时，确认原 EDA 宿主已重启。" },
         "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；一般原理图器件 ID 可用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
+        "readbackPayload": { "type": "object", "default": {}, "description": "原理图连接写入恢复必须用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互放置检查须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]} 完整读回当前页器件 ID；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll，autoRouting 与 PCB 直线/过孔创建用无参 eda.pcb_PrimitiveLine.getAll；Server 会继续完整读取其他布线图元和网络。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -132,6 +132,11 @@
           "type": "boolean",
           "const": true,
           "description": "仅用于无参数的 PCB PrimitiveLine、PrimitiveArc、PrimitivePolyline 或 PrimitiveVia.getAll：额外返回不截断的网络、层和几何快照 routingPrimitives。"
+        },
+        "includeCompleteSchematicComponentIds": {
+          "type": "boolean",
+          "const": true,
+          "description": "仅用于 eda.sch_PrimitiveComponent.getAllPrimitiveId 且 args:[null,false]：额外返回不截断的当前原理图页器件 ID 列表 schematicComponentIds 和数量。"
         },
         "timeoutMs": {
           "type": "integer",
@@ -725,6 +730,34 @@
           "default": 60000
         }
       },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "pcb_connectivity_action",
+    "description": "在当前 PCB 为指定网络创建单条直线导线或过孔。默认要求网络已存在；新网络须显式设置 allowNewNet:true。先用 pcb_net_query 和 pcb_layer_query 确认网络及可用铜层，再按当前 PCB 数据单位提供坐标与尺寸；写入后回读图元和网络，必要时执行 PCB DRC。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["line_create", "via_create"] },
+        "net": { "type": "string", "minLength": 1, "description": "PCB 网络名；默认需与 pcb_net_query 返回的 net 完全一致。" },
+        "allowNewNet": { "type": "boolean", "default": false, "description": "显式允许以新网络名创建图元。" },
+        "layer": { "type": "integer", "description": "line_create 的可用铜层编号，来自 pcb_layer_query；支持 SIGNAL 与 PLANE。" },
+        "startX": { "type": "number" },
+        "startY": { "type": "number" },
+        "endX": { "type": "number" },
+        "endY": { "type": "number" },
+        "lineWidth": { "type": "number", "exclusiveMinimum": 0 },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "holeDiameter": { "type": "number", "exclusiveMinimum": 0 },
+        "diameter": { "type": "number", "exclusiveMinimum": 0 },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "oneOf": [
+        { "type": "object", "properties": { "action": { "const": "line_create" }, "net": { "type": "string", "minLength": 1 }, "allowNewNet": { "type": "boolean", "default": false }, "layer": { "type": "integer" }, "startX": { "type": "number" }, "startY": { "type": "number" }, "endX": { "type": "number" }, "endY": { "type": "number" }, "lineWidth": { "type": "number", "exclusiveMinimum": 0 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "net", "layer", "startX", "startY", "endX", "endY", "lineWidth"], "additionalProperties": false },
+        { "type": "object", "properties": { "action": { "const": "via_create" }, "net": { "type": "string", "minLength": 1 }, "allowNewNet": { "type": "boolean", "default": false }, "x": { "type": "number" }, "y": { "type": "number" }, "holeDiameter": { "type": "number", "exclusiveMinimum": 0 }, "diameter": { "type": "number", "exclusiveMinimum": 0 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["action", "net", "x", "y", "holeDiameter", "diameter"], "additionalProperties": false }
+      ],
       "additionalProperties": false
     }
   },

@@ -652,6 +652,29 @@ async function main() {
 	assert.match(String(storageErrors[0][1]), /storage unavailable/);
 	console.error = originalConsoleError;
 	globalThis.eda.sys_Storage.setExtensionUserConfig = originalStorageWrite;
+	const originalSchematicComponents = globalThis.eda.sch_PrimitiveComponent;
+	globalThis.eda.sch_PrimitiveComponent = {
+		async getAllPrimitiveId(_type, allPages) {
+			assert.equal(_type, null);
+			assert.equal(allPages, false);
+			return Array.from({ length: 125 }, (_, index) => `component-${index + 1}`);
+		},
+	};
+	const completeSchematicIds = await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false], includeCompleteSchematicComponentIds: true,
+	});
+	assert.equal(completeSchematicIds.result.length, 120, 'ordinary API result retains its serialization limit');
+	assert.equal(completeSchematicIds.schematicComponentCount, 125);
+	assert.equal((await toSerializableAsync(completeSchematicIds)).schematicComponentIds.length, 125);
+	assert.equal(completeSchematicIds.schematicComponentIds[124], 'component-125');
+	await assert.rejects(() => handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [], includeCompleteSchematicComponentIds: true,
+	}), /args \[null, false\]/);
+	globalThis.eda.sch_PrimitiveComponent.getAllPrimitiveId = async () => ['same-id', 'same-id'];
+	assert.equal((await handleApiInvokeTask({
+		apiFullName: 'eda.sch_PrimitiveComponent.getAllPrimitiveId', args: [null, false], includeCompleteSchematicComponentIds: true,
+	})).ok, false);
+	globalThis.eda.sch_PrimitiveComponent = originalSchematicComponents;
 	const originalCurrentPcbInfo = globalThis.eda.dmt_Pcb.getCurrentPcbInfo;
 	let activePcbUuid = 'pcb-1';
 	globalThis.eda.dmt_Pcb.getCurrentPcbInfo = async () => ({ uuid: activePcbUuid });

@@ -8,6 +8,8 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 配套的 MCP Server 2.3.2 提供连接失联后的写入诊断和同图页恢复回读，并公开原理图导线预览、创建及 NetPort 操作。
 
+交互放置检查可能清理完全重叠的重复器件。若清理后回读失败，`commitUnknown:true` 会隔离后续写入；恢复时通过 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传入 `args:[null,false]` 和 `includeCompleteSchematicComponentIds:true`，可获取不截断的当前图页 `schematicComponentIds` 与 `schematicComponentCount`，供 Server 核对原图页并判断哪些副本仍存在。
+
 ## 2.1 PCB 工具
 
 `schematic_layout_check` 读取结构化原理图图元并返回稳定 primitive ID、估算矩形、碰撞类型/严重度、密集区域和能力缺失说明。`mode: "fix"` 配合 `confirm: true` 时仅应用属性文本建议位置。

@@ -28,6 +28,8 @@ PCB 器件位置回读可将 `readbackPath` 设为 `/bridge/jlceda/api/invoke`�
 
 PCB `autoRouting` 原生 RPC 超时也会留下写入隔离诊断。先执行 `action=recover`，再关闭并重启原 EDA 宿主；全新 Bridge 客户端打开任务执行时的同一 PCB 后，调用 `action=readback`，设置 `hostRestartConfirmed:true`、`readbackPath:"/bridge/jlceda/api/invoke"`、`readbackPayload:{"apiFullName":"eda.pcb_PrimitiveLine.getAll","args":[]}`。Server 会在分段读取前后核对 PCB 身份，自动完整读回直线、圆弧、折线、过孔的图元 ID、网络、层与几何，以及全部网络长度。任何一段失败都继续阻断写入。直接调用四类无参数 `getAll` 时可传 `includeCompleteRouting:true` 获取相同的不截断图元快照。
 
+`pcb_connectivity_action` 提供 `line_create` 与 `via_create`。调用前用 `pcb_net_query` 核对网络名，并用 `pcb_layer_query` 选择启用且未锁定的铜层（SIGNAL 或 PLANE）；独立 PCB 需要创建新网络时显式传 `allowNewNet:true`。坐标和尺寸使用当前 PCB 数据单位，导线宽度、过孔孔径与外径都必须给正值。原生创建返回后会回读图元；若结果未确认，Server 隔离后续写入，并要求新 Bridge 客户端对同一 PCB 完整回读直线、圆弧、折线、过孔和网络。诊断的 `hostRestartRequired:true` 表示原生调用可能尚未结束，恢复前还必须重启原 EDA 宿主并传 `hostRestartConfirmed:true`；若原生调用已结束、只是回读失败，则不要求宿主重启。回读参数与上方自动布线相同。
+
 Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Server 会将该结果纳入同一受控恢复诊断流程，不要求必须等 Server 自身的备用计时器触发。
 
 `schematic_connectivity_action` 的导线或 NetPort 写入返回 `commitUnknown: true` 时，即使按时收到结果，Server 也会建立未确认写入诊断并阻止后续写入；这包括原生写入成功但紧接的图元回读失败。Server 超时后的迟到结果同样保留诊断。导线创建、NetPort 创建或移动必须用 `bridge_recover_client action=readback` 指定 `readbackPath:"/bridge/jlceda/schematic/read"`、`readbackPayload:{"includeConnectivityPrimitives":true}`；Server 核对原图页完整导线 ID/几何、NetPort ID/网络/坐标、NET 属性和语义网表。读回失败继续隔离，只查 `/context` 不会解除。
@@ -37,6 +39,10 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 `schematic_layout_check` 对当前原理图执行保守的符号/引脚/属性/导线矩形碰撞检查，并显式报告属性几何和页面边界能力是否可用。修复模式需要 `confirm: true`，只移动属性文本，不改变电气连接。
 
 `schematic_connectivity_action` 提供 `wire_preview`、`wire_create`、`netport_create` 和 `netport_move`。新导线的 `line` 最多包含 512 个数（256 个坐标点）。先预览导线与现有导线的电气接触，再把确实要连接的导线 ID 传给 `allowedWireIds`；没有连接点的纯十字交叉不算接触，不同已命名网络的接触会被拒绝。创建后返回受影响导线 ID，仍需复查网表。NetPort 在当前图页创建或移动并回读图元；新建时还返回目标网络的引脚列表。NetPort 是层次图端口，可用于同页连接，不应当作跨页连接标识。
+
+`component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
+
+`component_place` 的检查若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`/`schematicComponentCount`，不能只用 `/context` 或网表解除隔离。
 
 Server 提供 `schematic_document_action`，用于受限地检查原理图坐标、选中对象、区域图元、过滤器和鼠标位置，并执行视图导航、图元选择、属性读取、保存和变更导入。
 

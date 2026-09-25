@@ -14,6 +14,7 @@ import { getSyncState, isPlainObjectRecord, preserveBoundedArray, safeCall, toSa
 const PCB_AUTO_LAYOUT = 'eda.pcb_document.autolayout';
 const PCB_AUTO_ROUTING = 'eda.pcb_document.autorouting';
 const PCB_COMPONENT_GET_ALL = 'eda.pcb_primitivecomponent.getall';
+const SCHEMATIC_COMPONENT_GET_ALL_IDS = 'eda.sch_primitivecomponent.getallprimitiveid';
 const PCB_ROUTING_READBACKS = new Map([
 	['eda.pcb_primitiveline.getall', 'line'],
 	['eda.pcb_primitivearc.getall', 'arc'],
@@ -194,6 +195,11 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 		&& (payload.includeCompleteRouting !== true || !PCB_ROUTING_READBACKS.has(normalizedPath) || invokeArgs.length !== 0)) {
 		throw new TypeError('includeCompleteRouting is only supported for PCB routing primitive getAll methods with no arguments.');
 	}
+	if (payload.includeCompleteSchematicComponentIds !== undefined
+		&& (payload.includeCompleteSchematicComponentIds !== true || normalizedPath !== SCHEMATIC_COMPONENT_GET_ALL_IDS
+			|| invokeArgs.length !== 2 || invokeArgs[0] !== null || invokeArgs[1] !== false)) {
+		throw new TypeError('includeCompleteSchematicComponentIds requires eda.sch_PrimitiveComponent.getAllPrimitiveId with args [null, false].');
+	}
 
 	// EDA 3.x 的 modify 会在省略 otherProperty 时清空已有的 BOM 属性。
 	if (normalizedPath === 'eda.sch_primitivecomponent.modify' && typeof invokeArgs[0] === 'string' && isPlainObjectRecord(invokeArgs[1]) && !Object.hasOwn(invokeArgs[1], 'otherProperty')) {
@@ -344,6 +350,18 @@ export async function handleApiInvokeTask(payload: unknown): Promise<unknown> {
 			result: await toSerializableAsync(invokeResult),
 			routingPrimitives: preserveBoundedArray(routingPrimitives),
 			routingPrimitiveCount: routingPrimitives.length,
+		};
+	}
+	if (payload.includeCompleteSchematicComponentIds === true) {
+		if (!Array.isArray(invokeResult) || invokeResult.some(id => typeof id !== 'string' || !id.trim())
+			|| new Set(invokeResult).size !== invokeResult.length) {
+			return { apiFullName: resolvedPath, ok: false, error: 'Current schematic component ID readback was incomplete.' };
+		}
+		return {
+			apiFullName: resolvedPath,
+			result: await toSerializableAsync(invokeResult),
+			schematicComponentIds: preserveBoundedArray([...invokeResult]),
+			schematicComponentCount: invokeResult.length,
 		};
 	}
 	if (normalizedPath === PCB_COMPONENT_GET_ALL && invokeArgs.length === 0 && Array.isArray(invokeResult)) {
