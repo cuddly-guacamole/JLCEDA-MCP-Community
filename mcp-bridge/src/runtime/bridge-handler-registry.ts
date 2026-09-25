@@ -27,6 +27,7 @@ import { handlePcbNetQueryTask } from '../mcp/net-query-handler.ts';
 import { handleNetLabelModifyTask } from '../mcp/netlabel-modify-handler.ts';
 import { handleNetLabelPlaceTask } from '../mcp/netlabel-place-handler.ts';
 import { handleNetlistCompareTask } from '../mcp/netlist-compare-handler.ts';
+import { handlePcbComponentEditTask } from '../mcp/pcb-component-edit-handler.ts';
 import { handlePcbConnectivityTask } from '../mcp/pcb-connectivity-handler.ts';
 import { handlePcbConstraintsQueryTask } from '../mcp/pcb-constraints-handler.ts';
 import { handlePcbConstraintsManageTask } from '../mcp/pcb-constraints-manage-handler.ts';
@@ -73,6 +74,7 @@ const handlers: Readonly<Record<string, BridgeTaskHandler>> = {
 	'/bridge/jlceda/pcb/constraints-query': handlePcbConstraintsQueryTask,
 	'/bridge/jlceda/pcb/constraints-manage': handlePcbConstraintsManageTask,
 	'/bridge/jlceda/pcb/connectivity': handlePcbConnectivityTask,
+	'/bridge/jlceda/pcb/component-edit': handlePcbComponentEditTask,
 	'/bridge/jlceda/netlist/compare': handleNetlistCompareTask,
 	'/bridge/jlceda/pcb/layer-query': handlePcbLayerQueryTask,
 	'/bridge/jlceda/pcb/realtime-drc': handlePcbRealtimeDrcTask,

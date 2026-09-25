@@ -42,6 +42,8 @@ Bridge 客户端超时会返回带 `BRIDGE_TASK_TIMEOUT` 标记的结果；Serve
 
 `schematic_component_edit` 的 `read` 返回当前原理图页全部普通器件的完整状态；`modify` 用 `primitiveId` 和 `property` 修改单个器件的位置、方向、位号或属性，`delete` 按 ID 删除一个器件。`property.otherProperty` 与已有 BOM 扩展属性合并；其余未指定字段保持原值。写入后核对目标 ID 和请求的状态变化。若返回 `commitUnknown:true`，使用 `bridge_recover_client action=readback`，指定 `readbackPath:"/bridge/jlceda/schematic/component-edit"`、`readbackPayload:{"action":"read"}`，完整读回执行时的原图页；诊断要求宿主重启时先重启原 EDA 宿主。
 
+`pcb_component_edit` 的 `read` 返回当前 PCB 全部器件的不截断状态。`create` 接受设备或封装的库引用、顶层或底层、坐标与可选角度；`modify` 按 ID 修改单个器件的层、坐标、角度、锁定状态、位号或 BOM 属性，`delete` 按 ID 删除单个器件。修改 `otherProperty` 时会保留未指定的已有键。每次写入后重新读取并核对当前 PCB。提交状态不明时，`bridge_recover_client action=readback` 必须使用 `readbackPath:"/bridge/jlceda/pcb/component-edit"` 和 `readbackPayload:{"action":"read"}`，核对同一 PCB 的完整器件快照；诊断要求宿主重启时先重启原宿主。
+
 `component_place` 的放置检查可能清理与已有图元完全重叠的重复副本；该检查按写操作执行，超时或失联后需按写入恢复流程处理。
 
 `component_place` 启动或检查，以及 `component_place_auto` 若返回 `commitUnknown:true`，恢复回读必须调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传 `args:[null,false]`；Server 会追加 `includeCompleteSchematicComponentIds:true`，核对当前图页及不截断的 `schematicComponentIds`、`schematicComponentStates`（ID、位号及 BOM 属性）和数量，不能只用 `/context` 或网表解除隔离。诊断有 `hostRestartRequired:true` 时，须先重启原 EDA 宿主。

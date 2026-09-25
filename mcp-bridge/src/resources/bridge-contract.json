@@ -300,6 +300,16 @@
 			"timeoutPolicy": "default"
 		},
 		{
+			"toolName": "pcb_component_edit",
+			"path": "/bridge/jlceda/pcb/component-edit",
+			"owner": "bridge",
+			"timeoutPolicy": "standard-read",
+			"readOnlyIf": {
+				"field": "action",
+				"equals": "read"
+			}
+		},
+		{
 			"toolName": "pcb_drc_check",
 			"path": "/bridge/jlceda/pcb/drc-check",
 			"owner": "bridge",

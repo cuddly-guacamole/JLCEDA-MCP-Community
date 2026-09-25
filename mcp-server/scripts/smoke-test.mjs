@@ -91,6 +91,7 @@ async function testProtocolVersion(protocolVersion) {
     assert.equal(toolsResponse.id, 2);
     assert.ok(Array.isArray(toolsResponse.result?.tools));
     assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'eda_context'));
+    assert.ok(toolsResponse.result.tools.some((tool) => tool.name === 'pcb_component_edit'));
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -100,6 +101,7 @@ async function testProtocolVersion(protocolVersion) {
     const readbackPathSchemas = findPropertySchemas(recoverTool.inputSchema, 'readbackPath');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/api/invoke')), 'bridge_recover_client must allow current-page API readback');
     assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/schematic/component-edit')), 'bridge_recover_client must publish schematic component state readback');
+    assert.ok(readbackPathSchemas.some((schema) => schema.enum?.includes('/bridge/jlceda/pcb/component-edit')), 'bridge_recover_client must publish PCB component state readback');
     const expectedPageSchemas = findPropertySchemas(recoverTool.inputSchema, 'expectedPageUuid');
     assert.ok(expectedPageSchemas.some((schema) => schema.type === 'string'), 'bridge_recover_client must publish the optional page UUID');
     const actionSchemas = findPropertySchemas(recoverTool.inputSchema, 'action');
@@ -124,6 +126,35 @@ async function testProtocolVersion(protocolVersion) {
     const callResponse = JSON.parse(callLine);
     assert.equal(callResponse.id, 3);
     assert.match(JSON.stringify(callResponse), /No Bridge recovery is awaiting readback/);
+
+    const pcbCallLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 4, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'bridge_recover_client',
+        arguments: { action: 'readback', confirm: true, recoveryId: 'smoke-pcb-recovery', clientId: 'smoke-pcb-client',
+          readbackPath: '/bridge/jlceda/pcb/component-edit', readbackPayload: { action: 'read' } },
+      },
+    }) + '\n');
+    const [pcbCallLine] = await Promise.race([pcbCallLinePromise, lineTimeout]);
+    const pcbCallResponse = JSON.parse(pcbCallLine);
+    assert.equal(pcbCallResponse.id, 4);
+    assert.match(JSON.stringify(pcbCallResponse), /No Bridge recovery is awaiting readback/);
+
+    const invalidCallLinePromise = once(lines, 'line');
+    child.stdin.write(JSON.stringify({
+      jsonrpc: '2.0', id: 5, method: 'tools/call',
+      params: {
+        ...(modern ? params : {}),
+        name: 'pcb_component_edit',
+        arguments: { action: 'modify', primitiveId: 'p1', property: {} },
+      },
+    }) + '\n');
+    const [invalidCallLine] = await Promise.race([invalidCallLinePromise, lineTimeout]);
+    const invalidCallResponse = JSON.parse(invalidCallLine);
+    assert.equal(invalidCallResponse.id, 5);
+    assert.match(JSON.stringify(invalidCallResponse), /property must contain at least one field/);
 
     child.stdin.end();
     const exitTimeout = new Promise((_, reject) => {

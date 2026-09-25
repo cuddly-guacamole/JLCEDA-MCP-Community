@@ -21,6 +21,7 @@ PCB `autoRouting` 原生 RPC 超时时，Bridge 返回提交状态未知并隔�
 - `schematic_pages_manage`：在 `confirm: true` 时创建、复制、重命名或完整重排原理图页面。重排必须提供每个当前页面 UUID，Bridge 会重新读取并验证结果；不提供删除功能。
 - `pcb_drc_check`：读取 PCB 设计规则检查结果。
 - `pcb_net_query`：按条件和数量限制查询当前 PCB 网络；精确网络图元过滤使用官方 `EPCB_PrimitiveType` 枚举。
+- `pcb_component_edit`：完整读取当前 PCB 器件，或按库引用放置器件、按图元 ID 修改层、坐标、角度、锁定状态、位号和 BOM 属性及删除单件；写后核对同板状态，提交状态不明时需完整回读器件后再判断是否重试。
 - `pcb_connectivity_action`：按当前 PCB 数据单位创建单条直线导线或过孔，并回读创建结果；需要已存在网络，或显式允许新网络。
 - `schematic_drc_check`、`pcb_constraints_query`、`project_info` 和 `netlist_compare`：提供设计审查和工程身份信息；`project_info` 可选返回受限的 Board 和 Panel 清单。
 - `eda_context`：在客户端支持时返回 JLCEDA/EasyEDA 版本、在线模式、编辑器版本、编译日期和当前画布数据单位。
