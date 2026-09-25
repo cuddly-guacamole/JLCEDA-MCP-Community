@@ -67,6 +67,17 @@ const boardLine = primitive({
 	EndX: 30,
 	EndY: 0,
 });
+const silkscreenLine = primitive({
+	PrimitiveId: 'silkscreen-1',
+	Net: null,
+	Layer: 3,
+	LineWidth: 0.1,
+	PrimitiveLock: false,
+	StartX: 0,
+	StartY: 10,
+	EndX: 30,
+	EndY: 10,
+});
 const region = primitive({
 	PrimitiveId: 'region-1',
 	Layer: 1,
@@ -131,9 +142,9 @@ globalThis.eda = {
 		calls.nets += 1;
 		return Array.from({ length: 130 }, (_, index) => ({ net: `N${index}`, length: index }));
 	} },
-	pcb_PrimitiveLine: { async getAll() {
+	pcb_PrimitiveLine: { async getAll(_net, layer) {
 		calls.routing += 1;
-		return [boardLine];
+		return layer === 11 ? [boardLine] : [boardLine, silkscreenLine];
 	} },
 	pcb_PrimitiveArc: { async getAll() { return []; } },
 	pcb_PrimitivePolyline: { async getAll() { return []; } },

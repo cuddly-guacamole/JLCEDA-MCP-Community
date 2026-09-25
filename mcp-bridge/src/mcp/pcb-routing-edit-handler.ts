@@ -150,8 +150,9 @@ async function getOne(runtime: Record<string, unknown>, kind: Kind, primitiveId:
 	await assertSamePage(runtime, pageUuid);
 	if (raw == null)
 		return undefined;
-	const primitive = readPrimitive(kind, raw);
-	return kind !== 'via' && !isCopperLayer(primitive.layer as number) ? undefined : primitive;
+	if (kind !== 'via' && !isCopperLayer(finiteNumber(readState(raw, 'getState_Layer'), 'EDA layer')))
+		return undefined;
+	return readPrimitive(kind, raw);
 }
 
 async function getAll(runtime: Record<string, unknown>, kind: Kind): Promise<Primitive[]> {
@@ -159,8 +160,11 @@ async function getAll(runtime: Record<string, unknown>, kind: Kind): Promise<Pri
 	const raw = await (primitiveApi.getAll as () => Promise<unknown>).call(primitiveApi);
 	if (!Array.isArray(raw))
 		throw new TypeError(`EDA ${API_NAME[kind]}.getAll did not return an array.`);
-	return preserveBoundedArray(raw.map(item => readPrimitive(kind, item))
-		.filter(item => kind === 'via' || isCopperLayer(item.layer as number)));
+	// getAll also returns board outline and silkscreen shapes. Their net can be null;
+	// classify the layer before requiring the net of an actual copper route.
+	return preserveBoundedArray(raw.filter(item => kind === 'via'
+		|| isCopperLayer(finiteNumber(readState(item, 'getState_Layer'), 'EDA layer')))
+		.map(item => readPrimitive(kind, item)));
 }
 
 async function getAllPrimitiveIds(runtime: Record<string, unknown>, kind: Kind, pageUuid: string): Promise<string[]> {
