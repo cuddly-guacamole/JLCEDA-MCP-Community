@@ -109,6 +109,8 @@ async function testProtocolVersion(protocolVersion) {
       'pcb_layer_manage must publish confirm=true for set');
     assert.ok(layerTool.inputSchema.oneOf?.some(rule => rule.properties?.action?.const === 'set' && rule.required?.includes('confirm')),
       'pcb_layer_manage set must require confirmation in the advertised schema');
+    assert.ok(layerTool.inputSchema.oneOf?.every(rule => rule.properties?.timeoutMs?.maximum === 120000),
+      'pcb_layer_manage read and set must publish an adjustable timeout');
     const recoverTool = toolsResponse.result.tools.find((tool) => tool.name === 'bridge_recover_client');
     assert.ok(recoverTool?.inputSchema, 'bridge_recover_client must publish an input schema');
     const confirmSchemas = findPropertySchemas(recoverTool.inputSchema, 'confirm');
@@ -253,7 +255,7 @@ async function testProtocolVersion(protocolVersion) {
     const confirmedLayerLinePromise = once(lines, 'line');
     child.stdin.write(JSON.stringify({
       jsonrpc: '2.0', id: 12, method: 'tools/call',
-      params: { ...(modern ? params : {}), name: 'pcb_layer_manage', arguments: { action: 'set', confirm: true, copperLayerCount: 4 } },
+      params: { ...(modern ? params : {}), name: 'pcb_layer_manage', arguments: { action: 'set', confirm: true, copperLayerCount: 4, timeoutMs: 120000 } },
     }) + '\n');
     const [confirmedLayerLine] = await Promise.race([confirmedLayerLinePromise, lineTimeout]);
     const confirmedLayerResponse = JSON.parse(confirmedLayerLine);

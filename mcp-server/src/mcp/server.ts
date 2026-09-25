@@ -55,8 +55,8 @@ function createToolInputSchema(
   }
   if (name === 'pcb_layer_manage') {
     return z.discriminatedUnion('action', [
-      z.object({ action: z.literal('read') }).strict(),
-      z.object({ action: z.literal('set'), confirm: z.literal(true), copperLayerCount: z.number().int().min(2).max(32).multipleOf(2) }).strict(),
+      z.object({ action: z.literal('read'), timeoutMs: z.number().int().min(5000).max(120000).optional() }).strict(),
+      z.object({ action: z.literal('set'), confirm: z.literal(true), copperLayerCount: z.number().int().min(2).max(32).multipleOf(2), timeoutMs: z.number().int().min(5000).max(120000).optional() }).strict(),
     ]);
   }
   const schema = z.fromJSONSchema(inputSchema as z.core.JSONSchema.JSONSchema);

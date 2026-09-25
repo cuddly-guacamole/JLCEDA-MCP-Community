@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - `pcb_layer_manage action=set` 明确要求 `confirm:true`，阻止未确认的 PCB 叠层修改。
+- `pcb_layer_manage` 的完整读取和降层预检支持按 PCB 大小将桥接超时预算调整到 120 秒。
 - PCB 文档创建或复制已获得新 UUID 但目录回读失败时，恢复要求目录包含该 UUID，避免旧目录误解锁后重复创建。
 - `pcb_region_manage` 完整回读已知部分修改或删除结果时不再误设未知提交隔离；工具描述补充实际返回字段。
 - 完整 PCB 布线恢复接受无网络图元的明确 `net:null`，保留板框和丝印折线的 ID 与几何；缺失网络字段仍判为回读不完整。

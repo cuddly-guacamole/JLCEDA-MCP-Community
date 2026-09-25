@@ -1485,7 +1485,8 @@
       "properties": {
         "action": { "type": "string", "enum": ["read", "set"] },
         "confirm": { "const": true, "description": "set 时必填，明确确认修改当前 PCB 的铜层总数。" },
-        "copperLayerCount": { "type": "integer", "minimum": 2, "maximum": 32, "multipleOf": 2, "description": "set 时必填，铜层总数。" }
+        "copperLayerCount": { "type": "integer", "minimum": 2, "maximum": 32, "multipleOf": 2, "description": "set 时必填，铜层总数。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000, "description": "完整图层回读和降层前图元检查的桥接超时预算。" }
       },
       "required": ["action"],
       "allOf": [

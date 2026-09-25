@@ -44,7 +44,7 @@ PCB `autoRouting` 指定网络时使用 `RoutingNets:["网络名"]`；返回值�
 - `workspace_query`：查询当前工作区、团队、工程和文件夹，并发现可访问的资源。
 - `design_compare`：调用官方原理图、PCB 和网表比较 API，并返回版本相关错误。
 - `pcb_layer_query`：读取 PCB 层和铜层数量。
-- `pcb_layer_manage`：读取当前 PCB 的完整图层清单与铜层数，或用 `confirm:true` 将铜层总数设置为 2–32 的偶数；降层前阻止移除非空内层，写后核对同页结果，提交状态未知时按同页图层回读恢复。
+- `pcb_layer_manage`：读取当前 PCB 的完整图层清单与铜层数，或用 `confirm:true` 将铜层总数设置为 2–32 的偶数；大型 PCB 可用 `timeoutMs` 调整调用预算，降层前阻止移除非空内层，写后核对同页结果，提交状态未知时按同页图层回读恢复。
 - `pcb_realtime_drc`：读取或明确启停 PCB 实时 DRC。
 - `pcb_document_action`：读取 PCB 坐标、选中图元、区域图元、过滤器和画布状态；执行视图导航、保存、变更导入以及 Base64 自动布局/布线文件导入。
 - `component_select`：支持精确器件属性查询，包括 LCSC `supplierId`。
