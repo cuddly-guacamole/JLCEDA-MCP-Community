@@ -56,7 +56,7 @@ function readWire(primitive: unknown): WireState {
 	const color = state<unknown>(primitive, 'Color');
 	const lineWidth = state<unknown>(primitive, 'LineWidth');
 	const lineType = state<unknown>(primitive, 'LineType');
-	if (typeof primitiveId !== 'string' || !primitiveId.trim() || segments(line).length === 0 || typeof net !== 'string'
+	if (typeof primitiveId !== 'string' || !primitiveId.trim() || finiteLinePaths(line) === null || typeof net !== 'string'
 		|| (color !== null && typeof color !== 'string')
 		|| (lineWidth !== null && (typeof lineWidth !== 'number' || !Number.isFinite(lineWidth)))
 		|| (lineType !== null && (typeof lineType !== 'number' || !Number.isInteger(lineType)))) {
@@ -109,7 +109,7 @@ async function readCurrentWires(api: WireApi, snapshot: PageSnapshot): Promise<W
 	const snapshotById = new Map(snapshot.wires.map(wire => [wire.primitiveId, wire]));
 	if (wires.length !== snapshotById.size || new Set(wires.map(wire => wire.primitiveId)).size !== wires.length
 		|| wires.some(wire => !snapshotById.has(wire.primitiveId)
-			|| JSON.stringify(segments(wire.line)) !== JSON.stringify(segments(snapshotById.get(wire.primitiveId)!.line)))) {
+			|| lineGeometryKey(wire.line) !== lineGeometryKey(snapshotById.get(wire.primitiveId)!.line))) {
 		throw new Error('Current-page wire list changed during read; retry after the schematic page loads.');
 	}
 	return wires;
@@ -144,6 +144,18 @@ function flatPaths(value: unknown): number[][] {
 	if (value.every(part => Array.isArray(part) && part.length === 2))
 		return [value.flat() as number[]];
 	return value.filter(part => Array.isArray(part) && part.length >= 4) as number[][];
+}
+
+function finiteLinePaths(value: unknown): number[][] | null {
+	if (!Array.isArray(value) || value.length === 0)
+		return null;
+	const paths: unknown[] = !Array.isArray(value[0])
+		? [value]
+		: value.every(part => Array.isArray(part) && part.length === 2) ? [value.flat()] : value;
+	if (paths.some(path => !Array.isArray(path) || path.length < 4 || path.length % 2 !== 0
+		|| path.some(coordinate => typeof coordinate !== 'number' || !Number.isFinite(coordinate))))
+		return null;
+	return paths as number[][];
 }
 
 function requiredProperty(value: unknown): Record<string, unknown> {
@@ -225,6 +237,14 @@ function segments(value: unknown): string[] {
 	return result.sort();
 }
 
+function lineGeometryKey(value: unknown): string {
+	const normalizedSegments = segments(value);
+	if (normalizedSegments.length > 0)
+		return JSON.stringify(normalizedSegments);
+	// Native schematics can contain point wires. Keep their coordinates when comparing readbacks.
+	return JSON.stringify(finiteLinePaths(value));
+}
+
 function requestedValuesMatch(after: WireState, property: Record<string, unknown>): boolean {
 	return Object.entries(property).every(([key, expected]) => {
 		if (key === 'line')
@@ -234,7 +254,7 @@ function requestedValuesMatch(after: WireState, property: Record<string, unknown
 }
 
 function wireStateKey(wire: WireState): string {
-	return JSON.stringify({ segments: segments(wire.line), net: wire.net, color: wire.color, lineWidth: wire.lineWidth, lineType: wire.lineType });
+	return JSON.stringify({ line: lineGeometryKey(wire.line), net: wire.net, color: wire.color, lineWidth: wire.lineWidth, lineType: wire.lineType });
 }
 
 function unknownNativeWrite(action: 'modify' | 'delete', primitiveId: string, before: WireState, error: unknown): Record<string, unknown> {

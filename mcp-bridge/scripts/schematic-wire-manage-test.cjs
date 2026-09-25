@@ -62,6 +62,13 @@ async function main() {
 	assert.equal(selected.wire.net, 'A');
 	assert.equal(selected.wire.primitiveId, 'w1');
 	assert.equal(selected.wiresSnapshot, undefined, 'targeted reads should not return a large full-page result');
+	wires.set('point-wire', { primitiveId: 'point-wire', line: [80, 105, 80, 105], net: '', color: null, lineWidth: null, lineType: null });
+	const pointRead = await handleSchematicWireManageTask({ action: 'read', primitiveId: 'point-wire' });
+	assert.equal(pointRead.ok, true, 'native zero-length wires remain readable');
+	assert.equal(pointRead.wireCount, 3);
+	assert.deepEqual(pointRead.wire.line, [80, 105, 80, 105]);
+	await assert.rejects(handleSchematicWireManageTask({ action: 'modify', primitiveId: 'point-wire', property: { line: [80, 105, 80, 105] } }), /too short/);
+	wires.delete('point-wire');
 	for (let index = 0; index < 125; index += 1)
 		wires.set(`extra-${index}`, { primitiveId: `extra-${index}`, line: [1000 + index, 0, 1000 + index, 10], net: '', color: null, lineWidth: null, lineType: null });
 	const largeRead = await handleSchematicWireManageTask({ action: 'read' });
