@@ -73,7 +73,7 @@ interface RecoveryDiagnostic {
   sourceSchematicPageUuid?: string;
   targetPageMayBeAbsent?: boolean;
   targetPcbUuid?: string;
-  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_text_state' | 'pcb_layer_state' | 'pcb_routing_state' | 'pcb_document_inventory' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state' | 'schematic_text_state';
+  requiredReadback?: 'pcb_component_positions' | 'pcb_component_state' | 'pcb_pour_state' | 'pcb_region_state' | 'pcb_text_state' | 'pcb_layer_state' | 'pcb_routing_state' | 'pcb_document_inventory' | 'board_document_inventory' | 'schematic_page_inventory' | 'schematic_connectivity_primitives' | 'schematic_component_ids' | 'schematic_component_state' | 'schematic_text_state';
   hostRestartRequired?: boolean;
   pendingNativeConfirmation?: boolean;
   importContextConflict?: boolean;
@@ -197,7 +197,7 @@ function schematicPageMutationTarget(path: string, payload: unknown): Pick<Recov
 }
 
 function knownProjectTargetUuid(path: string, payload: unknown): string | undefined {
-  if ((path === '/bridge/jlceda/pcb/documents-manage' || path === '/bridge/jlceda/editor/navigate') && isRecord(payload))
+  if ((path === '/bridge/jlceda/pcb/documents-manage' || path === '/bridge/jlceda/board/setup' || path === '/bridge/jlceda/editor/navigate') && isRecord(payload))
     return optionalString(payload.projectUuid);
   if (path !== '/bridge/jlceda/api/invoke' || !isRecord(payload)
     || typeof payload.apiFullName !== 'string'
@@ -346,6 +346,12 @@ function isSchematicTextStateReadbackRequest(path: string, payload: Record<strin
 function isPcbDocumentInventoryReadbackRequest(path: string, payload: Record<string, unknown>, projectUuid?: string): boolean {
   return path === '/bridge/jlceda/pcb/documents-manage' && payload.operation === 'list'
     && typeof payload.projectUuid === 'string' && payload.projectUuid === projectUuid;
+}
+
+function isBoardDocumentInventoryReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
+  return path === '/bridge/jlceda/project/info' && payload.includePages === false
+    && payload.includeBoards === true && payload.includeSchematics === true && payload.includePcbs === true
+    && payload.limit === 500;
 }
 
 function isPcbLayerStateReadbackRequest(path: string, payload: Record<string, unknown>): boolean {
@@ -929,6 +935,7 @@ export class EdaBridgeServer {
             || diagnostic.requiredReadback === 'pcb_text_state'
             || diagnostic.requiredReadback === 'schematic_text_state'
             || diagnostic.requiredReadback === 'pcb_document_inventory'
+            || diagnostic.requiredReadback === 'board_document_inventory'
             || diagnostic.requiredReadback === 'pcb_layer_state'
             || diagnostic.requiredReadback === 'schematic_component_ids'
             || diagnostic.requiredReadback === 'schematic_component_state'
@@ -1363,6 +1370,9 @@ export class EdaBridgeServer {
         ? { requiredReadback: 'pcb_document_inventory' as const, hostRestartRequired: !nativeCallSettled,
             targetPcbUuid: isRecord(pending.payload) ? optionalString(pending.payload.pcbUuid) : undefined }
         : {}),
+      ...(mutating && pending.path === '/bridge/jlceda/board/setup'
+        ? { requiredReadback: 'board_document_inventory' as const, hostRestartRequired: !nativeCallSettled }
+        : {}),
       ...(mutating && pending.path === '/bridge/jlceda/pcb/layer-manage'
         ? { requiredReadback: 'pcb_layer_state' as const, hostRestartRequired: !nativeCallSettled }
         : {}),
@@ -1535,6 +1545,10 @@ export class EdaBridgeServer {
       && !isPcbDocumentInventoryReadbackRequest(readbackPath, readbackPayload, session.diagnostic.targetProjectUuid)) {
       throw new Error('PCB document management requires pcb_documents_manage operation=list for the target project recovery readback.');
     }
+    if (session.diagnostic.requiredReadback === 'board_document_inventory'
+      && !isBoardDocumentInventoryReadbackRequest(readbackPath, readbackPayload)) {
+      throw new Error('Board setup requires project_info with includePages=false, includeBoards/includeSchematics/includePcbs=true, and limit=500 for recovery readback.');
+    }
     if (session.diagnostic.requiredReadback === 'pcb_layer_state'
       && !isPcbLayerStateReadbackRequest(readbackPath, readbackPayload)) {
       throw new Error('PCB copper-layer management requires pcb_layer_manage action=read for current-page recovery readback.');
@@ -1606,6 +1620,8 @@ export class EdaBridgeServer {
           ? 'Unverified PCB text write'
         : session.diagnostic.requiredReadback === 'pcb_layer_state'
           ? 'Unverified PCB copper-layer write'
+        : session.diagnostic.requiredReadback === 'board_document_inventory'
+          ? 'Unverified Board setup'
         : session.diagnostic.requiredReadback === 'schematic_component_state'
           ? 'Unverified schematic component edit'
         : session.diagnostic.requiredReadback === 'schematic_text_state'
@@ -1723,6 +1739,8 @@ export class EdaBridgeServer {
       this.validateCompletePcbTextState(readback, session.diagnostic);
     if (session.diagnostic.requiredReadback === 'pcb_document_inventory')
       this.validateCompletePcbDocuments(readback, session.diagnostic);
+    if (session.diagnostic.requiredReadback === 'board_document_inventory')
+      this.validateCompleteBoardDocuments(readback, session.diagnostic);
     if (session.diagnostic.requiredReadback === 'pcb_layer_state')
       this.validateCompletePcbLayerState(readback, session.diagnostic);
     const routingSnapshot = session.diagnostic.requiredReadback === 'pcb_routing_state'
@@ -1986,6 +2004,37 @@ export class EdaBridgeServer {
     if (diagnostic.targetPcbUuid && !uuids.has(diagnostic.targetPcbUuid))
       throw new Error('Target PCB is absent from the document inventory; writes remain blocked.');
     return value.pcbs.length;
+  }
+
+  private validateCompleteBoardDocuments(value: unknown, diagnostic: RecoveryDiagnostic): number {
+    if (!isRecord(value) || value.ok !== true || !isRecord(value.project)
+      || value.project.uuid !== diagnostic.targetProjectUuid) {
+      throw new Error('Board setup readback is not from the target project; writes remain blocked.');
+    }
+    const inventory = (raw: unknown, kind: 'Board' | 'schematic' | 'PCB'): Record<string, unknown>[] => {
+      if (!isRecord(raw) || raw.truncated !== false || !Array.isArray(raw.items)
+        || !Number.isSafeInteger(raw.total) || raw.total !== raw.items.length
+        || raw.returned !== raw.items.length) {
+        throw new Error(`${kind} inventory readback is incomplete; writes remain blocked.`);
+      }
+      const names = new Set<string>();
+      for (const item of raw.items) {
+        if (!isRecord(item) || !optionalString(item.name)
+          || item.parentProjectUuid !== diagnostic.targetProjectUuid
+          || (kind !== 'Board' && !optionalString(item.uuid))) {
+          throw new Error(`${kind} inventory readback is invalid; writes remain blocked.`);
+        }
+        const identity = kind === 'Board' ? item.name as string : item.uuid as string;
+        if (names.has(identity))
+          throw new Error(`${kind} inventory contains duplicate identities; writes remain blocked.`);
+        names.add(identity);
+      }
+      return raw.items;
+    };
+    const boards = inventory(value.boards, 'Board');
+    inventory(value.schematics, 'schematic');
+    inventory(value.pcbs, 'PCB');
+    return boards.length;
   }
 
   private validateCompletePcbLayerState(value: unknown, diagnostic: RecoveryDiagnostic): number {

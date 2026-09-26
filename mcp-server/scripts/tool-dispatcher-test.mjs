@@ -361,6 +361,14 @@ assert.equal(schematicPagesManageResult.structuredContent.ok, true);
 const schematicPagesManageCall = calls.find(call => call.path === '/bridge/jlceda/schematic/pages-manage');
 assert.deepEqual(schematicPagesManageCall.payload.orderedPageUuids, ['page-2', 'page-1']);
 
+const boardSetupResult = await dispatcher.dispatch({
+	name: 'board_setup',
+	arguments: { projectUuid: 'project-1', schematicUuid: 'schematic-1', confirm: true },
+});
+assert.equal(boardSetupResult.structuredContent.ok, true);
+const boardSetupCall = calls.find(call => call.path === '/bridge/jlceda/board/setup');
+assert.deepEqual(boardSetupCall.payload, { projectUuid: 'project-1', schematicUuid: 'schematic-1', confirm: true });
+
 const libraryPreviewResult = await dispatcher.dispatch({
   name: 'library_preview',
   arguments: { kind: 'symbol', uuid: 'symbol-1', libraryUuid: 'library-1', timeoutMs: 42000 },
@@ -715,6 +723,14 @@ for (const input of [
 ]) {
 	assert.equal(schematicPagesSchema.safeParse(input).success, false, `schematic_pages_manage should reject ${JSON.stringify(input)}`);
 }
+
+const boardSetupDefinition = definitions.find(definition => definition.name === 'board_setup');
+assert.ok(boardSetupDefinition);
+const boardSetupSchema = z.fromJSONSchema(boardSetupDefinition.inputSchema);
+assert.equal(boardSetupSchema.safeParse({ projectUuid: 'project-1', confirm: true }).success, true);
+assert.equal(boardSetupSchema.safeParse({ projectUuid: 'project-1', schematicUuid: 'schematic-1', confirm: true }).success, true);
+assert.equal(boardSetupSchema.safeParse({ projectUuid: 'project-1', confirm: false }).success, false);
+assert.equal(boardSetupSchema.safeParse({ schematicUuid: 'schematic-1', confirm: true }).success, false);
 
 const librarySearchDefinition = definitions.find((definition) => definition.name === 'library_search');
 assert.ok(librarySearchDefinition);

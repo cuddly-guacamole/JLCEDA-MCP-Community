@@ -95,6 +95,8 @@ Server 提供 `schematic_document_action`，用于受限地检查原理图坐标
 
 `pcb_documents_manage` 以 `project_info` 或 `bridge_clients` 返回的当前工程 `projectUuid` 为目标：`operation:list` 完整返回该工程 PCB 的 UUID、名称和所属板子；`create` 可省略 `boardName` 新建游离 PCB，`copy` 按已有 `pcbUuid` 复制，`rename` 改名。三种写入均需 `confirm:true`，并在 EDA 工作区同步后按 PCB UUID 和工程目录回读；改名仅对 EDA 中已打开的目标 PCB 生效，工具不会自行切换图页。未知提交使用 `bridge_recover_client`，指定 `readbackPath:"/bridge/jlceda/pcb/documents-manage"`、`readbackPayload:{"operation":"list","projectUuid":"原工程 UUID"}`；旧宿主尚有未完成原生调用时先重启。暂不提供 PCB 删除。
 
+开发分支的 `board_setup` 接受当前工程 `projectUuid` 和 `confirm:true`；省略 `schematicUuid` 时由 EDA 同时创建 Board、原理图和 PCB，传入同工程游离原理图 UUID 时先创建 PCB 再建立关联。返回 Board 名称与两个文档 UUID，不自动打开文档或导入原理图变更。结果不明时，`bridge_recover_client` 使用 `readbackPath:"/bridge/jlceda/project/info"`、`readbackPayload:{"includePages":false,"includeBoards":true,"includeSchematics":true,"includePcbs":true,"limit":500}` 回读完整目录；先核对是否已创建，勿重试或自动清理游离 PCB。此工具尚未包含在 2.3.3 Release 中。
+
 `editor_navigate` 接受当前工程的 `projectUuid` 与原理图图页或 PCB 的 `documentUuid`。`operation:open` 打开或激活该文档；`operation:activate` 还需已打开的 `tabId`，可由 `eda.dmt_EditorControl.getSplitScreenTree` 获取。工具先核对目标属于当前工程，再调用编辑器 API，在 `timeoutMs` 预算内核对工程、文档、图页和标签 ID。返回 `commitUnknown:true` 时先查看 `bridge_clients` 的诊断，使用 `bridge_recover_client` 恢复，并以目标 `documentUuid`、原工程 `projectUuid` 和 `readbackPath:"/bridge/jlceda/context"` 验证当前页；诊断要求时先重启原 EDA 宿主。不要在结果不明时盲目重试导航。
 
 `eda_context` 在客户端支持时返回客户端版本、连接模式、编辑器版本、编译日期和当前画布数据单位。`eda_canvas_snapshot` 可在不改变文档或视图的情况下返回受限的画布图像。

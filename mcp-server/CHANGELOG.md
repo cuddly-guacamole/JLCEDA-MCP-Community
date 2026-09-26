@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- 新增 `board_setup`：在当前工程一次创建 Board 及关联原理图/PCB，或把现有游离原理图与新 PCB 关联；结果不明时按同工程完整文档目录恢复。
+
 ## [2.3.3] - 2026-09-26
 
 - 调整 Agent 指引：当前页问题可用 `schematic_read`，全工程分析按需使用 `schematic_review`；输出随用户问题聚焦，不强制六张表或每次建立 todo。

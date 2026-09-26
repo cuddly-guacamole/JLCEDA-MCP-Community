@@ -2629,6 +2629,28 @@ try {
   assert.throws(() => pageMutationServer.validateCompletePcbDocuments(pcbInventory, {
     targetProjectUuid: 'target-project', targetPcbUuid: 'missing-pcb',
   }), /Target PCB is absent/);
+  const boardInventory = {
+    ok: true, project: { uuid: 'target-project' },
+    boards: { total: 1, returned: 1, truncated: false, items: [{ name: 'Board-1', parentProjectUuid: 'target-project' }] },
+    schematics: { total: 1, returned: 1, truncated: false, items: [{ uuid: 'sch-1', name: 'Sch-1', parentProjectUuid: 'target-project' }] },
+    pcbs: { total: 1, returned: 1, truncated: false, items: [{ uuid: 'pcb-1', name: 'PCB-1', parentProjectUuid: 'target-project' }] },
+  };
+  assert.equal(pageMutationServer.validateCompleteBoardDocuments(boardInventory, { targetProjectUuid: 'target-project' }), 1);
+  assert.throws(() => pageMutationServer.validateCompleteBoardDocuments({ ...boardInventory,
+    pcbs: { ...boardInventory.pcbs, truncated: true },
+  }, { targetProjectUuid: 'target-project' }), /PCB inventory readback is incomplete/);
+  assert.throws(() => pageMutationServer.validateCompleteBoardDocuments(boardInventory,
+    { targetProjectUuid: 'other-project' }), /target project/);
+  pageMutationServer.recordTimedOutRequest('board-setup-test', {
+    clientId: 'board-page', path: '/bridge/jlceda/board/setup',
+    payload: { projectUuid: 'target-project', confirm: true }, startedAt: Date.now(),
+  }, 30000);
+  const boardDiagnostic = pageMutationServer.recoveryDiagnostics.get('board-setup-test');
+  assert.equal(boardDiagnostic.pageBound, false);
+  assert.equal(boardDiagnostic.targetProjectUuid, 'target-project');
+  assert.equal(boardDiagnostic.requiredReadback, 'board_document_inventory');
+  assert.equal(boardDiagnostic.hostRestartRequired, true);
+  pageMutationServer.recoveryDiagnostics.delete('board-setup-test');
   assert.equal(pageMutationServer.validateCompleteSchematicPages({
     apiFullName: 'eda.dmt_Schematic.getAllSchematicPagesInfo', schematicPages: [], pageCount: 0,
   }, { targetSchematicUuid: 'empty-schematic', targetSchematicMayBeEmpty: true }), 0);

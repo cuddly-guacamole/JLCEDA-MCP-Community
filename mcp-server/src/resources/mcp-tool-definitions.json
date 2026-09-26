@@ -47,8 +47,8 @@
         "expectedPageUuid": { "type": "string", "minLength": 1, "description": "可选的执行图页 UUID 核对值，必须与诊断记录一致；不能补充缺失的执行图页身份。" },
         "resolution": { "type": "string", "enum": ["applied", "cancelled"], "description": "resolve_import 时确认用户已在 EDA 原生导入对话框点击应用修改或取消，并且对话框已关闭。" },
         "hostRestartConfirmed": { "const": true, "description": "诊断包含 hostRestartRequired:true 时，确认执行未定写入的原 EDA 宿主已重启。" },
-        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/schematic/text-manage", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/pcb/documents-manage", "/bridge/jlceda/pcb/pour-manage", "/bridge/jlceda/pcb/region-manage", "/bridge/jlceda/pcb/text-manage", "/bridge/jlceda/pcb/layer-manage", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
-        "readbackPayload": { "type": "object", "default": {}, "description": "PCB 文档创建、复制或重命名使用 pcb_documents_manage 及 {\"operation\":\"list\",\"projectUuid\":\"原工程UUID\"} 完整回读工程 PCB 目录；PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 区域写入使用 pcb_region_manage 及 {\"action\":\"read\"} 完整回读区域；PCB 文本或属性写入使用 pcb_text_manage 及 {\"action\":\"read\"} 完整回读文本与属性；PCB 铜层数量写入使用 pcb_layer_manage 及 {\"action\":\"read\"} 回读铜层数量和图层清单；PCB 器件创建、修改或删除同理使用 pcb_component_edit；PCB 走线编辑、autoRouting 与直线/过孔创建使用无参 eda.pcb_PrimitiveLine.getAll，恢复流程会补读全部圆弧、折线、过孔及网络；通过 schematic_component_edit 进行的单件原理图器件修改或删除使用 schematic_component_edit；通过 api_invoke 调用 eda.sch_PrimitiveComponent.delete 的单件或批量删除使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；原理图文字写入使用 schematic_text_manage 的无过滤 read 完整回读；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll。" }
+        "readbackPath": { "type": "string", "enum": ["/bridge/jlceda/context", "/bridge/jlceda/api/invoke", "/bridge/jlceda/project/info", "/bridge/jlceda/schematic/read", "/bridge/jlceda/schematic/component-edit", "/bridge/jlceda/schematic/text-manage", "/bridge/jlceda/pcb/component-edit", "/bridge/jlceda/pcb/documents-manage", "/bridge/jlceda/pcb/pour-manage", "/bridge/jlceda/pcb/region-manage", "/bridge/jlceda/pcb/text-manage", "/bridge/jlceda/pcb/layer-manage", "/bridge/jlceda/schematic/review", "/bridge/jlceda/schematic/layout-check", "/bridge/jlceda/pcb/drc-check", "/bridge/jlceda/schematic/drc-check"], "default": "/bridge/jlceda/context" },
+        "readbackPayload": { "type": "object", "default": {}, "description": "Board 建立结果不明时使用 project_info 完整回读 Board、原理图和 PCB（includePages=false、includeBoards/includeSchematics/includePcbs=true、limit=500）；PCB 文档创建、复制或重命名使用 pcb_documents_manage 及 {\"operation\":\"list\",\"projectUuid\":\"原工程UUID\"} 完整回读工程 PCB 目录；PCB 覆铜写入结果不明时使用 pcb_pour_manage 及 {\"action\":\"read\"}，完整读回当前 PCB 页全部覆铜边框、填充图元 ID、边框关联和填充数量及几何摘要；PCB 区域写入使用 pcb_region_manage 及 {\"action\":\"read\"} 完整回读区域；PCB 文本或属性写入使用 pcb_text_manage 及 {\"action\":\"read\"} 完整回读文本与属性；PCB 铜层数量写入使用 pcb_layer_manage 及 {\"action\":\"read\"} 回读铜层数量和图层清单；PCB 器件创建、修改或删除同理使用 pcb_component_edit；PCB 走线编辑、autoRouting 与直线/过孔创建使用无参 eda.pcb_PrimitiveLine.getAll，恢复流程会补读全部圆弧、折线、过孔及网络；通过 schematic_component_edit 进行的单件原理图器件修改或删除使用 schematic_component_edit；通过 api_invoke 调用 eda.sch_PrimitiveComponent.delete 的单件或批量删除使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；原理图文字写入使用 schematic_text_manage 的无过滤 read 完整回读；原理图连接写入使用 schematic_read 及 {\"includeConnectivityPrimitives\":true}；交互或坐标放置须用 {\"apiFullName\":\"eda.sch_PrimitiveComponent.getAllPrimitiveId\",\"args\":[null,false]}；PCB autoLayout 用无参 eda.pcb_PrimitiveComponent.getAll。" }
       },
       "required": ["confirm"],
       "allOf": [
@@ -1389,6 +1389,21 @@
         { "type": "object", "properties": { "operation": { "const": "open" }, "projectUuid": { "type": "string", "minLength": 1 }, "documentUuid": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["operation", "projectUuid", "documentUuid"], "additionalProperties": false },
         { "type": "object", "properties": { "operation": { "const": "activate" }, "projectUuid": { "type": "string", "minLength": 1 }, "documentUuid": { "type": "string", "minLength": 1 }, "tabId": { "type": "string", "minLength": 1 }, "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 } }, "required": ["operation", "projectUuid", "documentUuid", "tabId"], "additionalProperties": false }
       ]
+    }
+  },
+  {
+    "name": "board_setup",
+    "description": "在当前工程创建 Board、原理图和关联 PCB；传入现有游离 schematicUuid 时保留该原理图，先创建 PCB 再建立 Board 关联。须 confirm:true。返回并核对 Board 名称及两个文档 UUID；结果不明时通过 project_info 的完整 Board、原理图、PCB 目录回读，勿直接重试。",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectUuid": { "type": "string", "minLength": 1, "description": "当前已打开工程的 UUID，由 project_info 获取。" },
+        "schematicUuid": { "type": "string", "minLength": 1, "description": "可选；同工程内尚未关联 Board 的现有原理图 UUID。省略时 EDA 自动创建原理图和 PCB。" },
+        "confirm": { "const": true, "description": "必须明确为 true 才创建 Board。" },
+        "timeoutMs": { "type": "integer", "minimum": 5000, "maximum": 120000, "default": 30000 }
+      },
+      "required": ["projectUuid", "confirm"],
+      "additionalProperties": false
     }
   },
   {

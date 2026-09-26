@@ -74,6 +74,8 @@ PCB `import_changes` 打开原生确认对话框后，Bridge 和 Server 均暂�
 
 `pcb_documents_manage` 使用官方 `dmt_Pcb` API 完整读取当前工程 PCB 目录，或创建游离/指定板子的 PCB、按 UUID 复制、重命名。创建和复制等待 EDA 工作区目录同步，写入后以 `getPcbInfo` 和全量目录核对 PCB/工程 UUID。改名只接受已打开的目标 PCB，英文名按不区分大小写核对；不会自动切换用户图页。未知提交时按原工程完整目录回读；不提供删除操作。
 
+开发分支新增 `board_setup`，调用官方 `dmt_Board.createBoard()` 自动创建关联的原理图和 PCB，或以现有游离原理图 UUID 创建 PCB 后调用 `createBoard(schematicUuid, pcbUuid)`。写后读取 Board 及两个文档，核对工程与板子归属；若 Board 建立失败，不自动删除已创建的游离 PCB。当前 2.3.3 Release 尚不包含此工具。
+
 `editor_navigate` 使用官方 `dmt_EditorControl.openDocument` 和 `activateDocument` 切换当前工程的原理图图页或 PCB。切换前以工程文档目录确认目标归属，激活已有标签时先检查标签树；切换后在调用方的 `timeoutMs` 预算内以当前文档、工程、图页和 `tabId` 精确回读。原生调用或回读结果不明时返回 `commitUnknown:true`，等待同工程目标文档的受控回读后再继续写入。
 
 `eda_context` 在已安装的 EDA 提供 0.4.15 API 时返回客户端版本、连接模式、编辑器版本、编译日期和当前画布数据单位。
