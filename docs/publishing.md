@@ -6,7 +6,7 @@
 
 1. 保持 mcp-bridge/extension.json.uuid 不变。JLCEDA 会按 UUID 将后续上传归入同一扩展命名空间。
 2. 同步递增 mcp-bridge/extension.json、两个包的 package.json 与 package-lock.json 中的版本。
-3. 更新两个包的 CHANGELOG.md，并确认 README 说明安装、配置、安全假设、上游署名和支持渠道。发布说明应覆盖自上一个 GitHub Release 起的全部变更；本次 [v2.3.3 发布说明](releases/v2.3.3.md)包含尚未单独发布的 v2.3.2。
+3. 更新两个包的 CHANGELOG.md，并确认 README 说明安装、配置、安全假设、上游署名和支持渠道。发布说明应覆盖自上一个 GitHub Release 起的全部变更；本次 [v2.3.4 发布说明](releases/v2.3.4.md)覆盖 v2.3.3 之后的变更。
 4. 执行：
 
    ```powershell
