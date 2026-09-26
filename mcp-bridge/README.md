@@ -1,16 +1,16 @@
 # MCP Bridge 社区版
 
-## 2.3.3
+## 2.3.4
 
 `wire_create` 成功结果只确认导线图元变化，返回的 `net` 是请求值；`confirmedPrimitiveId` 给出读回确认的图元 ID。原生创建未返回 ID 时，只有唯一变化导线与请求路径及网络匹配才报告成功，否则保留 `commitUnknown`。随后须以 `schematic_read includeConnectivityPrimitives:true` 核对同页实际语义连接。该读取也可用于其他常规连线核查和受控恢复。
 
 `schematic_component_edit` 的几何修改会检查匿名导线连通组，同组内移动保持成功；引脚脱离或转移到另一组时报告 `pin_network_changed` 和前后组 ID。`schematic_read` 可用 `timeoutMs` 延长大图页读取预算至 120 秒。
 
-2.3.3 扩充了原理图和 PCB 的完整读取与受控编辑，新增 `editor_navigate` 以打开或激活当前工程的图页，并针对复制页共享 ID、交互放置结果和无网络 PCB 图元改进回读。工具路由和消息字段仍由共享 `contracts/bridge-contract.json` 管理；`JLCEDA_BRIDGE_TOKEN` 为可选配置。
+2.3.4 新增 Board 建立工作流，可自动创建一对关联的原理图和 PCB，或将现有游离原理图关联到新 PCB。此前 2.3.3 扩充了原理图和 PCB 的完整读取与受控编辑，新增 `editor_navigate` 以打开或激活当前工程的图页，并针对复制页共享 ID、交互放置结果和无网络 PCB 图元改进回读。工具路由和消息字段仍由共享 `contracts/bridge-contract.json` 管理；`JLCEDA_BRIDGE_TOKEN` 为可选配置。
 
 Bridge 会记录任务开始、完成、返回失败、异常和超时的结构化日志，包含工具名、路由、可用的 EDA API 名称、请求 ID、执行阶段以及版本与构建日期水印。菜单“查看调试日志”展示最近 100 条简略报告并隐藏异常堆栈；扩展本地存储保留最近 200 条完整日志。清空日志后，其他已打开页面的后续读取不会恢复旧记录。
 
-配套的 MCP Server 2.3.3 提供连接失联后的写入诊断和同图页恢复回读，并公开原理图导线预览、创建及 NetPort 操作。
+配套的 MCP Server 2.3.4 提供连接失联后的写入诊断和同图页恢复回读，并公开 Board 建立、原理图导线预览、创建及 NetPort 操作。
 
 交互放置检查可能清理完全重叠的重复器件。若清理或位号恢复的结果不明，`commitUnknown:true` 会隔离后续写入；恢复时通过 `api_invoke` 调用 `eda.sch_PrimitiveComponent.getAllPrimitiveId`，传入 `args:[null,false]` 和 `includeCompleteSchematicComponentIds:true`，可获取不截断的当前图页 `schematicComponentIds`、`schematicComponentStates`（ID 与位号）及数量，供 Server 核对原图页。
 
@@ -54,7 +54,7 @@ Bridge 会记录任务开始、完成、返回失败、异常和超时的结构�
 
 `bridge_select_client` 在已连接的 EDA 页面客户端之间选择 MCP 路由目标。显式选择待命页前会进行约 1.5 秒双向队列探活；旧扩展不支持该选择流程，请先升级 Bridge。它不会切换同一个 EDA 进程中的可见标签页；进程内打开或激活文档使用 `editor_navigate`，成功后会核对文档、图页和标签身份。
 
-Server 通过 `bridge_recover_client action=recover` 建立受控恢复会话后，Bridge 会等待底层 EDA Promise 结束再创建新运行时世代及全新 `clientId`；请求本身不能取消 EDA Promise。Promise 持续挂起或 PCB `autoLayout` 返回提交状态未知时，在建立恢复会话后关闭并重启原 EDA 宿主，再用恢复会话后的新连接核对目标图页并执行只读回读；普通掉线自动重连保留旧 `clientId`，不会解除写隔离。所有写任务在执行时上报可用的文档、项目与图页身份；提交状态不明时，Bridge 在结果回传前阻断本机后续写任务。使用本版新增操作及其恢复回读时，应同时安装 2.3.3 Bridge 与 Server；2.3.1 Bridge 仍可连接，但其页面写入若缺少执行时身份，2.3.3 Server 会保留隔离。原理图当前页器件查询推荐 `getAllPrimitiveId` 或 `getAll` 搭配 `args:[null,false]`；无参数调用仍兼容。PCB 器件回读可用无参数的 `eda.pcb_PrimitiveComponent.getAll`。隔离期间 Bridge 可处理只读查询，但其结果在原调用结束前只是暂时快照；写入仍被阻止。
+Server 通过 `bridge_recover_client action=recover` 建立受控恢复会话后，Bridge 会等待底层 EDA Promise 结束再创建新运行时世代及全新 `clientId`；请求本身不能取消 EDA Promise。Promise 持续挂起或 PCB `autoLayout` 返回提交状态未知时，在建立恢复会话后关闭并重启原 EDA 宿主，再用恢复会话后的新连接核对目标图页并执行只读回读；普通掉线自动重连保留旧 `clientId`，不会解除写隔离。所有写任务在执行时上报可用的文档、项目与图页身份；提交状态不明时，Bridge 在结果回传前阻断本机后续写任务。使用新增操作及其恢复回读时，应同时安装匹配版本的 Bridge 与 Server；2.3.1 Bridge 仍可连接，但其页面写入若缺少执行时身份，新版 Server 会保留隔离。原理图当前页器件查询推荐 `getAllPrimitiveId` 或 `getAll` 搭配 `args:[null,false]`；无参数调用仍兼容。PCB 器件回读可用无参数的 `eda.pcb_PrimitiveComponent.getAll`。隔离期间 Bridge 可处理只读查询，但其结果在原调用结束前只是暂时快照；写入仍被阻止。
 
 PCB 自动布局启动时，Bridge 会采集实际 PCB 身份并发送给 Server；若启动与执行之间切换图页，则取消调用。无参数 `eda.pcb_PrimitiveComponent.getAll` 的普通 `result` 保留原有组件字段；传入 `includeCompletePositions:true` 时另返回不截断的 `componentPositions` 和 `componentCount`，供布局前后与恢复期比较。
 
@@ -74,7 +74,7 @@ PCB `import_changes` 打开原生确认对话框后，Bridge 和 Server 均暂�
 
 `pcb_documents_manage` 使用官方 `dmt_Pcb` API 完整读取当前工程 PCB 目录，或创建游离/指定板子的 PCB、按 UUID 复制、重命名。创建和复制等待 EDA 工作区目录同步，写入后以 `getPcbInfo` 和全量目录核对 PCB/工程 UUID。改名只接受已打开的目标 PCB，英文名按不区分大小写核对；不会自动切换用户图页。未知提交时按原工程完整目录回读；不提供删除操作。
 
-开发分支新增 `board_setup`，调用官方 `dmt_Board.createBoard()` 自动创建关联的原理图和 PCB，或以现有游离原理图 UUID 创建 PCB 后调用 `createBoard(schematicUuid, pcbUuid)`。写后读取 Board 及两个文档，核对工程与板子归属；若 Board 建立失败，不自动删除已创建的游离 PCB。当前 2.3.3 Release 尚不包含此工具。
+2.3.4 新增 `board_setup`，调用官方 `dmt_Board.createBoard()` 自动创建关联的原理图和 PCB，或以现有游离原理图 UUID 创建 PCB 后调用 `createBoard(schematicUuid, pcbUuid)`。写后读取 Board 及两个文档，核对工程与板子归属；若 Board 建立失败，不自动删除已创建的游离 PCB。
 
 `editor_navigate` 使用官方 `dmt_EditorControl.openDocument` 和 `activateDocument` 切换当前工程的原理图图页或 PCB。切换前以工程文档目录确认目标归属，激活已有标签时先检查标签树；切换后在调用方的 `timeoutMs` 预算内以当前文档、工程、图页和 `tabId` 精确回读。原生调用或回读结果不明时返回 `commitUnknown:true`，等待同工程目标文档的受控回读后再继续写入。
 
@@ -149,14 +149,14 @@ Server，通过本机 WebSocket 与嘉立创 EDA 专业版连接，不再依赖 
 
 ### 1. EDA Bridge
 
-从同一 Release 下载并在嘉立创 EDA 专业版扩展管理器中安装 `mcp-bridge-community-2.3.3.eext`，重启 EDA，然后打开原理图或 PCB 页面。
+从同一 Release 下载并在嘉立创 EDA 专业版扩展管理器中安装 `mcp-bridge-community-2.3.4.eext`，重启 EDA，然后打开原理图或 PCB 页面。
 
 ### 2. 原生 MCP Server
 
-从同一 Release 下载匹配的 `jlceda-mcp-server-2.3.3.tgz`，执行：
+从同一 Release 下载匹配的 `jlceda-mcp-server-2.3.4.tgz`，执行：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.3.tgz
+npm install --global .\jlceda-mcp-server-2.3.4.tgz
 ```
 
 安装后的命令为 `jlceda-mcp`。源码构建及其他客户端配置见[原生 MCP 安装说明](https://github.com/hs150521/JLCEDA-MCP-Community/blob/main/docs/native-mcp-setup.md)。

@@ -1,10 +1,10 @@
 # JLCEDA MCP Server
 
-## 2.3.3
+## 2.3.4
 
 `bridge_recover_client` 的完整回读不再被固定 15 秒截断；可设置 `timeoutMs`，大原理图最多 120 秒。`schematic_read` 同样支持最长 120 秒的读取预算。
 
-2.3.3 新增工程内图页导航、原理图文字/导线/器件以及 PCB 文字/区域/板框/覆铜/布线/器件的读写工具，并完善导入预检和操作回读。Server 与 Bridge 应安装匹配版本；`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
+2.3.4 新增 `board_setup`，可在当前工程创建关联的 Board、原理图和 PCB，或将现有游离原理图与新 PCB 关联。此前 2.3.3 新增工程内图页导航、原理图文字/导线/器件以及 PCB 文字/区域/板框/覆铜/布线/器件的读写工具，并完善导入预检和操作回读。Server 与 Bridge 应安装匹配版本；`JLCEDA_BRIDGE_TOKEN` 仍为可选配置。
 
 工具分发异常和 Bridge 上报的结构化诊断日志会输出到 Server 的 stderr。分发异常记录工具、Bridge 路由、可用的错误码与异常堆栈，并附带版本及构建日期水印；构建日期在打包时固定。
 
@@ -16,7 +16,7 @@
 
 `bridge_clients` 和 `bridge_select_client` 用于在已连接的 EDA 页面客户端之间切换 MCP 路由。显式选择待命客户端前，Server 会发送短时双向探活，并等待其串行任务队列回传确认；探活失败不会更改活动客户端或租约。旧版 Bridge 未声明探活能力时仍可连接，但须升级后才能显式选中待命页面。它们不会切换同一个 EDA 进程中的可见标签页；进程内打开或激活文档使用 `editor_navigate`，成功后会核对文档、图页和标签身份。
 
-`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。原理图器件批量删除绑定执行时的当前图页，恢复时以 `schematic_read includeConnectivityPrimitives:true` 回读原页；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。使用本版新增操作及其恢复回读时，应同时安装 2.3.3 Bridge 与 Server；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
+`bridge_recover_client` 用于不可取消 EDA 修改超时后的受控恢复。先从 `bridge_clients` 取得具体 `requestId`，再以 `action=recover` 建立恢复会话。若原 EDA Promise 一直挂起，此后须重启原 EDA 宿主以终止旧调用，并重新打开目标图页；保持 MCP Server 运行以保留诊断。原调用正常结束时 Bridge 会自行重连。等待原 Bridge 连接断开、恢复会话建立后的新 Bridge 连接就绪，再用全新 `clientId` 做身份校验和只读 `action=readback`。普通掉线自动重连会沿用旧 `clientId`，即使 WebSocket 已更换也不能用于本次回读；建立恢复会话时已连接的其他客户端同样不能通过重连解除隔离。当前页绑定的写入必须有任务执行时的 `pageUuid`，不能用旧心跳或手填 `expectedPageUuid` 代替。原理图器件批量删除绑定执行时的当前图页，恢复时以 `schematic_read includeConnectivityPrimitives:true` 回读原页；其他非页面操作应显式给出目标 `expectedDocumentUuid` 或 `expectedProjectUuid`，已确认签名的工程改名 API 会使用其参数中的目标工程 UUID。使用新增操作及其恢复回读时，应同时安装匹配版本的 Bridge 与 Server；2.3.1 Bridge 可正常连接，但旧版页面写入缺少执行身份时会保留隔离。回读完成前，EDA 写操作都会被阻止；普通只读查询可执行，但原调用挂起时结果只是暂时快照。`schematic_layout_check` 的 `mode: "fix"` 按写操作隔离。
 
 PCB `import_changes` 返回 `pending_confirmation` 后，Server 将其列为全局写入阻断诊断。用户在原 EDA 对话框应用或取消并确认关闭后，使用诊断中的 `requestId` 调用 `bridge_recover_client`，传入 `action:"resolve_import"`、`confirm:true`、`resolution:"applied"` 或 `"cancelled"`。Server 核对原连接及 PCB 文档/图页，完整读回器件和网络；Bridge 收到同页解除确认后才恢复写入。只读查询在此期间仍可用，但 EDA API 不提供确认框完成事件，读回本身不能证明对话框已关闭。无法确认时以 `action:"recover"` 建立恢复会话，重启原 EDA 宿主，再用全新连接、`hostRestartConfirmed:true`、无参数 `eda.pcb_PrimitiveComponent.getAll` 做 `action:"readback"`；Server 还会分页读取完整网络名称。
 
@@ -95,7 +95,7 @@ Server 提供 `schematic_document_action`，用于受限地检查原理图坐标
 
 `pcb_documents_manage` 以 `project_info` 或 `bridge_clients` 返回的当前工程 `projectUuid` 为目标：`operation:list` 完整返回该工程 PCB 的 UUID、名称和所属板子；`create` 可省略 `boardName` 新建游离 PCB，`copy` 按已有 `pcbUuid` 复制，`rename` 改名。三种写入均需 `confirm:true`，并在 EDA 工作区同步后按 PCB UUID 和工程目录回读；改名仅对 EDA 中已打开的目标 PCB 生效，工具不会自行切换图页。未知提交使用 `bridge_recover_client`，指定 `readbackPath:"/bridge/jlceda/pcb/documents-manage"`、`readbackPayload:{"operation":"list","projectUuid":"原工程 UUID"}`；旧宿主尚有未完成原生调用时先重启。暂不提供 PCB 删除。
 
-开发分支的 `board_setup` 接受当前工程 `projectUuid` 和 `confirm:true`；省略 `schematicUuid` 时由 EDA 同时创建 Board、原理图和 PCB，传入同工程游离原理图 UUID 时先创建 PCB 再建立关联。返回 Board 名称与两个文档 UUID，不自动打开文档或导入原理图变更。结果不明时，`bridge_recover_client` 使用 `readbackPath:"/bridge/jlceda/project/info"`、`readbackPayload:{"includePages":false,"includeBoards":true,"includeSchematics":true,"includePcbs":true,"limit":500}` 回读完整目录；先核对是否已创建，勿重试或自动清理游离 PCB。此工具尚未包含在 2.3.3 Release 中。
+`board_setup` 接受当前工程 `projectUuid` 和 `confirm:true`；省略 `schematicUuid` 时由 EDA 同时创建 Board、原理图和 PCB，传入同工程游离原理图 UUID 时先创建 PCB 再建立关联。返回 Board 名称与两个文档 UUID，不自动打开文档或导入原理图变更。结果不明时，`bridge_recover_client` 使用 `readbackPath:"/bridge/jlceda/project/info"`、`readbackPayload:{"includePages":false,"includeBoards":true,"includeSchematics":true,"includePcbs":true,"limit":500}` 回读完整目录；先核对是否已创建，勿重试或自动清理游离 PCB。
 
 `editor_navigate` 接受当前工程的 `projectUuid` 与原理图图页或 PCB 的 `documentUuid`。`operation:open` 打开或激活该文档；`operation:activate` 还需已打开的 `tabId`，可由 `eda.dmt_EditorControl.getSplitScreenTree` 获取。工具先核对目标属于当前工程，再调用编辑器 API，在 `timeoutMs` 预算内核对工程、文档、图页和标签 ID。返回 `commitUnknown:true` 时先查看 `bridge_clients` 的诊断，使用 `bridge_recover_client` 恢复，并以目标 `documentUuid`、原工程 `projectUuid` 和 `readbackPath:"/bridge/jlceda/context"` 验证当前页；诊断要求时先重启原 EDA 宿主。不要在结果不明时盲目重试导航。
 
@@ -123,10 +123,10 @@ Server 提供 PCB DRC、网络查询、库搜索、制造查询和受保护的�
 
 ## 安装
 
-从 GitHub 发布页下载 `jlceda-mcp-server-2.3.3.tgz`：
+从 GitHub 发布页下载 `jlceda-mcp-server-2.3.4.tgz`：
 
 ```powershell
-npm install --global .\jlceda-mcp-server-2.3.3.tgz
+npm install --global .\jlceda-mcp-server-2.3.4.tgz
 Get-Command jlceda-mcp
 ```
 
